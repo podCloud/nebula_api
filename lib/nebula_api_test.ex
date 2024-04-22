@@ -1,9 +1,11 @@
 defmodule NebulaAPI.Test do
-  # use :nonode@nohost if we are in dev mode
-  #
-  use NebulaAPI, node: :nebula@host
+  use NebulaAPI, node: "nebula@host.example"
 
-  defapi get_user(name) do
-    IO.puts("Hello World : #{name}")
+  defapi hello_name(name) do
+    IO.puts("Hello #{name} from #{node()}")
+  end
+
+  defapi hello_world() do
+    hello_name("World")
   end
 end

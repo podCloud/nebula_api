@@ -5,8 +5,11 @@ defmodule NebulaAPI.Application do
 
   use Application
 
-  @impl true
+  require Logger
+
   def start(_type, _args) do
+    Logger.debug("Starting NebulaAPI Application.")
+
     children = [
       # Start the PubSub system
       # {Phoenix.PubSub, name: Social.PubSub},
