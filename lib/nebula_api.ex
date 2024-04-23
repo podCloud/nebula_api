@@ -6,124 +6,150 @@ defmodule NebulaAPI do
   require Logger
 
   defmacro __using__(opts) do
-    api_node = opts[:node]
-    force_current_node = opts[:force_current_node]
+    api_node = :"#{opts[:node]}"
 
     module = __CALLER__.module
     api_id = {api_node, module}
 
-    self_node = Node.self()
-
-    is_current_node = force_current_node || api_node == self_node
+    is_current_node = api_node == node()
 
     Module.put_attribute(module, :nebula_api,
       is_current_node: is_current_node,
-      api_id: {api_node, module}
+      api_id: api_id
     )
 
-    result =
-      if is_current_node do
-        Logger.debug("Will join API register with name : #{inspect(api_id)}")
-
+    {
+      :__block__, 
+      [], 
+      [
         quote do
           require NebulaAPI
 
           import NebulaAPI, only: [defapi: 2]
 
-          def start_link(opts) do
-            GenServer.start_link(__MODULE__, opts, name: unquote(api_id))
+          use GenServer
+
+          def api_node(), do: unquote(api_node)
+
+          def api_node_id(), do: unquote(api_id)
+
+          def api_node_pid() do 
+            :global.sync()
+            :global.whereis_name(api_node_id())
           end
 
-          def init(opts) do
-            # TODO: Save pid inside pg
-            #
-            # Something like this 
-            # :pg.join(
-            #  unquote(api_id),
-            #  __MODULE__
-            # )
+          def init([]) do 
+            require Logger
+            Logger.debug("init : #{inspect(node())} : #{inspect(unquote(api_node))} : #{inspect(unquote(node()))}")
+            Logger.debug("init: is_current_node: #{inspect(unquote(is_current_node))}")
 
-            {:ok, opts}
+            if node() !== unquote(node()) do
+              raise """
+                The Module #{inspect(unquote(__CALLER__.module))} has been compiled
+                for the node #{inspect(unquote(node()))} and is now running on node #{inspect(node())}.
+                This is not supported. Please recompile the module for the correct node.
+                """
+            end
+
+            {:ok, []}
+          end
+        end,
+        if is_current_node do
+          quote do
+            def start_link([]) do
+              GenServer.start_link(__MODULE__, [], name: {:global, api_node_id()})
+            end
+          end
+        else
+          quote do
+            def start_link([]) do
+              {:ok, _} = init([])
+
+              :ignore
+            end
           end
         end
-      else
-        quote do
-          require NebulaAPI
-
-          import NebulaAPI, only: [defapi: 2]
-        end
-      end
-
-    Logger.debug("Defed API : #{inspect(result)}")
-    Logger.debug("Defed API to source : \n#{Macro.to_string(result)}")
-    result
+      ]
+    }
   end
 
-  defmacro defapi({api_method_name, meta, args}, do: do_fn) do
-    Logger.debug("Defining API method: #{inspect(api_method_name)}")
-    Logger.debug("Meta: #{inspect(meta)}")
-    Logger.debug("Args: #{inspect(args)}")
+  defmacro defapi({api_method_name, _meta, args}, do: block) do
+    #Logger.debug("defapi: #{inspect(api_method_name)}")
+    #Logger.debug("defapi: #{inspect(args)}")
 
-    if do_fn == nil do
+    # if not a block
+    if block == nil do
       raise """
       The `do` keyword is required for the API method definition.
       """
     end
-
+ 
     nebula_api = Module.get_attribute(__CALLER__.module, :nebula_api, [])
     is_current_node = nebula_api[:is_current_node]
-    api_id = nebula_api[:api_id]
 
-    defed_api =
-      if is_current_node do
-        # Define API method locally and handle calls for other nodes
-        Logger.debug("Defining API method locally: #{inspect(api_method_name)}")
-
+    {
+      :__block__,
+      [],
+      [
         quote do
-          def unquote(api_method_name)(unquote_splicing(args)) do
-            unquote(do_fn)
-          end
+          require Logger
+        end,
+        if is_current_node do
+          quote do
+            def unquote(api_method_name)(unquote_splicing(args)) do
+              Logger.debug(
+              """
+                  Local #{inspect(api_node())} API method: 
+                  #{inspect(unquote(api_method_name))} 
+                  with args: #{inspect(unquote(args))}
 
-          def handle_call({unquote(api_method_name), args}, state) do
-            {:reply, apply(__MODULE__, unquote(api_method_name), args), state}
+                  doin func
+              """
+              )
+
+              unquote(block)
+            end
+
+            def handle_call({unquote(api_method_name), args = [unquote_splicing(args)]}, from, state) do
+              Logger.debug(
+              """
+                  Handling call from #{inspect(from)}
+                  #{inspect(unquote(api_method_name))} 
+                  with args: #{inspect(unquote(args))}
+
+                  Calling local api method
+              """
+              )
+              {:reply, apply(__MODULE__, unquote(api_method_name), args), state}
+            end
+          end
+        else
+          quote do
+            def unquote(api_method_name)(unquote_splicing(args)) do
+              Logger.debug(
+              """
+                  Remote because #{inspect(api_node())} != #{inspect(node())}
+                  Calling #{inspect(api_node())} API method: 
+                  {:global, #{inspect(api_node_id())}},
+                  {#{inspect(unquote(api_method_name))}, #{inspect([unquote_splicing(args)])}}
+              """
+              )
+
+              case api_node_pid() do
+                :undefined ->
+                  Logger.error("Remote API call failed: node not found")
+                  {:error, :node_not_found}
+                node ->
+                  Logger.debug("Remote API call: node found : #{inspect(node)}")
+                  GenServer.call(
+                    {:global, api_node_id()},
+                    {unquote(api_method_name), [unquote_splicing(args)]}
+                  )
+              end
+            end
           end
         end
-      else
-        Logger.debug(
-          "Defining API method to be called remotely: #{inspect(api_method_name)} #{inspect(api_id)}"
-        )
-
-        quote do
-          def unquote(api_method_name)(unquote_splicing(args)) do
-            # TODO: Get pid from pg
-            #
-            # Something like this 
-            # :pg.get_members({unquote(api_node), unquote(api_app), __MODULE__}),
-            #
-
-            GenServer.call(
-              unquote(api_id),
-              {unquote(api_method_name), unquote_splicing(args)}
-            )
-          end
-        end
-      end
-
-    Logger.debug("Defed API : #{inspect(defed_api)}")
-    Logger.debug("Defed API to source : \n#{Macro.to_string(defed_api)}")
-
-    defed_api
-  end
-
-  def extract_keyword_list(args) do
-    args
-    # Reverse the list to check the last element first
-    |> Enum.reverse()
-    # Split list into keyword list vs tuples
-    |> Enum.split_while(&is_list/1)
-    |> case do
-      {[keywords], args} -> {keywords, args}
-      {[], args} -> {[], args}
-    end
+      ]
+    }
   end
 end
