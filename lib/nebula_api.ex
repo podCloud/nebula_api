@@ -19,13 +19,13 @@ defmodule NebulaAPI do
     )
 
     {
-      :__block__, 
-      [], 
+      :__block__,
+      [],
       [
         quote do
           require NebulaAPI
 
-          import NebulaAPI, only: [defapi: 2]
+          import NebulaAPI, only: [defapi: 2, on_node: 2]
 
           use GenServer
 
@@ -33,15 +33,12 @@ defmodule NebulaAPI do
 
           def api_node_id(), do: unquote(api_id)
 
-          def api_node_pid() do 
+          def api_node_pid() do
             :global.sync()
             :global.whereis_name(api_node_id())
           end
 
-          def init([]) do 
-            require Logger
-            Logger.debug("init : #{inspect(node())} : #{inspect(unquote(api_node))} : #{inspect(unquote(node()))}")
-            Logger.debug("init: is_current_node: #{inspect(unquote(is_current_node))}")
+          def init([]) do
 
             if node() !== unquote(node()) do
               raise """
@@ -57,12 +54,14 @@ defmodule NebulaAPI do
         if is_current_node do
           quote do
             def start_link([]) do
+              Logger.debug("Starting local API server.")
               GenServer.start_link(__MODULE__, [], name: {:global, api_node_id()})
             end
           end
         else
           quote do
             def start_link([]) do
+              Logger.debug("Calling init locally, but not starting server.")
               {:ok, _} = init([])
 
               :ignore
@@ -73,17 +72,31 @@ defmodule NebulaAPI do
     }
   end
 
-  defmacro defapi({api_method_name, _meta, args}, do: block) do
-    #Logger.debug("defapi: #{inspect(api_method_name)}")
-    #Logger.debug("defapi: #{inspect(args)}")
+  defmacro on_node(node_name, do: block) when is_atom(node_name) do
+    if node_name == node() do
+      block
+    end
+  end
 
+  defmacro on_nodes(do: nodes) do
+    nodes_blocks = nodes |> Enum.map(fn
+      {:->, _meta, [[{node,_,_}] | [block]]} -> {node, block}
+      {:->, _meta, [[node] | [block]]} -> {node, block}
+    end)
+      |> Enum.into(%{})
+
+    nodes_blocks
+    |> Map.get(node(), nodes_blocks[:_])
+  end
+
+  defmacro defapi({api_method_name, _meta, args}, do: block) do
     # if not a block
     if block == nil do
       raise """
-      The `do` keyword is required for the API method definition.
-      """
+        The `do` keyword is required for the API method definition.
+        """
     end
- 
+
     nebula_api = Module.get_attribute(__CALLER__.module, :nebula_api, [])
     is_current_node = nebula_api[:is_current_node]
 
@@ -98,13 +111,13 @@ defmodule NebulaAPI do
           quote do
             def unquote(api_method_name)(unquote_splicing(args)) do
               Logger.debug(
-              """
-                  Local #{inspect(api_node())} API method: 
-                  #{inspect(unquote(api_method_name))} 
-                  with args: #{inspect(unquote(args))}
+                """
+                Local #{inspect(api_node())} API method:
+                #{inspect(unquote(api_method_name))}
+                with args: #{inspect(unquote(args))}
 
-                  doin func
-              """
+                doin func
+                """
               )
 
               unquote(block)
@@ -112,13 +125,13 @@ defmodule NebulaAPI do
 
             def handle_call({unquote(api_method_name), args = [unquote_splicing(args)]}, from, state) do
               Logger.debug(
-              """
-                  Handling call from #{inspect(from)}
-                  #{inspect(unquote(api_method_name))} 
-                  with args: #{inspect(unquote(args))}
+                """
+                Handling call from #{inspect(from)}
+                #{inspect(unquote(api_method_name))}
+                with args: #{inspect(unquote(args))}
 
-                  Calling local api method
-              """
+                Calling local api method
+                """
               )
               {:reply, apply(__MODULE__, unquote(api_method_name), args), state}
             end
@@ -127,12 +140,12 @@ defmodule NebulaAPI do
           quote do
             def unquote(api_method_name)(unquote_splicing(args)) do
               Logger.debug(
-              """
-                  Remote because #{inspect(api_node())} != #{inspect(node())}
-                  Calling #{inspect(api_node())} API method: 
-                  {:global, #{inspect(api_node_id())}},
-                  {#{inspect(unquote(api_method_name))}, #{inspect([unquote_splicing(args)])}}
-              """
+                """
+                Remote because #{inspect(api_node())} != #{inspect(node())}
+                Calling #{inspect(api_node())} API method:
+                {:global, #{inspect(api_node_id())}},
+                {#{inspect(unquote(api_method_name))}, #{inspect([unquote_splicing(args)])}}
+                """
               )
 
               case api_node_pid() do
