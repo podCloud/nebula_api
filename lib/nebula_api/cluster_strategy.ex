@@ -110,7 +110,7 @@ defmodule NebulaAPI.ClusterStrategy do
         |> List.last()
         |> String.to_charlist()
         |> lookup_all_ips
-        |> Enum.any?
+        |> Enum.any?()
       end)
 
     resolve(query, resolver, state)
@@ -121,14 +121,12 @@ defmodule NebulaAPI.ClusterStrategy do
   # filter out me
   defp resolve({:ok, nodes}, resolver, %{topology: topology})
        when is_list(nodes) do
-
     nodes
     |> Enum.map(fn n -> "#{n}" end)
     |> Enum.reject(fn n -> "#{n}" == "#{node()}" end)
     |> Enum.filter(fn n -> resolver.(n) end)
     |> Enum.map(fn n -> :"#{n}" end)
   end
-
 
   defp resolve(:error, _resolver, %{topology: topology}) do
     Logger.warn(

@@ -39,13 +39,12 @@ defmodule NebulaAPI do
           end
 
           def init([]) do
-
             if node() !== unquote(node()) do
               raise """
-                The Module #{inspect(unquote(__CALLER__.module))} has been compiled
-                for the node #{inspect(unquote(node()))} and is now running on node #{inspect(node())}.
-                This is not supported. Please recompile the module for the correct node.
-                """
+              The Module #{inspect(unquote(__CALLER__.module))} has been compiled
+              for the node #{inspect(unquote(node()))} and is now running on node #{inspect(node())}.
+              This is not supported. Please recompile the module for the correct node.
+              """
             end
 
             {:ok, []}
@@ -79,10 +78,12 @@ defmodule NebulaAPI do
   end
 
   defmacro on_nodes(do: nodes) do
-    nodes_blocks = nodes |> Enum.map(fn
-      {:->, _meta, [[{node,_,_}] | [block]]} -> {node, block}
-      {:->, _meta, [[node] | [block]]} -> {node, block}
-    end)
+    nodes_blocks =
+      nodes
+      |> Enum.map(fn
+        {:->, _meta, [[{node, _, _}] | [block]]} -> {node, block}
+        {:->, _meta, [[node] | [block]]} -> {node, block}
+      end)
       |> Enum.into(%{})
 
     nodes_blocks
@@ -93,8 +94,8 @@ defmodule NebulaAPI do
     # if not a block
     if block == nil do
       raise """
-        The `do` keyword is required for the API method definition.
-        """
+      The `do` keyword is required for the API method definition.
+      """
     end
 
     nebula_api = Module.get_attribute(__CALLER__.module, :nebula_api, [])
@@ -110,50 +111,51 @@ defmodule NebulaAPI do
         if is_current_node do
           quote do
             def unquote(api_method_name)(unquote_splicing(args)) do
-              Logger.debug(
-                """
-                Local #{inspect(api_node())} API method:
-                #{inspect(unquote(api_method_name))}
-                with args: #{inspect(unquote(args))}
+              Logger.debug("""
+              Local #{inspect(api_node())} API method:
+              #{inspect(unquote(api_method_name))}
+              with args: #{inspect(unquote(args))}
 
-                doin func
-                """
-              )
+              doin func
+              """)
 
               unquote(block)
             end
 
-            def handle_call({unquote(api_method_name), args = [unquote_splicing(args)]}, from, state) do
-              Logger.debug(
-                """
-                Handling call from #{inspect(from)}
-                #{inspect(unquote(api_method_name))}
-                with args: #{inspect(unquote(args))}
+            def handle_call(
+                  {unquote(api_method_name), args = [unquote_splicing(args)]},
+                  from,
+                  state
+                ) do
+              Logger.debug("""
+              Handling call from #{inspect(from)}
+              #{inspect(unquote(api_method_name))}
+              with args: #{inspect(unquote(args))}
 
-                Calling local api method
-                """
-              )
+              Calling local api method
+              """)
+
               {:reply, apply(__MODULE__, unquote(api_method_name), args), state}
             end
           end
         else
           quote do
             def unquote(api_method_name)(unquote_splicing(args)) do
-              Logger.debug(
-                """
-                Remote because #{inspect(api_node())} != #{inspect(node())}
-                Calling #{inspect(api_node())} API method:
-                {:global, #{inspect(api_node_id())}},
-                {#{inspect(unquote(api_method_name))}, #{inspect([unquote_splicing(args)])}}
-                """
-              )
+              Logger.debug("""
+              Remote because #{inspect(api_node())} != #{inspect(node())}
+              Calling #{inspect(api_node())} API method:
+              {:global, #{inspect(api_node_id())}},
+              {#{inspect(unquote(api_method_name))}, #{inspect([unquote_splicing(args)])}}
+              """)
 
               case api_node_pid() do
                 :undefined ->
                   Logger.error("Remote API call failed: node not found")
                   {:error, :node_not_found}
+
                 node ->
                   Logger.debug("Remote API call: node found : #{inspect(node)}")
+
                   GenServer.call(
                     {:global, api_node_id()},
                     {unquote(api_method_name), [unquote_splicing(args)]}
