@@ -58,9 +58,19 @@ defmodule NebulaAPI.APIServer do
   end
 
   def call_remote_method(module, fn_call) do
-    module
-    |> get_remote_method_worker(fn_call)
-    |> GenServer.call(fn_call, 500)
+    Logger.debug("""
+      Will do remote execution on #{inspect(module)} 
+      with fn_call : #{inspect(fn_call)}
+    """)
+
+    with worker <- module |> get_remote_method_worker(fn_call),
+         {:is_pid, true} <- {:is_pid, is_pid(worker)} do
+      worker |> GenServer.call(fn_call, 500)
+    else
+      {:is_pid, false} -> {:error, "No worker found for remote method #{inspect(fn_call)}"}
+    end
+  rescue
+    err -> {:error, err}
   end
 
   defp pg_spec(),

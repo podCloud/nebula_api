@@ -63,6 +63,9 @@ defmodule NebulaAPI.AST.Parser do
         args_count: 0
       },
       fn
+        arg, fundef when is_atom(arg) ->
+          %{fundef | args: fundef.args ++ [{:__inline, arg}], args_count: fundef.args_count + 1}
+
         {arg, _, nil}, fundef ->
           %{fundef | args: fundef.args ++ [arg], args_count: fundef.args_count + 1}
 

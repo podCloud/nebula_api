@@ -49,6 +49,6 @@ defmodule NebulaAPI.APIServer.Worker do
         "with args : #{inspect(fn_args)}"
     )
 
-    {:reply, apply(state[:module], fn_name, fn_args |> Tuple.to_list()), []}
+    {:reply, apply(state[:module], fn_name, fn_args |> Tuple.to_list()), state}
   end
 end
