@@ -11,6 +11,7 @@ defmodule NebulaAPI.ClusterStrategy do
 
   ## Usage
 
+  ```elixir
       config :libcluster,
         topologies: [
           nebula: [
@@ -21,6 +22,7 @@ defmodule NebulaAPI.ClusterStrategy do
             ]
           ]
         ]
+  ```
   """
 
   use GenServer
@@ -119,7 +121,7 @@ defmodule NebulaAPI.ClusterStrategy do
   # query for all ips responding to a given dns query
   # format ips as node names
   # filter out me
-  defp resolve({:ok, nodes}, resolver, %{topology: topology})
+  defp resolve({:ok, nodes}, resolver, %{topology: _topology})
        when is_list(nodes) do
     nodes
     |> Enum.map(fn n -> "#{n}" end)

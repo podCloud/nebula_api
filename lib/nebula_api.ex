@@ -2,169 +2,168 @@ defmodule NebulaAPI do
   @moduledoc """
    Documentation for `NebulaAPI`.
   """
-
   require Logger
 
-  defmacro __using__(opts) do
-    api_node = :"#{opts[:node]}"
+  defmacro __using__(opts \\ []) do
+    :ok = __register__(__CALLER__, opts)
 
-    module = __CALLER__.module
-    api_id = {api_node, module}
+    quote do
+      require NebulaAPI
+      import NebulaAPI, only: [defapi: 3, on_nebula: 2]
 
-    is_current_node = api_node == node()
+      NebulaAPI.APIServer.register_module(__MODULE__)
+    end
+  end
 
-    Module.put_attribute(module, :nebula_api,
-      is_current_node: is_current_node,
-      api_id: api_id
+  defp __register__(env, opts) do
+    defaults =
+      NebulaAPI.Config.default_opts()
+      |> Keyword.validate!(
+        self_node: node(),
+        allow_unknown_self_node: false
+      )
+
+    opts =
+      opts
+      |> Enum.map(fn {k, v} ->
+        {k, Code.eval_quoted(v, [], env) |> elem(0)}
+      end)
+      |> Keyword.validate!(defaults)
+
+    nodes_names =
+      NebulaAPI.Config.nodes()
+      |> Keyword.keys()
+
+    allow_unknown_self_node =
+      opts
+      |> Keyword.fetch!(:allow_unknown_self_node)
+
+    unless allow_unknown_self_node do
+      self_node = opts |> Keyword.fetch!(:self_node)
+
+      unknown_self_node =
+        not (nodes_names
+             |> Enum.member?(self_node))
+
+      if unknown_self_node do
+        raise CompileError,
+          line: env.line,
+          file: env.file,
+          description: """
+          Error using NebulaAPI inside #{inspect(env.module)} !
+
+          self_node is an unknown node, please check you're compiling for a known node :
+            -> self_node = #{inspect(self_node)}
+            -> node() = #{inspect(node())}
+
+          Configured nodes :
+          #{nodes_names |> Enum.map(&"\t- :\"#{&1}\"") |> Enum.join("\n")}
+          """
+      end
+    end
+
+    Module.register_attribute(env.module, :nebula_local_api_methods,
+      accumulate: true,
+      persist: true
     )
 
-    {
-      :__block__,
-      [],
-      [
-        quote do
-          require NebulaAPI
+    Module.register_attribute(env.module, :nebula_remote_api_methods,
+      accumulate: true,
+      persist: true
+    )
 
-          import NebulaAPI, only: [defapi: 2, on_node: 2]
+    Module.put_attribute(env.module, :nebula_api, opts)
 
-          use GenServer
-
-          def api_node(), do: unquote(api_node)
-
-          def api_node_id(), do: unquote(api_id)
-
-          def api_node_pid() do
-            :global.sync()
-            :global.whereis_name(api_node_id())
-          end
-
-          def init([]) do
-            if node() !== unquote(node()) do
-              raise """
-              The Module #{inspect(unquote(__CALLER__.module))} has been compiled
-              for the node #{inspect(unquote(node()))} and is now running on node #{inspect(node())}.
-              This is not supported. Please recompile the module for the correct node.
-              """
-            end
-
-            {:ok, []}
-          end
-        end,
-        if is_current_node do
-          quote do
-            def start_link([]) do
-              Logger.debug("Starting local API server.")
-              GenServer.start_link(__MODULE__, [], name: {:global, api_node_id()})
-            end
-          end
-        else
-          quote do
-            def start_link([]) do
-              Logger.debug("Calling init locally, but not starting server.")
-              {:ok, _} = init([])
-
-              :ignore
-            end
-          end
-        end
-      ]
-    }
+    :ok
   end
 
-  defmacro on_node(node_name, do: block) when is_atom(node_name) do
-    if node_name == node() do
-      block
+  defmacro defapi(nebula_ast, fn_ast, do: do_fn) do
+    execution_nodes = nebula_ast |> get_execution_nodes_from_nebula_ast!()
+    fundef = fn_ast |> NebulaAPI.AST.Parser.parse_fundef_ast()
+
+    self_node =
+      __CALLER__.module
+      |> Module.get_attribute(:nebula_api)
+      |> Keyword.fetch!(:self_node)
+
+    is_current_node =
+      execution_nodes
+      |> Keyword.keys()
+      |> Enum.member?(self_node)
+
+    __CALLER__.module
+    |> Module.put_attribute(
+      if is_current_node do
+        :nebula_local_api_methods
+      else
+        :nebula_remote_api_methods
+      end,
+      {fundef.name, fundef.args_count}
+    )
+
+    if is_current_node do
+      NebulaAPI.AST.Builder.build_function_for_local_node(fundef, do_fn)
+    else
+      NebulaAPI.AST.Builder.build_function_for_remote_node(fundef)
     end
+  rescue
+    e in CompileError ->
+      raise %{e | line: __CALLER__.line, file: __CALLER__.file}
   end
 
-  defmacro on_nodes(do: nodes) do
-    nodes_blocks =
-      nodes
-      |> Enum.map(fn
-        {:->, _meta, [[{node, _, _}] | [block]]} -> {node, block}
-        {:->, _meta, [[node] | [block]]} -> {node, block}
-      end)
-      |> Enum.into(%{})
+  @doc """
+    Just like if but for NebulaAPI. 
+    You use it with nebula api query language :
+    
+    ```elixir
+      on_nebula &nebula @node1 !@node2 do
+        # some code
+      end
+    ```
+  """
+  defmacro on_nebula(nebula_ast, opts) do
+    execution_nodes = nebula_ast |> get_execution_nodes_from_nebula_ast!()
 
-    nodes_blocks
-    |> Map.get(node(), nodes_blocks[:_])
+    self_node =
+      Module.get_attribute(__CALLER__.module, :nebula_api, [])
+      |> Keyword.get(:self_node, node())
+
+    is_current_node =
+      execution_nodes
+      |> Keyword.keys()
+      |> Enum.member?(self_node)
+
+    if(is_current_node, do: opts |> Keyword.get(:do), else: opts |> Keyword.get(:else))
+  rescue
+    e in CompileError ->
+      raise %{e | line: __CALLER__.line, file: __CALLER__.file}
   end
 
-  defmacro defapi({api_method_name, _meta, args}, do: block) do
-    # if not a block
-    if block == nil do
-      raise """
-      The `do` keyword is required for the API method definition.
-      """
+  defp get_execution_nodes_from_nebula_ast!(ast) do
+    parsed = ast |> NebulaAPI.AST.Parser.parse_nebula_ast()
+
+    import NebulaAPI.Config
+    require NebulaAPI.Config
+
+    parsed |> validate_with_nodes(nodes())
+
+    execution_nodes =
+      nodes()
+      |> nodes_for_nodes_names(parsed.nodes)
+      |> nodes_for_not_nodes_names(parsed.not_nodes)
+      |> nodes_for_not_tags(parsed.not_tags)
+      |> nodes_for_tags(parsed.tags)
+
+    if Enum.empty?(execution_nodes) do
+      raise CompileError,
+        description: """
+        No nodes found for execution of nebula macro
+
+        Parsed Nebula AST :
+          #{inspect(parsed)}
+        """
     end
 
-    nebula_api = Module.get_attribute(__CALLER__.module, :nebula_api, [])
-    is_current_node = nebula_api[:is_current_node]
-
-    {
-      :__block__,
-      [],
-      [
-        quote do
-          require Logger
-        end,
-        if is_current_node do
-          quote do
-            def unquote(api_method_name)(unquote_splicing(args)) do
-              Logger.debug("""
-              Local #{inspect(api_node())} API method:
-              #{inspect(unquote(api_method_name))}
-              with args: #{inspect(unquote(args))}
-
-              doin func
-              """)
-
-              unquote(block)
-            end
-
-            def handle_call(
-                  {unquote(api_method_name), args = [unquote_splicing(args)]},
-                  from,
-                  state
-                ) do
-              Logger.debug("""
-              Handling call from #{inspect(from)}
-              #{inspect(unquote(api_method_name))}
-              with args: #{inspect(unquote(args))}
-
-              Calling local api method
-              """)
-
-              {:reply, apply(__MODULE__, unquote(api_method_name), args), state}
-            end
-          end
-        else
-          quote do
-            def unquote(api_method_name)(unquote_splicing(args)) do
-              Logger.debug("""
-              Remote because #{inspect(api_node())} != #{inspect(node())}
-              Calling #{inspect(api_node())} API method:
-              {:global, #{inspect(api_node_id())}},
-              {#{inspect(unquote(api_method_name))}, #{inspect([unquote_splicing(args)])}}
-              """)
-
-              case api_node_pid() do
-                :undefined ->
-                  Logger.error("Remote API call failed: node not found")
-                  {:error, :node_not_found}
-
-                node ->
-                  Logger.debug("Remote API call: node found : #{inspect(node)}")
-
-                  GenServer.call(
-                    {:global, api_node_id()},
-                    {unquote(api_method_name), [unquote_splicing(args)]}
-                  )
-              end
-            end
-          end
-        end
-      ]
-    }
+    execution_nodes
   end
 end

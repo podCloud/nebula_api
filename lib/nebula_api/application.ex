@@ -11,12 +11,7 @@ defmodule NebulaAPI.Application do
     Logger.debug("Starting NebulaAPI Application.")
 
     children = [
-      # Start the PubSub system
-      # {Phoenix.PubSub, name: Social.PubSub},
-      # Start Finch
-      # {Finch, name: Social.Finch}
-      # Start a worker by calling: Social.Worker.start_link(arg)
-      # {Social.Worker, arg}
+      NebulaAPI.APIServer
     ]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: NebulaAPI.Supervisor)

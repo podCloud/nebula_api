@@ -1,11 +1,19 @@
 defmodule NebulaAPI.Test do
-  use NebulaAPI, node: "nebula@host.example"
+  use NebulaAPI
 
-  defapi hello_name(name) do
+  defapi [@worker, !(&db)], hello_name(name) do
     "Hello #{name} from #{node()}"
   end
 
-  defapi hello_world() do
+  defapi [&nebula, !@nebula], hello_world() do
     "Hello world from #{node()}"
+  end
+
+  on_nebula [&nebula, @nebula] do
+    IO.puts("Hello world from podcloud")
+  end
+
+  on_nebula [&youpod, !@nebula] do
+    IO.puts("Hello world from youpod context")
   end
 end
