@@ -4,10 +4,16 @@ defmodule NebulaAPI.AST.Builder do
       def unquote(build_function_signature(fn_name, fn_args)) do
         unquote(fn_do) |> __wrap_nebula_api_result()
       rescue
-        e -> {:error, e}
+        e ->
+          # raise error in another thread
+          require Logger
+          Logger.error(Exception.format(:error, e, __STACKTRACE__))
+          {:error, e}
       end
     end
   end
+
+  def raise_error(e), do: raise(e)
 
   def build_function_for_remote_node(%{name: fn_name, args: fn_args}) do
     quote do
