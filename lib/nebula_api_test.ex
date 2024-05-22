@@ -5,15 +5,15 @@ defmodule NebulaAPI.Test do
     "Hello #{name} from #{node()}"
   end
 
-  defapi [&nebula, !@nebula], hello_world() do
+  defapi [&nebula, !@api], hello_world() do
     "Hello world from #{node()}"
   end
 
-  on_nebula [&nebula, @nebula] do
+  on_nebula [&nebula, @api] do
     IO.puts("Hello world from podcloud")
   end
 
-  on_nebula [&youpod, !@nebula] do
+  on_nebula [&youpod, !@api] do
     IO.puts("Hello world from youpod context")
   end
 end
