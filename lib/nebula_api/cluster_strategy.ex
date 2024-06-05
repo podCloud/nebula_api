@@ -1,13 +1,11 @@
 defmodule NebulaAPI.ClusterStrategy do
   @moduledoc """
-  Assumes you have nodes that respond to the specified DNS query (A record), and which follow the node name pattern of
-  `foo@bar.host.test`. If your setup matches those assumptions, this strategy will periodically poll DNS to check if the host
-  exists and connect all nodes it finds using the original name provided.
+  It will just Node.ping/1 the nodes to check if they are alive. If the node is alive, it will be added to the cluster.
 
   ## Options
 
   * `interval` - How often to poll in milliseconds (optional; default: 5_000)
-  * `nodes` - Nodes names, DNS query will use the hostname (required; e.g. "app@my-app.example.com", will poll "my-app.example.com")
+  * `nodes` - Nodes names (required; e.g. "app@my-app.example.com")
 
   ## Usage
 
@@ -30,6 +28,7 @@ defmodule NebulaAPI.ClusterStrategy do
 
   import Cluster.Logger
 
+  alias ElixirSense.Plugins.Ecto.Query
   alias Cluster.Strategy
   alias Cluster.Strategy.State
 
@@ -59,7 +58,7 @@ defmodule NebulaAPI.ClusterStrategy do
            list_nodes: list_nodes
          } = state
        ) do
-    debug(topology, "Polling DNS for nodes")
+    debug(topology, "Polling for nodes")
     debug(topology, "Current nodelist: #{inspect(state.meta)}")
     debug(topology, "Topology: #{inspect(topology)}")
 
@@ -113,38 +112,9 @@ defmodule NebulaAPI.ClusterStrategy do
     Keyword.get(config, :interval, @default_polling_interval)
   end
 
-  defp get_nodes(%State{config: config} = state) do
-    query = Keyword.fetch(config, :nodes)
+  defp get_nodes(%State{config: config} = state), do: resolve(config[:nodes], state)
 
-    resolver =
-      Keyword.get(config, :resolver, fn query ->
-        query
-        |> String.split("@")
-        |> List.last()
-        |> String.to_charlist()
-        |> tap(&debug(state.topology, "Looking up DNS query #{inspect(&1)}"))
-        |> lookup_all_ips
-        |> Enum.any?()
-        |> tap(&debug(state.topology, "Resolved query #{inspect(query)} to #{inspect(&1)}"))
-      end)
-
-    resolve(query, resolver, state)
-  end
-
-  # query for all ips responding to a given dns query
-  # format ips as node names
-  # filter out me
-  defp resolve({:ok, nodes}, resolver, %State{topology: topology})
-       when is_list(nodes) do
-    nodes
-    |> Enum.map(fn n -> "#{n}" end)
-    |> Enum.reject(fn n -> "#{n}" == "#{node()}" end)
-    |> Enum.filter(fn n -> resolver.(n) end)
-    |> Enum.map(fn n -> :"#{n}" end)
-    |> tap(&debug(topology, "Resolved nodes: #{inspect(&1)}"))
-  end
-
-  defp resolve(:error, _resolver, %State{topology: topology}) do
+  defp resolve(nil, _resolver, %State{topology: topology}) do
     warn(
       topology,
       "nebula cluster strategy is selected, but nodes param is missing or not a list"
@@ -153,9 +123,21 @@ defmodule NebulaAPI.ClusterStrategy do
     []
   end
 
-  def lookup_all_ips(q) do
-    Enum.flat_map([:a, :aaaa], fn t ->
-      :inet_res.lookup(q, :in, t) |> dbg()
+  #
+  # query for all ips responding to a given dns query
+  # format ips as node names
+  # filter out me
+  defp resolve(nodes, %State{topology: topology})
+       when is_list(nodes) do
+    nodes
+    |> Enum.reject(fn n -> "#{n}" == "#{node()}" end)
+    |> Enum.map(fn n -> :"#{n}" end)
+    |> Enum.filter(fn
+      n ->
+        n
+        |> tap(&debug(topology, "Node.ping(#{&1}) => #{inspect(Node.ping(&1))}"))
+        |> Node.ping() == :pong
     end)
+    |> tap(&debug(topology, "Resolved nodes: #{inspect(&1)}"))
   end
 end
