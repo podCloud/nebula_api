@@ -26,20 +26,23 @@ defmodule NebulaAPI.ClusterStrategy do
   """
 
   use GenServer
+  use Cluster.Strategy
 
-  alias Cluster.Logger
+  import Cluster.Logger
+
   alias Cluster.Strategy
+  alias Cluster.Strategy.State
 
   @default_polling_interval 5_000
 
   def start_link(args), do: GenServer.start_link(__MODULE__, args)
 
   @impl true
-  def init([%{meta: nil} = state]) do
-    init([%{state | :meta => MapSet.new()}])
+  def init([%State{meta: nil} = state]) do
+    init([%State{state | :meta => MapSet.new()}])
   end
 
-  def init([%{} = state]) do
+  def init([%State{} = state]) do
     {:ok, do_poll(state)}
   end
 
@@ -49,13 +52,17 @@ defmodule NebulaAPI.ClusterStrategy do
   def handle_info(_, state), do: {:noreply, state}
 
   defp do_poll(
-         %{
+         %State{
            topology: topology,
            connect: connect,
            disconnect: disconnect,
            list_nodes: list_nodes
          } = state
        ) do
+    debug(topology, "Polling DNS for nodes")
+    debug(topology, "Current nodelist: #{inspect(state.meta)}")
+    debug(topology, "Topology: #{inspect(topology)}")
+
     new_nodelist = state |> get_nodes() |> MapSet.new()
     removed = MapSet.difference(state.meta, new_nodelist)
 
@@ -93,16 +100,20 @@ defmodule NebulaAPI.ClusterStrategy do
           end)
       end
 
+    debug(topology, "New nodelist: #{inspect(new_nodelist)}")
+    debug(topology, "Removed nodes: #{inspect(removed)}")
+
+    debug(topology, "Waiting for next poll in #{polling_interval(state)}ms")
     Process.send_after(self(), :poll, polling_interval(state))
 
-    %{state | :meta => new_nodelist}
+    %State{state | :meta => new_nodelist}
   end
 
-  defp polling_interval(%{config: config}) do
+  defp polling_interval(%State{config: config}) do
     Keyword.get(config, :interval, @default_polling_interval)
   end
 
-  defp get_nodes(%{config: config} = state) do
+  defp get_nodes(%State{config: config} = state) do
     query = Keyword.fetch(config, :nodes)
 
     resolver =
@@ -113,6 +124,7 @@ defmodule NebulaAPI.ClusterStrategy do
         |> String.to_charlist()
         |> lookup_all_ips
         |> Enum.any?()
+        |> tap(&debug(state.topology, "Resolved query #{inspect(query)} to #{inspect(&1)}"))
       end)
 
     resolve(query, resolver, state)
@@ -121,17 +133,18 @@ defmodule NebulaAPI.ClusterStrategy do
   # query for all ips responding to a given dns query
   # format ips as node names
   # filter out me
-  defp resolve({:ok, nodes}, resolver, %{topology: _topology})
+  defp resolve({:ok, nodes}, resolver, %State{topology: topology})
        when is_list(nodes) do
     nodes
     |> Enum.map(fn n -> "#{n}" end)
     |> Enum.reject(fn n -> "#{n}" == "#{node()}" end)
     |> Enum.filter(fn n -> resolver.(n) end)
     |> Enum.map(fn n -> :"#{n}" end)
+    |> tap(&debug(topology, "Resolved nodes: #{inspect(&1)}"))
   end
 
-  defp resolve(:error, _resolver, %{topology: topology}) do
-    Logger.warn(
+  defp resolve(:error, _resolver, %State{topology: topology}) do
+    warn(
       topology,
       "nebula cluster strategy is selected, but nodes param is missing or not a list"
     )
@@ -140,6 +153,8 @@ defmodule NebulaAPI.ClusterStrategy do
   end
 
   def lookup_all_ips(q) do
-    Enum.flat_map([:a, :aaaa], fn t -> :inet_res.lookup(q, :in, t) end)
+    Enum.flat_map([:a, :aaaa], fn t ->
+      :inet_res.lookup(q, :in, t)
+    end)
   end
 end
