@@ -122,6 +122,7 @@ defmodule NebulaAPI.ClusterStrategy do
         |> String.split("@")
         |> List.last()
         |> String.to_charlist()
+        |> tap(&debug(state.topology, "Looking up DNS query #{inspect(&1)}"))
         |> lookup_all_ips
         |> Enum.any?()
         |> tap(&debug(state.topology, "Resolved query #{inspect(query)} to #{inspect(&1)}"))
@@ -154,7 +155,7 @@ defmodule NebulaAPI.ClusterStrategy do
 
   def lookup_all_ips(q) do
     Enum.flat_map([:a, :aaaa], fn t ->
-      :inet_res.lookup(q, :in, t)
+      :inet_res.lookup(q, :in, t) |> dbg()
     end)
   end
 end
