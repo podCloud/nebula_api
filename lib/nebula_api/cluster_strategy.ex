@@ -83,20 +83,27 @@ defmodule NebulaAPI.ClusterStrategy do
       end
 
     new_nodelist =
-      case Strategy.connect_nodes(
-             topology,
-             connect,
-             list_nodes,
-             MapSet.to_list(new_nodelist)
-           ) do
-        :ok ->
-          new_nodelist
+      try do
+        case Strategy.connect_nodes(
+               topology,
+               connect,
+               list_nodes,
+               MapSet.to_list(new_nodelist)
+             ) do
+          :ok ->
+            new_nodelist
 
-        {:error, bad_nodes} ->
-          # Remove the nodes which should have been added, but couldn't be for some reason
-          Enum.reduce(bad_nodes, new_nodelist, fn {n, _}, acc ->
-            MapSet.delete(acc, n)
-          end)
+          {:error, bad_nodes} ->
+            error(topology, "error in connect_nodes: #{inspect(bad_nodes)}")
+            # Remove the nodes which should have been added, but couldn't be for some reason
+            Enum.reduce(bad_nodes, new_nodelist, fn {n, _}, acc ->
+              MapSet.delete(acc, n)
+            end)
+        end
+      rescue
+        e ->
+          error(topology, "error in connect_nodes: #{inspect(e)}")
+          []
       end
 
     debug(topology, "New nodelist: #{inspect(new_nodelist)}")
