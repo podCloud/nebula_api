@@ -1,7 +1,23 @@
 defmodule NebulaAPI.APIServer do
+  @moduledoc """
+  Supervisor that manages API workers and handles remote method calls.
+
+  Supports:
+  - Default unicast (first available worker)
+  - Unicast with node selector
+  - Multicast to multiple nodes
+
+  ## Multicast strategies
+  - `:all` - Wait for all responses (or timeout)
+  - `:first` - Return as soon as one response is received
+  - `:quorum` - Wait for N responses (configurable)
+  """
+
   use Supervisor
 
   require Logger
+
+  @default_timeout 5000
 
   def start_link(init_arg) do
     Supervisor.start_link(__MODULE__, init_arg, name: __MODULE__)
@@ -48,7 +64,112 @@ defmodule NebulaAPI.APIServer do
     :ok = :pg.join(:pg_nebula_api, {module, method}, worker_pid)
   end
 
-  def get_remote_method_worker(module, fn_call) do
+  @doc """
+  Calls a remote method with optional routing options.
+
+  ## Options
+  - `:timeout` - Timeout in milliseconds (default: #{@default_timeout})
+  - `:node_selector` - Function that takes nodes_info map and returns node(s) to call
+  - `:multicast` - If true, calls multiple nodes and returns list of results
+  - `:strategy` - Multicast strategy: `:all`, `:first`, `:quorum` (default: `:all`)
+  - `:quorum_count` - Number of responses needed for `:quorum` strategy
+
+  ## Returns
+  - For unicast: The result from the remote call
+  - For multicast: List of `{:ok, result, node}`, `{:error, reason, node}`, or `{:timeout, node}`
+  """
+  def call_remote_method(module, fn_call, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout)
+    node_selector = Keyword.get(opts, :node_selector)
+    multicast = Keyword.get(opts, :multicast, false)
+    strategy = Keyword.get(opts, :strategy, :all)
+
+    Logger.debug("""
+      Will do remote execution on #{inspect(module)}
+      with fn_call : #{inspect(fn_call)}
+      opts: #{inspect(opts)}
+    """)
+
+    cond do
+      multicast && node_selector ->
+        # Multicast with selector
+        call_selected_workers(module, fn_call, node_selector, timeout, strategy, opts)
+
+      multicast ->
+        # Multicast to all workers
+        call_all_workers(module, fn_call, timeout, strategy, opts)
+
+      node_selector ->
+        # Unicast with selector
+        call_selected_worker(module, fn_call, node_selector, timeout)
+
+      true ->
+        # Default unicast (first available worker)
+        call_first_worker(module, fn_call, timeout)
+    end
+  rescue
+    err -> {:error, err}
+  end
+
+  @doc """
+  Gets all available workers for a method across all nodes.
+  """
+  def get_all_workers(module, fn_call) do
+    fn_name = elem(fn_call, 0)
+    fn_args = Tuple.delete_at(fn_call, 0)
+    args_count = tuple_size(fn_args)
+
+    :pg.get_members(:pg_nebula_api, {module, {fn_name, args_count}})
+  end
+
+  @doc """
+  Builds the nodes_info map with metadata about each node.
+
+  Returns a map like:
+  ```
+  %{
+    :"worker@host" => %{tags: [:worker, :video], not_tags: [:db]},
+    :"api@host" => %{tags: [:api, :storage], not_tags: []}
+  }
+  ```
+  """
+  def build_nodes_info do
+    NebulaAPI.Config.nodes()
+    |> Enum.map(fn {node_name, tags} ->
+      tags_list =
+        case tags do
+          t when is_list(t) -> t
+          t when is_atom(t) -> [t]
+        end
+
+      {node_name, %{tags: tags_list, not_tags: []}}
+    end)
+    |> Map.new()
+  end
+
+  @doc """
+  Gets nodes_info for workers that are actually available for a method.
+  Only includes nodes that have registered workers.
+  """
+  def get_available_nodes_info(module, fn_call) do
+    workers = get_all_workers(module, fn_call)
+    all_nodes_info = build_nodes_info()
+
+    # Get the nodes that have workers
+    worker_nodes =
+      workers
+      |> Enum.map(&node/1)
+      |> Enum.uniq()
+
+    # Filter nodes_info to only include nodes with workers
+    all_nodes_info
+    |> Enum.filter(fn {node_name, _info} -> node_name in worker_nodes end)
+    |> Map.new()
+  end
+
+  # Private functions
+
+  defp get_remote_method_worker(module, fn_call) do
     fn_name = elem(fn_call, 0)
     fn_args = Tuple.delete_at(fn_call, 0)
     args_count = tuple_size(fn_args)
@@ -57,20 +178,209 @@ defmodule NebulaAPI.APIServer do
     |> List.first()
   end
 
-  def call_remote_method(module, fn_call) do
-    Logger.debug("""
-      Will do remote execution on #{inspect(module)} 
-      with fn_call : #{inspect(fn_call)}
-    """)
-
+  defp call_first_worker(module, fn_call, timeout) do
     with worker <- module |> get_remote_method_worker(fn_call),
          {:is_pid, true} <- {:is_pid, is_pid(worker)} do
-      worker |> GenServer.call(fn_call, 500)
+      GenServer.call(worker, fn_call, timeout)
     else
       {:is_pid, false} -> {:error, "No worker found for remote method #{inspect(fn_call)}"}
     end
-  rescue
-    err -> {:error, err}
+  end
+
+  defp call_selected_worker(module, fn_call, selector_fn, timeout) do
+    nodes_info = get_available_nodes_info(module, fn_call)
+    workers = get_all_workers(module, fn_call)
+
+    # Map workers to their nodes
+    workers_by_node =
+      workers
+      |> Enum.group_by(&node/1)
+      |> Enum.map(fn {n, pids} -> {n, List.first(pids)} end)
+      |> Map.new()
+
+    # Call selector to get target node
+    selected_node = selector_fn.(nodes_info)
+
+    if selected_node && Map.has_key?(workers_by_node, selected_node) do
+      worker = workers_by_node[selected_node]
+      GenServer.call(worker, fn_call, timeout)
+    else
+      {:error, "No worker found on selected node #{inspect(selected_node)}"}
+    end
+  end
+
+  defp call_selected_workers(module, fn_call, selector_fn, timeout, strategy, opts) do
+    nodes_info = get_available_nodes_info(module, fn_call)
+    workers = get_all_workers(module, fn_call)
+
+    # Map workers to their nodes
+    workers_by_node =
+      workers
+      |> Enum.group_by(&node/1)
+      |> Enum.map(fn {n, pids} -> {n, List.first(pids)} end)
+      |> Map.new()
+
+    # Call selector to get target nodes
+    selected_nodes = selector_fn.(nodes_info)
+    selected_nodes = if is_list(selected_nodes), do: selected_nodes, else: [selected_nodes]
+
+    # Filter to only nodes with workers
+    target_workers =
+      selected_nodes
+      |> Enum.filter(&Map.has_key?(workers_by_node, &1))
+      |> Enum.map(fn node -> {node, workers_by_node[node]} end)
+
+    do_multicast_call(target_workers, fn_call, timeout, strategy, opts)
+  end
+
+  defp call_all_workers(module, fn_call, timeout, strategy, opts) do
+    workers = get_all_workers(module, fn_call)
+
+    target_workers =
+      workers
+      |> Enum.map(fn worker -> {node(worker), worker} end)
+      |> Enum.uniq_by(fn {n, _} -> n end)
+
+    do_multicast_call(target_workers, fn_call, timeout, strategy, opts)
+  end
+
+  defp do_multicast_call([], _fn_call, _timeout, _strategy, _opts) do
+    []
+  end
+
+  defp do_multicast_call(target_workers, fn_call, timeout, strategy, opts) do
+    case strategy do
+      :first ->
+        do_multicast_first(target_workers, fn_call, timeout)
+
+      :quorum ->
+        quorum_count = Keyword.get(opts, :quorum_count, div(length(target_workers), 2) + 1)
+        do_multicast_quorum(target_workers, fn_call, timeout, quorum_count)
+
+      _all ->
+        do_multicast_all(target_workers, fn_call, timeout)
+    end
+  end
+
+  defp do_multicast_all(target_workers, fn_call, timeout) do
+    target_workers
+    |> Enum.map(fn {target_node, worker} ->
+      Task.async(fn ->
+        try do
+          result = GenServer.call(worker, fn_call, timeout)
+          {:ok, result, target_node}
+        catch
+          :exit, {:timeout, _} -> {:timeout, target_node}
+          :exit, reason -> {:error, reason, target_node}
+        end
+      end)
+    end)
+    |> Task.await_many(timeout + 100)
+  end
+
+  defp do_multicast_first(target_workers, fn_call, timeout) do
+    parent = self()
+    ref = make_ref()
+
+    # Spawn tasks for each worker
+    pids =
+      target_workers
+      |> Enum.map(fn {target_node, worker} ->
+        spawn_link(fn ->
+          try do
+            result = GenServer.call(worker, fn_call, timeout)
+            send(parent, {ref, {:ok, result, target_node}})
+          catch
+            :exit, {:timeout, _} -> send(parent, {ref, {:timeout, target_node}})
+            :exit, reason -> send(parent, {ref, {:error, reason, target_node}})
+          end
+        end)
+      end)
+
+    # Wait for first successful response
+    result = wait_for_first(ref, length(target_workers), timeout, [])
+
+    # Kill remaining tasks
+    Enum.each(pids, fn pid ->
+      if Process.alive?(pid), do: Process.exit(pid, :kill)
+    end)
+
+    result
+  end
+
+  defp wait_for_first(_ref, 0, _timeout, results) do
+    # All failed, return all results
+    results
+  end
+
+  defp wait_for_first(ref, remaining, timeout, results) do
+    receive do
+      {^ref, {:ok, _, _} = success} ->
+        # Got a success, return immediately
+        success
+
+      {^ref, failure} ->
+        # Got a failure, continue waiting
+        wait_for_first(ref, remaining - 1, timeout, [failure | results])
+    after
+      timeout ->
+        # Timeout, return what we have
+        results
+    end
+  end
+
+  defp do_multicast_quorum(target_workers, fn_call, timeout, quorum_count) do
+    parent = self()
+    ref = make_ref()
+
+    # Spawn tasks for each worker
+    pids =
+      target_workers
+      |> Enum.map(fn {target_node, worker} ->
+        spawn_link(fn ->
+          try do
+            result = GenServer.call(worker, fn_call, timeout)
+            send(parent, {ref, {:ok, result, target_node}})
+          catch
+            :exit, {:timeout, _} -> send(parent, {ref, {:timeout, target_node}})
+            :exit, reason -> send(parent, {ref, {:error, reason, target_node}})
+          end
+        end)
+      end)
+
+    # Wait for quorum
+    result = wait_for_quorum(ref, length(target_workers), timeout, quorum_count, [], [])
+
+    # Kill remaining tasks
+    Enum.each(pids, fn pid ->
+      if Process.alive?(pid), do: Process.exit(pid, :kill)
+    end)
+
+    result
+  end
+
+  defp wait_for_quorum(_ref, 0, _timeout, _needed, successes, failures) do
+    # All responses received
+    successes ++ failures
+  end
+
+  defp wait_for_quorum(_ref, _remaining, _timeout, 0, successes, failures) do
+    # Quorum reached
+    successes ++ failures
+  end
+
+  defp wait_for_quorum(ref, remaining, timeout, needed, successes, failures) do
+    receive do
+      {^ref, {:ok, _, _} = success} ->
+        wait_for_quorum(ref, remaining - 1, timeout, needed - 1, [success | successes], failures)
+
+      {^ref, failure} ->
+        wait_for_quorum(ref, remaining - 1, timeout, needed, successes, [failure | failures])
+    after
+      timeout ->
+        # Timeout, return what we have
+        successes ++ failures
+    end
   end
 
   defp pg_spec(),
