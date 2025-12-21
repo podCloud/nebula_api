@@ -11,6 +11,41 @@ defmodule NebulaAPI.APIServer do
   - `:all` - Wait for all responses (or timeout)
   - `:first` - Return as soon as one response is received
   - `:quorum` - Wait for N responses (configurable)
+
+  ## Node Info Cache
+
+  Node information is cached in an ETS table (`:nebula_nodes_cache`) to avoid
+  expensive RPC calls on every request. Each node entry includes a `last_seen_at`
+  timestamp that indicates when the node was last successfully contacted.
+
+  This allows detection of stale nodes - a node may still be marked as `connected: true`
+  but if `last_seen_at` is old, it might be unresponsive.
+
+  ## Intelligent Node Selection Examples
+
+  ```elixir
+  # Select the node with lowest memory usage
+  call_on_node fn nodes_info ->
+    nodes_info
+    |> Enum.filter(fn {_, info} -> info.connected && info.runtime end)
+    |> Enum.min_by(fn {_, info} -> info.runtime.memory_percent end)
+    |> elem(0)
+  end do
+    MyAPI.heavy_task()
+  end
+
+  # Select nodes seen in the last 30 seconds
+  call_on_nodes fn nodes_info ->
+    thirty_seconds_ago = DateTime.add(DateTime.utc_now(), -30, :second)
+    nodes_info
+    |> Enum.filter(fn {_, info} ->
+      info.last_seen_at && DateTime.compare(info.last_seen_at, thirty_seconds_ago) == :gt
+    end)
+    |> Enum.map(fn {node, _} -> node end)
+  end do
+    MyAPI.broadcast_update()
+  end
+  ```
   """
 
   use Supervisor
@@ -18,6 +53,7 @@ defmodule NebulaAPI.APIServer do
   require Logger
 
   @default_timeout 5000
+  @nodes_cache_table :nebula_nodes_cache
 
   def start_link(init_arg) do
     Supervisor.start_link(__MODULE__, init_arg, name: __MODULE__)
@@ -25,6 +61,9 @@ defmodule NebulaAPI.APIServer do
 
   @impl true
   def init(_init_arg) do
+    # Create ETS table for nodes cache
+    :ets.new(@nodes_cache_table, [:set, :public, :named_table, read_concurrency: true])
+
     Supervisor.init(
       [
         pg_spec()
@@ -124,6 +163,7 @@ defmodule NebulaAPI.APIServer do
 
   @doc """
   Builds the nodes_info map with metadata about each node.
+  Results are cached in ETS and updated with `last_seen_at` timestamps.
 
   Returns a map like:
   ```
@@ -134,22 +174,27 @@ defmodule NebulaAPI.APIServer do
       host: "host.example",
       tags: [:worker, :video],
       connected: true,
+      last_seen_at: ~U[2024-01-15 10:30:00Z],
       runtime: %{
         memory_used_mb: 256,
         memory_total_mb: 1024,
         memory_percent: 25.0,
         process_count: 1234,
         schedulers: 8,
-        otp_release: "26"
+        otp_release: "26",
+        uptime_seconds: 3600
       }
     }
   }
   ```
 
-  Runtime info is only available for connected nodes.
+  Runtime info and `last_seen_at` are only updated for connected/reachable nodes.
+  If a node becomes unreachable, `last_seen_at` keeps its last value, allowing
+  detection of stale nodes.
   """
   def build_nodes_info do
     connected_nodes = [node() | Node.list()]
+    now = DateTime.utc_now()
 
     NebulaAPI.Config.nodes()
     |> Enum.map(fn {node_name, tags} ->
@@ -164,18 +209,72 @@ defmodule NebulaAPI.APIServer do
       short_name = String.to_atom(short_name_str)
       is_connected = node_name in connected_nodes
 
+      # Get cached info for last_seen_at
+      cached = get_cached_node_info(node_name)
+
+      # Try to get runtime info if connected
+      {runtime, last_seen_at} =
+        if is_connected do
+          case get_node_runtime_info(node_name) do
+            nil ->
+              # Node didn't respond, keep cached last_seen_at
+              {nil, cached[:last_seen_at]}
+
+            runtime_info ->
+              # Node responded, update last_seen_at
+              {runtime_info, now}
+          end
+        else
+          # Not connected, keep cached values
+          {cached[:runtime], cached[:last_seen_at]}
+        end
+
       info = %{
         short_name: short_name,
         long_name: node_name,
         host: host,
         tags: tags_list,
         connected: is_connected,
-        runtime: if(is_connected, do: get_node_runtime_info(node_name), else: nil)
+        last_seen_at: last_seen_at,
+        runtime: runtime
       }
+
+      # Update cache
+      cache_node_info(node_name, info)
 
       {node_name, info}
     end)
     |> Map.new()
+  end
+
+  @doc """
+  Gets cached node info from ETS.
+  Returns empty map if not found.
+  """
+  def get_cached_node_info(node_name) do
+    case :ets.lookup(@nodes_cache_table, node_name) do
+      [{^node_name, info}] -> info
+      [] -> %{}
+    end
+  rescue
+    ArgumentError -> %{}  # Table doesn't exist yet
+  end
+
+  @doc """
+  Caches node info in ETS.
+  """
+  def cache_node_info(node_name, info) do
+    :ets.insert(@nodes_cache_table, {node_name, info})
+  rescue
+    ArgumentError -> :ok  # Table doesn't exist yet
+  end
+
+  @doc """
+  Refreshes the nodes cache by fetching fresh runtime info from all nodes.
+  Call this periodically (e.g., every 30 seconds) to keep the cache fresh.
+  """
+  def refresh_nodes_cache do
+    build_nodes_info()
   end
 
   @doc """
