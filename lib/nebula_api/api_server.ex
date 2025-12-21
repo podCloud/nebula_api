@@ -128,12 +128,29 @@ defmodule NebulaAPI.APIServer do
   Returns a map like:
   ```
   %{
-    :"worker@host" => %{tags: [:worker, :video], not_tags: [:db]},
-    :"api@host" => %{tags: [:api, :storage], not_tags: []}
+    :"worker@host.example" => %{
+      short_name: :worker,
+      long_name: :"worker@host.example",
+      host: "host.example",
+      tags: [:worker, :video],
+      connected: true,
+      runtime: %{
+        memory_used_mb: 256,
+        memory_total_mb: 1024,
+        memory_percent: 25.0,
+        process_count: 1234,
+        schedulers: 8,
+        otp_release: "26"
+      }
+    }
   }
   ```
+
+  Runtime info is only available for connected nodes.
   """
   def build_nodes_info do
+    connected_nodes = [node() | Node.list()]
+
     NebulaAPI.Config.nodes()
     |> Enum.map(fn {node_name, tags} ->
       tags_list =
@@ -142,9 +159,60 @@ defmodule NebulaAPI.APIServer do
           t when is_atom(t) -> [t]
         end
 
-      {node_name, %{tags: tags_list, not_tags: []}}
+      node_str = to_string(node_name)
+      [short_name_str, host] = String.split(node_str, "@", parts: 2)
+      short_name = String.to_atom(short_name_str)
+      is_connected = node_name in connected_nodes
+
+      info = %{
+        short_name: short_name,
+        long_name: node_name,
+        host: host,
+        tags: tags_list,
+        connected: is_connected,
+        runtime: if(is_connected, do: get_node_runtime_info(node_name), else: nil)
+      }
+
+      {node_name, info}
     end)
     |> Map.new()
+  end
+
+  @doc """
+  Gets runtime information for a specific node.
+  Returns nil if the node is not reachable.
+  """
+  def get_node_runtime_info(target_node) when target_node == node() do
+    # Local node - get info directly
+    collect_runtime_info()
+  end
+
+  def get_node_runtime_info(target_node) do
+    # Remote node - use RPC
+    case :rpc.call(target_node, __MODULE__, :collect_runtime_info, [], 5000) do
+      {:badrpc, _reason} -> nil
+      info -> info
+    end
+  end
+
+  @doc """
+  Collects runtime info for the current node.
+  This function is called locally or via RPC.
+  """
+  def collect_runtime_info do
+    memory = :erlang.memory()
+    memory_total = memory[:total]
+    memory_used = memory_total - memory[:free]
+
+    %{
+      memory_used_mb: div(memory_used, 1_048_576),
+      memory_total_mb: div(memory_total, 1_048_576),
+      memory_percent: Float.round(memory_used / memory_total * 100, 1),
+      process_count: :erlang.system_info(:process_count),
+      schedulers: :erlang.system_info(:schedulers_online),
+      otp_release: :erlang.system_info(:otp_release) |> to_string(),
+      uptime_seconds: :erlang.statistics(:wall_clock) |> elem(0) |> div(1000)
+    }
   end
 
   @doc """
