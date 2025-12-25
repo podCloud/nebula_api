@@ -185,9 +185,23 @@ defmodule NebulaAPI.AST do
         Process.put(:nebula_call_opts, unquote(opts))
         unquote(block)
       after
-        Process.put(:nebula_node_selector, old_selector)
-        Process.put(:nebula_call_mode, old_mode)
-        Process.put(:nebula_call_opts, old_opts)
+        if old_selector do
+          Process.put(:nebula_node_selector, old_selector)
+        else
+          Process.delete(:nebula_node_selector)
+        end
+
+        if old_mode do
+          Process.put(:nebula_call_mode, old_mode)
+        else
+          Process.delete(:nebula_call_mode)
+        end
+
+        if old_opts do
+          Process.put(:nebula_call_opts, old_opts)
+        else
+          Process.delete(:nebula_call_opts)
+        end
       end
     end
   end
@@ -244,9 +258,23 @@ defmodule NebulaAPI.AST do
         Process.put(:nebula_call_opts, unquote(opts))
         unquote(block)
       after
-        Process.put(:nebula_node_selector, old_selector)
-        Process.put(:nebula_call_mode, old_mode)
-        Process.put(:nebula_call_opts, old_opts)
+        if old_selector do
+          Process.put(:nebula_node_selector, old_selector)
+        else
+          Process.delete(:nebula_node_selector)
+        end
+
+        if old_mode do
+          Process.put(:nebula_call_mode, old_mode)
+        else
+          Process.delete(:nebula_call_mode)
+        end
+
+        if old_opts do
+          Process.put(:nebula_call_opts, old_opts)
+        else
+          Process.delete(:nebula_call_opts)
+        end
       end
     end
   end

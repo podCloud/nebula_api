@@ -49,6 +49,7 @@ defmodule NebulaAPI.APIServer do
   """
 
   use Supervisor
+  use NebulaAPI, self_node: Application.compile_env(:nebula_api, :default_opts)[:self_node]
 
   require Logger
 
@@ -193,51 +194,49 @@ defmodule NebulaAPI.APIServer do
   detection of stale nodes.
   """
   def build_nodes_info do
-    connected_nodes = [node() | Node.list()]
     now = DateTime.utc_now()
+    connected_nodes = [node() | Node.list()]
 
+    # Use call_on_all_nodes to parallelize health data collection
+    health_results =
+      call_on_all_nodes(timeout: 5000) do
+        __MODULE__.node_health_data()
+      end
+
+    # Build a map of successful responses by node
+    health_by_node =
+      health_results
+      |> Enum.filter(fn
+        {:ok, _data, _node} -> true
+        _ -> false
+      end)
+      |> Enum.map(fn {:ok, data, node} -> {node, data} end)
+      |> Map.new()
+
+    # Build full nodes_info including nodes that didn't respond
     NebulaAPI.Config.nodes()
-    |> Enum.map(fn {node_name, tags} ->
-      tags_list =
-        case tags do
-          t when is_list(t) -> t
-          t when is_atom(t) -> [t]
-        end
-
-      node_str = to_string(node_name)
-      [short_name_str, host] = String.split(node_str, "@", parts: 2)
-      short_name = String.to_atom(short_name_str)
+    |> Enum.map(fn {node_name, _tags} ->
       is_connected = node_name in connected_nodes
-
-      # Get cached info for last_seen_at
       cached = get_cached_node_info(node_name)
 
-      # Try to get runtime info if connected
-      {runtime, last_seen_at} =
-        if is_connected do
-          case get_node_runtime_info(node_name) do
-            nil ->
-              # Node didn't respond, keep cached last_seen_at
-              {nil, cached[:last_seen_at]}
+      info =
+        case Map.get(health_by_node, node_name) do
+          nil ->
+            # Node didn't respond, use cached data
+            %{
+              short_name: cached[:short_name] || node_name,
+              long_name: node_name,
+              host: cached[:host] || "unknown",
+              tags: cached[:tags] || [],
+              connected: is_connected,
+              last_seen_at: cached[:last_seen_at],
+              runtime: cached[:runtime]
+            }
 
-            runtime_info ->
-              # Node responded, update last_seen_at
-              {runtime_info, now}
-          end
-        else
-          # Not connected, keep cached values
-          {cached[:runtime], cached[:last_seen_at]}
+          health_data ->
+            # Node responded successfully
+            Map.put(health_data, :last_seen_at, now)
         end
-
-      info = %{
-        short_name: short_name,
-        long_name: node_name,
-        host: host,
-        tags: tags_list,
-        connected: is_connected,
-        last_seen_at: last_seen_at,
-        runtime: runtime
-      }
 
       # Update cache
       cache_node_info(node_name, info)
@@ -280,30 +279,14 @@ defmodule NebulaAPI.APIServer do
   end
 
   @doc """
-  Gets runtime information for a specific node.
-  Returns nil if the node is not reachable.
-  """
-  def get_node_runtime_info(target_node) when target_node == node() do
-    # Local node - get info directly
-    collect_runtime_info()
-  end
-
-  def get_node_runtime_info(target_node) do
-    # Remote node - use RPC
-    case :rpc.call(target_node, __MODULE__, :collect_runtime_info, [], 5000) do
-      {:badrpc, _reason} -> nil
-      info -> info
-    end
-  end
-
-  @doc """
   Collects runtime info for the current node.
-  This function is called locally or via RPC.
+  This is a private helper function used by node_health_data/0.
   """
   def collect_runtime_info do
     memory = :erlang.memory()
     memory_total = memory[:total]
-    memory_used = memory_total - memory[:free]
+    # Calculate used memory from actual Erlang memory components
+    memory_used = memory[:processes] + memory[:binary] + memory[:ets]
 
     %{
       memory_used_mb: div(memory_used, 1_048_576),
@@ -313,6 +296,51 @@ defmodule NebulaAPI.APIServer do
       schedulers: :erlang.system_info(:schedulers_online),
       otp_release: :erlang.system_info(:otp_release) |> to_string(),
       uptime_seconds: :erlang.statistics(:wall_clock) |> elem(0) |> div(1000)
+    }
+  end
+
+  @doc """
+  NebulaAPI endpoint for collecting node health data.
+  Returns runtime info and metadata for the current node.
+  """
+  import NebulaAPI.Config
+  require NebulaAPI.Config
+
+  defapi nodes(), node_health_data() do
+    node_name = node()
+    node_str = to_string(node_name)
+
+    # Parse node name safely
+    {short_name, host} =
+      case String.split(node_str, "@", parts: 2) do
+        [short_name_str, host_str] ->
+          {String.to_atom(short_name_str), host_str}
+
+        _ ->
+          # Malformed node name, use defaults
+          Logger.warning("Malformed node name: #{node_str}")
+          {node_name, "unknown"}
+      end
+
+    # Find this node's tags from config
+    tags =
+      NebulaAPI.Config.nodes()
+      |> Enum.find_value(fn {n, t} ->
+        if n == node_name do
+          case t do
+            t when is_list(t) -> t
+            t when is_atom(t) -> [t]
+          end
+        end
+      end) || []
+
+    %{
+      short_name: short_name,
+      long_name: node_name,
+      host: host,
+      tags: tags,
+      connected: true,
+      runtime: collect_runtime_info()
     }
   end
 
@@ -451,11 +479,11 @@ defmodule NebulaAPI.APIServer do
     parent = self()
     ref = make_ref()
 
-    # Spawn tasks for each worker
-    pids =
+    # Spawn tasks for each worker using Task.async
+    tasks =
       target_workers
       |> Enum.map(fn {target_node, worker} ->
-        spawn_link(fn ->
+        Task.async(fn ->
           try do
             result = GenServer.call(worker, fn_call, timeout)
             send(parent, {ref, {:ok, result, target_node}})
@@ -469,9 +497,9 @@ defmodule NebulaAPI.APIServer do
     # Wait for first successful response
     result = wait_for_first(ref, length(target_workers), timeout, [])
 
-    # Kill remaining tasks
-    Enum.each(pids, fn pid ->
-      if Process.alive?(pid), do: Process.exit(pid, :kill)
+    # Shutdown remaining tasks gracefully
+    Enum.each(tasks, fn task ->
+      Task.shutdown(task, :brutal_kill)
     end)
 
     result
@@ -502,11 +530,11 @@ defmodule NebulaAPI.APIServer do
     parent = self()
     ref = make_ref()
 
-    # Spawn tasks for each worker
-    pids =
+    # Spawn tasks for each worker using Task.async
+    tasks =
       target_workers
       |> Enum.map(fn {target_node, worker} ->
-        spawn_link(fn ->
+        Task.async(fn ->
           try do
             result = GenServer.call(worker, fn_call, timeout)
             send(parent, {ref, {:ok, result, target_node}})
@@ -520,9 +548,9 @@ defmodule NebulaAPI.APIServer do
     # Wait for quorum
     result = wait_for_quorum(ref, length(target_workers), timeout, quorum_count, [], [])
 
-    # Kill remaining tasks
-    Enum.each(pids, fn pid ->
-      if Process.alive?(pid), do: Process.exit(pid, :kill)
+    # Shutdown remaining tasks gracefully
+    Enum.each(tasks, fn task ->
+      Task.shutdown(task, :brutal_kill)
     end)
 
     result
