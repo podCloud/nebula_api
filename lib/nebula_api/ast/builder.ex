@@ -88,10 +88,10 @@ defmodule NebulaAPI.AST.Builder do
           not is_nil(context_selector) ->
             unquote(remote_fn_name)(
               unquote_splicing(fn_arg_vars),
-              Keyword.merge(merged_opts, [
+              Keyword.merge(merged_opts,
                 node_selector: context_selector,
                 multicast: context_mode == :multicast
-              ])
+              )
             )
 
           # If opts explicitly contain node_selector or multicast

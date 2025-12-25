@@ -28,7 +28,6 @@ defmodule NebulaAPI.ClusterStrategy do
 
   import Cluster.Logger
 
-  alias ElixirSense.Plugins.Ecto.Query
   alias Cluster.Strategy
   alias Cluster.Strategy.State
 

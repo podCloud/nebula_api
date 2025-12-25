@@ -26,7 +26,6 @@ defmodule NebulaAPI.AST do
                    call_on_nodes: 2,
                    call_on_nodes: 3,
                    call_on_all_nodes: 1,
-                   call_on_all_nodes: 2,
                    __wrap_nebula_api_result: 1
                  ]
                )
@@ -284,7 +283,7 @@ defmodule NebulaAPI.AST do
   end
 
   # Build a selector function from either a Nebula AST expression or a function
-  defp build_selector(selector_or_nebula_ast, mode, caller) do
+  defp build_selector(selector_or_nebula_ast, mode, _caller) do
     # Check if it looks like a Nebula AST (starts with @, &, !, or is a list)
     if is_nebula_ast?(selector_or_nebula_ast) do
       # Parse the Nebula AST at compile time to get the target nodes

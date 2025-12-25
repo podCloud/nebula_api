@@ -257,7 +257,8 @@ defmodule NebulaAPI.APIServer do
       [] -> %{}
     end
   rescue
-    ArgumentError -> %{}  # Table doesn't exist yet
+    # Table doesn't exist yet
+    ArgumentError -> %{}
   end
 
   @doc """
@@ -266,7 +267,8 @@ defmodule NebulaAPI.APIServer do
   def cache_node_info(node_name, info) do
     :ets.insert(@nodes_cache_table, {node_name, info})
   rescue
-    ArgumentError -> :ok  # Table doesn't exist yet
+    # Table doesn't exist yet
+    ArgumentError -> :ok
   end
 
   @doc """
