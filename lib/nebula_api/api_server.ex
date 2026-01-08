@@ -602,6 +602,18 @@ defmodule NebulaAPI.APIServer do
   end
 
   defp do_multicast_quorum(target_workers, fn_call, timeout, quorum_count) do
+    worker_count = length(target_workers)
+
+    # Validate that quorum is achievable
+    if quorum_count > worker_count do
+      Logger.warning(
+        "Quorum count #{quorum_count} is greater than available workers #{worker_count}"
+      )
+    end
+
+    # Ensure quorum_count is at least 1 and at most worker_count
+    effective_quorum = max(1, min(quorum_count, worker_count))
+
     parent = self()
     ref = make_ref()
 
@@ -620,8 +632,8 @@ defmodule NebulaAPI.APIServer do
         end)
       end)
 
-    # Wait for quorum
-    result = wait_for_quorum(ref, length(target_workers), timeout, quorum_count, [], [])
+    # Wait for quorum with validation
+    result = wait_for_quorum(ref, worker_count, timeout, effective_quorum, [], [])
 
     # Shutdown remaining tasks gracefully
     Enum.each(tasks, fn task ->
@@ -631,27 +643,42 @@ defmodule NebulaAPI.APIServer do
     result
   end
 
-  defp wait_for_quorum(_ref, 0, _timeout, _needed, successes, failures) do
-    # All responses received
+  defp wait_for_quorum(_ref, 0, _timeout, needed, successes, failures) do
+    # All responses received - check if we actually got enough successes
+    if needed > 0 do
+      Logger.warning("Quorum not reached: needed #{needed} more successes")
+    end
+
     successes ++ failures
   end
 
   defp wait_for_quorum(_ref, _remaining, _timeout, 0, successes, failures) do
-    # Quorum reached
+    # Quorum reached with enough successes
     successes ++ failures
   end
 
   defp wait_for_quorum(ref, remaining, timeout, needed, successes, failures) do
-    receive do
-      {^ref, {:ok, _, _} = success} ->
-        wait_for_quorum(ref, remaining - 1, timeout, needed - 1, [success | successes], failures)
+    # Check if quorum is still achievable (remaining workers >= needed successes)
+    if remaining < needed do
+      # Not enough workers left to reach quorum, return early
+      Logger.warning("Quorum unreachable: #{remaining} workers remaining but need #{needed}")
+      successes ++ failures
+    else
+      receive do
+        {^ref, {:ok, _, _} = success} ->
+          wait_for_quorum(ref, remaining - 1, timeout, needed - 1, [success | successes], failures)
 
-      {^ref, failure} ->
-        wait_for_quorum(ref, remaining - 1, timeout, needed, successes, [failure | failures])
-    after
-      timeout ->
-        # Timeout, return what we have
-        successes ++ failures
+        {^ref, failure} ->
+          wait_for_quorum(ref, remaining - 1, timeout, needed, successes, [failure | failures])
+      after
+        timeout ->
+          # Timeout, return what we have with warning if quorum not reached
+          if needed > 0 do
+            Logger.warning("Quorum timeout: still needed #{needed} more successes")
+          end
+
+          successes ++ failures
+      end
     end
   end
 
