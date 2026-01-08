@@ -49,7 +49,6 @@ defmodule NebulaAPI.APIServer do
   """
 
   use Supervisor
-  use NebulaAPI, self_node: Application.compile_env(:nebula_api, :default_opts)[:self_node]
 
   require Logger
 
