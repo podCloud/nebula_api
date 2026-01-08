@@ -62,8 +62,15 @@ defmodule NebulaAPI.APIServer do
 
   @impl true
   def init(_init_arg) do
-    # Create ETS table for nodes cache
-    :ets.new(@nodes_cache_table, [:set, :public, :named_table, read_concurrency: true])
+    # Create ETS table for nodes cache (check if exists to handle supervisor restarts)
+    case :ets.whereis(@nodes_cache_table) do
+      :undefined ->
+        :ets.new(@nodes_cache_table, [:set, :public, :named_table, read_concurrency: true])
+
+      _tid ->
+        # Table already exists from previous run
+        :ok
+    end
 
     Supervisor.init(
       [
@@ -197,11 +204,34 @@ defmodule NebulaAPI.APIServer do
     now = DateTime.utc_now()
     connected_nodes = [node() | Node.list()]
 
-    # Use call_on_all_nodes to parallelize health data collection
+    # Use direct RPC calls to avoid circular dependency (build_nodes_info -> call_on_all_nodes -> build_nodes_info)
+    # Parallel execution via Task.async_stream for better performance
     health_results =
-      call_on_all_nodes(timeout: 5000) do
-        __MODULE__.node_health_data()
-      end
+      connected_nodes
+      |> Task.async_stream(
+        fn target_node ->
+          if target_node == node() do
+            # Local call
+            {:ok, collect_node_health_data_local(), target_node}
+          else
+            # Remote RPC call
+            case :rpc.call(target_node, __MODULE__, :collect_node_health_data_local, [], 5000) do
+              {:badrpc, reason} -> {:error, reason, target_node}
+              result -> {:ok, result, target_node}
+            end
+          end
+        end,
+        timeout: 6000,
+        on_timeout: :kill_task
+      )
+      |> Enum.map(fn
+        {:ok, result} -> result
+        {:exit, :timeout} -> {:timeout, :unknown}
+      end)
+      |> Enum.filter(fn
+        {:timeout, :unknown} -> false
+        _ -> true
+      end)
 
     # Build a map of successful responses by node
     health_by_node =
@@ -276,6 +306,48 @@ defmodule NebulaAPI.APIServer do
   """
   def refresh_nodes_cache do
     build_nodes_info()
+  end
+
+  @doc """
+  Collects complete health data for the current node.
+  This is used by build_nodes_info/0 via direct RPC calls to avoid circular dependencies.
+  """
+  def collect_node_health_data_local do
+    node_name = node()
+    node_str = to_string(node_name)
+
+    # Parse node name safely
+    {short_name, host} =
+      case String.split(node_str, "@", parts: 2) do
+        [short_name_str, host_str] ->
+          {String.to_atom(short_name_str), host_str}
+
+        _ ->
+          # Malformed node name, use defaults
+          Logger.warning("Malformed node name: #{node_str}")
+          {node_name, "unknown"}
+      end
+
+    # Find this node's tags from config
+    tags =
+      NebulaAPI.Config.nodes()
+      |> Enum.find_value(fn {n, t} ->
+        if n == node_name do
+          case t do
+            t when is_list(t) -> t
+            t when is_atom(t) -> [t]
+          end
+        end
+      end) || []
+
+    %{
+      short_name: short_name,
+      long_name: node_name,
+      host: host,
+      tags: tags,
+      connected: true,
+      runtime: collect_runtime_info()
+    }
   end
 
   @doc """
