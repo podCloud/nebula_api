@@ -155,7 +155,17 @@ defmodule NebulaAPI.APIServer do
         call_first_worker(module, fn_call, timeout)
     end
   rescue
-    err -> {:error, err}
+    err ->
+      Logger.error("""
+      Remote method call failed:
+        module: #{inspect(module)}
+        fn_call: #{inspect(fn_call)}
+        opts: #{inspect(opts)}
+        error: #{Exception.message(err)}
+        stacktrace: #{Exception.format_stacktrace(__STACKTRACE__)}
+      """)
+
+      {:error, err}
   end
 
   @doc """
