@@ -47,6 +47,14 @@ defmodule NebulaAPI.AST do
   The method is compiled either as a local implementation or a remote stub
   depending on whether the current node matches the target nodes.
 
+  ## Node Selectors
+
+  - `@node_name` - Specific node
+  - `&tag` - Nodes with tag
+  - `!@node_name` or `!&tag` - Negation
+  - `[...]` - List of selectors
+  - `:*` - ALL nodes (local implementation on every node)
+
   ## Examples
 
       defapi [@api], get_user(id) do
@@ -56,20 +64,31 @@ defmodule NebulaAPI.AST do
       defapi [&db, !@worker], find_podcast(slug) do
         MyApp.Repo.find_one(:db, "records", %{identifier: slug})
       end
+
+      defapi :*, node_health_data() do
+        # Available on ALL nodes, each returns its own data
+        collect_runtime_info()
+      end
   """
   defmacro defapi(nebula_ast, fn_ast, do: do_fn) do
-    execution_nodes = nebula_ast |> get_execution_nodes_from_nebula_ast!()
-    fundef = fn_ast |> NebulaAPI.AST.Parser.parse_fundef_ast()
+    parsed = nebula_ast |> NebulaAPI.AST.Parser.parse_nebula_ast()
 
-    self_node =
-      __CALLER__.module
-      |> Module.get_attribute(:nebula_api)
-      |> Keyword.fetch!(:self_node)
+    # If all_nodes is true, skip execution node filtering
+    is_current_node = if parsed.all_nodes do
+      true
+    else
+      execution_nodes = nebula_ast |> get_execution_nodes_from_nebula_ast!()
+      self_node =
+        __CALLER__.module
+        |> Module.get_attribute(:nebula_api)
+        |> Keyword.fetch!(:self_node)
 
-    is_current_node =
       execution_nodes
       |> Keyword.keys()
       |> Enum.member?(self_node)
+    end
+
+    fundef = fn_ast |> NebulaAPI.AST.Parser.parse_fundef_ast()
 
     # Register method as local or remote
     __CALLER__.module
@@ -364,6 +383,7 @@ defmodule NebulaAPI.AST do
   defp is_nebula_ast?({:&, _, _}), do: true
   defp is_nebula_ast?({:!, _, _}), do: true
   defp is_nebula_ast?(list) when is_list(list), do: true
+  defp is_nebula_ast?(:*), do: true
   defp is_nebula_ast?(_), do: false
 
   defp get_execution_nodes_from_nebula_ast!(ast) do

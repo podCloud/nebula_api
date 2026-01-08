@@ -302,11 +302,14 @@ defmodule NebulaAPI.APIServer do
   @doc """
   NebulaAPI endpoint for collecting node health data.
   Returns runtime info and metadata for the current node.
+
+  This API is available on ALL nodes (using :* marker) so each node
+  can report its own health data.
   """
   import NebulaAPI.Config
   require NebulaAPI.Config
 
-  defapi nodes(), node_health_data() do
+  defapi :*, node_health_data() do
     node_name = node()
     node_str = to_string(node_name)
 

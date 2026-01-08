@@ -6,7 +6,7 @@ defmodule NebulaAPI.AST.Parser do
   end
 
   defp nebula_ast(ast) do
-    %{tags: [], not_tags: [], nodes: [], not_nodes: [], __unparsed: ast}
+    %{tags: [], not_tags: [], nodes: [], not_nodes: [], all_nodes: false, __unparsed: ast}
   end
 
   defp extract_nebula_config(config = %{__unparsed: asts})
@@ -52,6 +52,11 @@ defmodule NebulaAPI.AST.Parser do
 
   defp extract_nebula_config(config = %{__unparsed: {:&, _, [{tag, _, nil}]}}) do
     %{config | tags: config.tags ++ [tag]} |> Map.delete(:__unparsed)
+  end
+
+  # Handle :* marker for "all nodes"
+  defp extract_nebula_config(config = %{__unparsed: :*}) do
+    %{config | all_nodes: true} |> Map.delete(:__unparsed)
   end
 
   def parse_fundef_ast({fn_name, _, fn_args}) do
