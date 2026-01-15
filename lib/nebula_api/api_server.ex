@@ -8,9 +8,12 @@ defmodule NebulaAPI.APIServer do
   - Multicast to multiple nodes
 
   ## Multicast strategies
-  - `:all` - Wait for all responses (or timeout)
+  - `:all` - Wait for all responses (or timeout), returns list of results
   - `:first` - Return as soon as one response is received
-  - `:quorum` - Wait for N responses (configurable)
+  - `:quorum` - Wait for N responses (configurable), returns tagged result:
+    - `{:ok, results}` when quorum is reached
+    - `{:error, :quorum_not_reached, results}` when not enough successful responses
+    - `{:error, :quorum_timeout, results}` when timeout occurs before quorum
 
   ## Node Info Cache
 
@@ -61,13 +64,14 @@ defmodule NebulaAPI.APIServer do
 
   @impl true
   def init(_init_arg) do
-    # Create ETS table for nodes cache (check if exists to handle supervisor restarts)
-    case :ets.whereis(@nodes_cache_table) do
-      :undefined ->
-        :ets.new(@nodes_cache_table, [:set, :public, :named_table, read_concurrency: true])
-
-      _tid ->
-        # Table already exists from previous run
+    # Create ETS table for nodes cache
+    # Use try/rescue to handle race condition where multiple processes
+    # might try to create the table simultaneously
+    try do
+      :ets.new(@nodes_cache_table, [:set, :public, :named_table, read_concurrency: true])
+    rescue
+      ArgumentError ->
+        # Table already exists (created by another process or previous run)
         :ok
     end
 
@@ -361,13 +365,30 @@ defmodule NebulaAPI.APIServer do
 
   @doc """
   Collects runtime info for the current node.
-  This is a private helper function used by node_health_data/0.
+  This is a helper function used by collect_node_health_data_local/0.
+
+  Memory calculation includes all Erlang VM memory components:
+  - processes: memory used by Erlang processes
+  - binary: memory used for binaries
+  - ets: memory used by ETS tables
+  - atom: memory used for atoms
+  - code: memory used for loaded code
+
+  Note: memory_total from :erlang.memory() is the sum of all components,
+  so memory_percent represents actual VM memory utilization.
   """
   def collect_runtime_info do
     memory = :erlang.memory()
     memory_total = memory[:total]
-    # Calculate used memory from actual Erlang memory components
-    memory_used = memory[:processes] + memory[:binary] + memory[:ets]
+
+    # Include all significant memory components for accurate measurement
+    # This matches what :erlang.memory(:total) reports
+    memory_used =
+      memory[:processes] +
+        memory[:binary] +
+        memory[:ets] +
+        memory[:atom] +
+        memory[:code]
 
     %{
       memory_used_mb: div(memory_used, 1_048_576),
@@ -380,53 +401,16 @@ defmodule NebulaAPI.APIServer do
     }
   end
 
-  @doc """
-  NebulaAPI endpoint for collecting node health data.
-  Returns runtime info and metadata for the current node.
+  # Note: We previously had a `defapi :*, node_health_data()` here, but it was removed
+  # because build_nodes_info/0 uses direct RPC calls to collect_node_health_data_local/0
+  # to avoid circular dependencies. The defapi version would cause:
+  # build_nodes_info -> call_on_all_nodes -> call_remote_method -> build_nodes_info
+  #
+  # If you need a public API endpoint for node health, use collect_node_health_data_local/0
+  # directly via RPC, or create a separate module that doesn't depend on build_nodes_info.
 
-  This API is available on ALL nodes (using :* marker) so each node
-  can report its own health data.
-  """
   import NebulaAPI.Config
   require NebulaAPI.Config
-
-  defapi :*, node_health_data() do
-    node_name = node()
-    node_str = to_string(node_name)
-
-    # Parse node name safely
-    {short_name, host} =
-      case String.split(node_str, "@", parts: 2) do
-        [short_name_str, host_str] ->
-          {String.to_atom(short_name_str), host_str}
-
-        _ ->
-          # Malformed node name, use defaults
-          Logger.warning("Malformed node name: #{node_str}")
-          {node_name, "unknown"}
-      end
-
-    # Find this node's tags from config
-    tags =
-      NebulaAPI.Config.nodes()
-      |> Enum.find_value(fn {n, t} ->
-        if n == node_name do
-          case t do
-            t when is_list(t) -> t
-            t when is_atom(t) -> [t]
-          end
-        end
-      end) || []
-
-    %{
-      short_name: short_name,
-      long_name: node_name,
-      host: host,
-      tags: tags,
-      connected: true,
-      runtime: collect_runtime_info()
-    }
-  end
 
   @doc """
   Gets nodes_info for workers that are actually available for a method.
@@ -654,16 +638,19 @@ defmodule NebulaAPI.APIServer do
 
   defp wait_for_quorum(_ref, 0, _timeout, needed, successes, failures) do
     # All responses received - check if we actually got enough successes
+    results = successes ++ failures
+
     if needed > 0 do
       Logger.warning("Quorum not reached: needed #{needed} more successes")
+      {:error, :quorum_not_reached, results}
+    else
+      {:ok, results}
     end
-
-    successes ++ failures
   end
 
   defp wait_for_quorum(_ref, _remaining, _timeout, 0, successes, failures) do
     # Quorum reached with enough successes
-    successes ++ failures
+    {:ok, successes ++ failures}
   end
 
   defp wait_for_quorum(ref, remaining, timeout, needed, successes, failures) do
@@ -671,7 +658,7 @@ defmodule NebulaAPI.APIServer do
     if remaining < needed do
       # Not enough workers left to reach quorum, return early
       Logger.warning("Quorum unreachable: #{remaining} workers remaining but need #{needed}")
-      successes ++ failures
+      {:error, :quorum_not_reached, successes ++ failures}
     else
       receive do
         {^ref, {:ok, _, _} = success} ->
@@ -682,11 +669,14 @@ defmodule NebulaAPI.APIServer do
       after
         timeout ->
           # Timeout, return what we have with warning if quorum not reached
+          results = successes ++ failures
+
           if needed > 0 do
             Logger.warning("Quorum timeout: still needed #{needed} more successes")
+            {:error, :quorum_timeout, results}
+          else
+            {:ok, results}
           end
-
-          successes ++ failures
       end
     end
   end

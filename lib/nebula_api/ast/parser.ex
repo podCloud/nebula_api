@@ -17,7 +17,12 @@ defmodule NebulaAPI.AST.Parser do
         ast
         |> nebula_ast()
         |> extract_nebula_config()
-        |> Map.merge(config, fn _k, v1, v2 -> v1 ++ v2 end)
+        |> Map.merge(config, fn
+          # Handle boolean fields (all_nodes) - use OR
+          _k, v1, v2 when is_boolean(v1) and is_boolean(v2) -> v1 or v2
+          # Handle list fields - concatenate
+          _k, v1, v2 -> v1 ++ v2
+        end)
     end)
     |> Map.delete(:__unparsed)
   end
