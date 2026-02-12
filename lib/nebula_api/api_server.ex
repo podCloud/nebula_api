@@ -367,28 +367,13 @@ defmodule NebulaAPI.APIServer do
   Collects runtime info for the current node.
   This is a helper function used by collect_node_health_data_local/0.
 
-  Memory calculation includes all Erlang VM memory components:
-  - processes: memory used by Erlang processes
-  - binary: memory used for binaries
-  - ets: memory used by ETS tables
-  - atom: memory used for atoms
-  - code: memory used for loaded code
-
-  Note: memory_total from :erlang.memory() is the sum of all components,
-  so memory_percent represents actual VM memory utilization.
+  - `memory_used`: Total memory allocated by the Erlang VM (`:erlang.memory(:total)`)
+  - `memory_total`: Total system RAM (from `/proc/meminfo` on Linux, falls back to VM total)
+  - `memory_percent`: VM memory usage as percentage of system RAM
   """
   def collect_runtime_info do
-    memory = :erlang.memory()
-    memory_total = memory[:total]
-
-    # Include all significant memory components for accurate measurement
-    # This matches what :erlang.memory(:total) reports
-    memory_used =
-      memory[:processes] +
-        memory[:binary] +
-        memory[:ets] +
-        memory[:atom] +
-        memory[:code]
+    memory_used = :erlang.memory(:total)
+    memory_total = get_system_memory_total() || memory_used
 
     %{
       memory_used_mb: div(memory_used, 1_048_576),
@@ -399,6 +384,19 @@ defmodule NebulaAPI.APIServer do
       otp_release: :erlang.system_info(:otp_release) |> to_string(),
       uptime_seconds: :erlang.statistics(:wall_clock) |> elem(0) |> div(1000)
     }
+  end
+
+  defp get_system_memory_total do
+    case File.read("/proc/meminfo") do
+      {:ok, content} ->
+        case Regex.run(~r/MemTotal:\s+(\d+)\s+kB/, content) do
+          [_, kb_str] -> String.to_integer(kb_str) * 1024
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
   end
 
   # Note: We previously had a `defapi :*, node_health_data()` here, but it was removed
@@ -463,14 +461,18 @@ defmodule NebulaAPI.APIServer do
       |> Enum.map(fn {n, pids} -> {n, List.first(pids)} end)
       |> Map.new()
 
-    # Call selector to get target node
-    selected_node = selector_fn.(nodes_info)
+    # Call selector to get target node (with error handling)
+    case safe_call_selector(selector_fn, nodes_info) do
+      {:ok, selected_node} ->
+        if selected_node && Map.has_key?(workers_by_node, selected_node) do
+          worker = workers_by_node[selected_node]
+          GenServer.call(worker, fn_call, timeout)
+        else
+          {:error, "No worker found on selected node #{inspect(selected_node)}"}
+        end
 
-    if selected_node && Map.has_key?(workers_by_node, selected_node) do
-      worker = workers_by_node[selected_node]
-      GenServer.call(worker, fn_call, timeout)
-    else
-      {:error, "No worker found on selected node #{inspect(selected_node)}"}
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -485,17 +487,30 @@ defmodule NebulaAPI.APIServer do
       |> Enum.map(fn {n, pids} -> {n, List.first(pids)} end)
       |> Map.new()
 
-    # Call selector to get target nodes
-    selected_nodes = selector_fn.(nodes_info)
-    selected_nodes = if is_list(selected_nodes), do: selected_nodes, else: [selected_nodes]
+    # Call selector to get target nodes (with error handling)
+    case safe_call_selector(selector_fn, nodes_info) do
+      {:ok, selected_nodes} ->
+        selected_nodes = if is_list(selected_nodes), do: selected_nodes, else: [selected_nodes]
 
-    # Filter to only nodes with workers
-    target_workers =
-      selected_nodes
-      |> Enum.filter(&Map.has_key?(workers_by_node, &1))
-      |> Enum.map(fn node -> {node, workers_by_node[node]} end)
+        # Filter to only nodes with workers
+        target_workers =
+          selected_nodes
+          |> Enum.filter(&Map.has_key?(workers_by_node, &1))
+          |> Enum.map(fn node -> {node, workers_by_node[node]} end)
 
-    do_multicast_call(target_workers, fn_call, timeout, strategy, opts)
+        do_multicast_call(target_workers, fn_call, timeout, strategy, opts)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp safe_call_selector(selector_fn, nodes_info) do
+    {:ok, selector_fn.(nodes_info)}
+  catch
+    kind, reason ->
+      Logger.error("Node selector function failed: #{inspect(kind)} - #{inspect(reason)}")
+      {:error, {:selector_failed, reason}}
   end
 
   defp call_all_workers(module, fn_call, timeout, strategy, opts) do
@@ -528,6 +543,8 @@ defmodule NebulaAPI.APIServer do
   end
 
   defp do_multicast_all(target_workers, fn_call, timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+
     target_workers
     |> Enum.map(fn {target_node, worker} ->
       Task.async(fn ->
@@ -540,12 +557,13 @@ defmodule NebulaAPI.APIServer do
         end
       end)
     end)
-    |> Task.await_many(timeout + 100)
+    |> Task.await_many(max(deadline - System.monotonic_time(:millisecond), 100))
   end
 
   defp do_multicast_first(target_workers, fn_call, timeout) do
     parent = self()
     ref = make_ref()
+    deadline = System.monotonic_time(:millisecond) + timeout
 
     # Spawn tasks for each worker using Task.async
     tasks =
@@ -563,7 +581,7 @@ defmodule NebulaAPI.APIServer do
       end)
 
     # Wait for first successful response
-    result = wait_for_first(ref, length(target_workers), timeout, [])
+    result = wait_for_first(ref, length(target_workers), deadline, [])
 
     # Shutdown remaining tasks gracefully
     Enum.each(tasks, fn task ->
@@ -573,12 +591,14 @@ defmodule NebulaAPI.APIServer do
     result
   end
 
-  defp wait_for_first(_ref, 0, _timeout, results) do
+  defp wait_for_first(_ref, 0, _deadline, results) do
     # All failed, return all results
     results
   end
 
-  defp wait_for_first(ref, remaining, timeout, results) do
+  defp wait_for_first(ref, remaining, deadline, results) do
+    remaining_ms = max(deadline - System.monotonic_time(:millisecond), 0)
+
     receive do
       {^ref, {:ok, _, _} = success} ->
         # Got a success, return immediately
@@ -586,9 +606,9 @@ defmodule NebulaAPI.APIServer do
 
       {^ref, failure} ->
         # Got a failure, continue waiting
-        wait_for_first(ref, remaining - 1, timeout, [failure | results])
+        wait_for_first(ref, remaining - 1, deadline, [failure | results])
     after
-      timeout ->
+      remaining_ms ->
         # Timeout, return what we have
         results
     end
@@ -609,6 +629,7 @@ defmodule NebulaAPI.APIServer do
 
     parent = self()
     ref = make_ref()
+    deadline = System.monotonic_time(:millisecond) + timeout
 
     # Spawn tasks for each worker using Task.async
     tasks =
@@ -626,7 +647,7 @@ defmodule NebulaAPI.APIServer do
       end)
 
     # Wait for quorum with validation
-    result = wait_for_quorum(ref, worker_count, timeout, effective_quorum, [], [])
+    result = wait_for_quorum(ref, worker_count, deadline, effective_quorum, [], [])
 
     # Shutdown remaining tasks gracefully
     Enum.each(tasks, fn task ->
@@ -636,7 +657,7 @@ defmodule NebulaAPI.APIServer do
     result
   end
 
-  defp wait_for_quorum(_ref, 0, _timeout, needed, successes, failures) do
+  defp wait_for_quorum(_ref, 0, _deadline, needed, successes, failures) do
     # All responses received - check if we actually got enough successes
     results = successes ++ failures
 
@@ -648,26 +669,35 @@ defmodule NebulaAPI.APIServer do
     end
   end
 
-  defp wait_for_quorum(_ref, _remaining, _timeout, 0, successes, failures) do
+  defp wait_for_quorum(_ref, _remaining, _deadline, 0, successes, failures) do
     # Quorum reached with enough successes
     {:ok, successes ++ failures}
   end
 
-  defp wait_for_quorum(ref, remaining, timeout, needed, successes, failures) do
+  defp wait_for_quorum(ref, remaining, deadline, needed, successes, failures) do
     # Check if quorum is still achievable (remaining workers >= needed successes)
     if remaining < needed do
       # Not enough workers left to reach quorum, return early
       Logger.warning("Quorum unreachable: #{remaining} workers remaining but need #{needed}")
       {:error, :quorum_not_reached, successes ++ failures}
     else
+      remaining_ms = max(deadline - System.monotonic_time(:millisecond), 0)
+
       receive do
         {^ref, {:ok, _, _} = success} ->
-          wait_for_quorum(ref, remaining - 1, timeout, needed - 1, [success | successes], failures)
+          wait_for_quorum(
+            ref,
+            remaining - 1,
+            deadline,
+            needed - 1,
+            [success | successes],
+            failures
+          )
 
         {^ref, failure} ->
-          wait_for_quorum(ref, remaining - 1, timeout, needed, successes, [failure | failures])
+          wait_for_quorum(ref, remaining - 1, deadline, needed, successes, [failure | failures])
       after
-        timeout ->
+        remaining_ms ->
           # Timeout, return what we have with warning if quorum not reached
           results = successes ++ failures
 
