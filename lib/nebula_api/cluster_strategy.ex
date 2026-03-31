@@ -120,7 +120,7 @@ defmodule NebulaAPI.ClusterStrategy do
 
   defp get_nodes(%State{config: config} = state), do: resolve(config[:nodes], state)
 
-  defp resolve(nil, _resolver, %State{topology: topology}) do
+  defp resolve(nil, %State{topology: topology}) do
     warn(
       topology,
       "nebula cluster strategy is selected, but nodes param is missing or not a list"

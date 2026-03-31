@@ -43,7 +43,7 @@ defmodule NebulaAPI.IntegrationTest do
       end)
 
       result = APIServer.call_remote_method(TestModule, {:greet, "world"})
-      assert result == "Hello world"
+      assert result == {:ok, "Hello world"}
 
       GenServer.stop(pid)
     end
@@ -216,7 +216,9 @@ defmodule NebulaAPI.IntegrationTest.FakeWorker do
   def init(state), do: {:ok, state}
 
   def handle_call(fn_call, _from, state) do
-    result = state.response_fn.(fn_call)
+    # Simulate real defapi behavior: __nbapi_local_* wraps with __wrap_nebula_api_result
+    raw_result = state.response_fn.(fn_call)
+    result = NebulaAPI.AST.__wrap_nebula_api_result(raw_result)
     {:reply, result, state}
   end
 end

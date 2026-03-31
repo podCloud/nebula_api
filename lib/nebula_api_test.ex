@@ -17,7 +17,3 @@ defmodule NebulaAPI.Test do
     IO.puts("Hello world from youpod context")
   end
 end
-
-NebulaAPI.Test.hello_name("John") |> dbg
-NebulaAPI.Test.hello_world() |> dbg
-NebulaAPI.Test.hello_name({:asdf}) |> dbg

@@ -484,7 +484,6 @@ defmodule NebulaAPI.APIServer do
   end
 
   defp call_selected_worker(module, fn_call, selector_fn, timeout) do
-    nodes_info = get_available_nodes_info(module, fn_call)
     workers = get_all_workers(module, fn_call)
 
     # Map workers to their nodes
@@ -493,6 +492,9 @@ defmodule NebulaAPI.APIServer do
       |> Enum.group_by(&node/1)
       |> Enum.map(fn {n, pids} -> {n, List.first(pids)} end)
       |> Map.new()
+
+    # Filter nodes_info to only nodes with workers
+    nodes_info = filter_nodes_info_for_workers(workers_by_node)
 
     # Call selector to get target node (with error handling)
     case safe_call_selector(selector_fn, nodes_info) do
@@ -510,7 +512,6 @@ defmodule NebulaAPI.APIServer do
   end
 
   defp call_selected_workers(module, fn_call, selector_fn, timeout, strategy, opts) do
-    nodes_info = get_available_nodes_info(module, fn_call)
     workers = get_all_workers(module, fn_call)
 
     # Map workers to their nodes
@@ -519,6 +520,9 @@ defmodule NebulaAPI.APIServer do
       |> Enum.group_by(&node/1)
       |> Enum.map(fn {n, pids} -> {n, List.first(pids)} end)
       |> Map.new()
+
+    # Filter nodes_info to only nodes with workers
+    nodes_info = filter_nodes_info_for_workers(workers_by_node)
 
     # Call selector to get target nodes (with error handling)
     case safe_call_selector(selector_fn, nodes_info) do
@@ -536,6 +540,14 @@ defmodule NebulaAPI.APIServer do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp filter_nodes_info_for_workers(workers_by_node) do
+    worker_nodes = Map.keys(workers_by_node)
+
+    get_nodes_info()
+    |> Enum.filter(fn {node_name, _info} -> node_name in worker_nodes end)
+    |> Map.new()
   end
 
   defp safe_call_selector(selector_fn, nodes_info) do
@@ -584,7 +596,8 @@ defmodule NebulaAPI.APIServer do
         try do
           remaining = max(deadline - System.monotonic_time(:millisecond), 100)
           result = GenServer.call(worker, fn_call, remaining)
-          {:ok, result, target_node}
+          {status, value} = unwrap_worker_result(result)
+          {status, value, target_node}
         catch
           :exit, {:timeout, _} -> {:timeout, target_node}
           :exit, reason -> {:error, reason, target_node}
@@ -607,7 +620,8 @@ defmodule NebulaAPI.APIServer do
           try do
             remaining = max(deadline - System.monotonic_time(:millisecond), 100)
             result = GenServer.call(worker, fn_call, remaining)
-            send(parent, {ref, {:ok, result, target_node}})
+            {status, value} = unwrap_worker_result(result)
+            send(parent, {ref, {status, value, target_node}})
           catch
             :exit, {:timeout, _} -> send(parent, {ref, {:timeout, target_node}})
             :exit, reason -> send(parent, {ref, {:error, reason, target_node}})
@@ -677,7 +691,8 @@ defmodule NebulaAPI.APIServer do
           try do
             remaining = max(deadline - System.monotonic_time(:millisecond), 100)
             result = GenServer.call(worker, fn_call, remaining)
-            send(parent, {ref, {:ok, result, target_node}})
+            {status, value} = unwrap_worker_result(result)
+            send(parent, {ref, {status, value, target_node}})
           catch
             :exit, {:timeout, _} -> send(parent, {ref, {:timeout, target_node}})
             :exit, reason -> send(parent, {ref, {:error, reason, target_node}})
@@ -752,6 +767,13 @@ defmodule NebulaAPI.APIServer do
       end
     end
   end
+
+  # Unwrap worker results to avoid double-wrapping.
+  # Real defapi workers return {:ok, val} from __nbapi_local_* via __wrap_nebula_api_result.
+  # Test doubles may return raw values — those fall through to {:ok, other}.
+  defp unwrap_worker_result({:ok, val}), do: {:ok, val}
+  defp unwrap_worker_result({:error, reason}), do: {:error, reason}
+  defp unwrap_worker_result(other), do: {:ok, other}
 
   defp flush_ref(ref) do
     receive do
