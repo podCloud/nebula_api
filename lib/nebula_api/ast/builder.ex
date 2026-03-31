@@ -109,39 +109,6 @@ defmodule NebulaAPI.AST.Builder do
     end
   end
 
-  # Legacy functions for backwards compatibility during transition
-  # TODO: Remove these after full migration
-
-  def build_function_for_local_node(%{name: fn_name, args: fn_args}, fn_do) do
-    quote do
-      def unquote(build_function_signature(fn_name, fn_args)) do
-        unquote(fn_do) |> __wrap_nebula_api_result()
-      rescue
-        e ->
-          # raise error in another thread
-          require Logger
-          Logger.error(Exception.format(:error, e, __STACKTRACE__))
-          {:error, e}
-      end
-    end
-  end
-
-  def raise_error(e), do: raise(e)
-
-  def build_function_for_remote_node(%{name: fn_name, args: fn_args}) do
-    quote do
-      def unquote(build_function_signature(fn_name, fn_args)) do
-        NebulaAPI.APIServer.call_remote_method(
-          __MODULE__,
-          unquote(build_remote_function_call(fn_name, fn_args))
-        )
-        |> __wrap_nebula_api_result()
-      rescue
-        e -> {:error, e}
-      end
-    end
-  end
-
   # Private helper functions
 
   defp build_remote_function_call(fn_name, fn_args) do

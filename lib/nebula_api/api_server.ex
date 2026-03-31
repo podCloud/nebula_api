@@ -57,6 +57,8 @@ defmodule NebulaAPI.APIServer do
 
   @default_timeout 5000
   @nodes_cache_table :nebula_nodes_cache
+  @nodes_info_cache_key :__nodes_info_snapshot__
+  @nodes_info_ttl_ms 5_000
 
   def start_link(init_arg) do
     Supervisor.start_link(__MODULE__, init_arg, name: __MODULE__)
@@ -126,7 +128,10 @@ defmodule NebulaAPI.APIServer do
 
   ## Returns
   - For unicast: The result from the remote call
-  - For multicast: List of `{:ok, result, node}`, `{:error, reason, node}`, or `{:timeout, node}`
+  - For multicast with `:all` strategy: List of `{:ok, result, node}`, `{:error, reason, node}`, or `{:timeout, node}`
+  - For multicast with `:first` strategy: `{:ok, result, node}` on first success, or list of failures
+  - For multicast with `:quorum` strategy: `{:ok, results}` when quorum reached,
+    `{:error, :quorum_not_reached, results}` or `{:error, :quorum_timeout, results}` otherwise
   """
   def call_remote_method(module, fn_call, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
@@ -314,11 +319,39 @@ defmodule NebulaAPI.APIServer do
   end
 
   @doc """
+  Returns cached nodes_info if still fresh (within TTL), otherwise rebuilds.
+  Default TTL is #{@nodes_info_ttl_ms}ms.
+  """
+  def get_nodes_info do
+    now = System.monotonic_time(:millisecond)
+
+    case :ets.lookup(@nodes_cache_table, @nodes_info_cache_key) do
+      [{_, %{data: data, updated_at: updated_at}}] when now - updated_at < @nodes_info_ttl_ms ->
+        data
+
+      _ ->
+        refresh_nodes_cache()
+    end
+  rescue
+    ArgumentError -> build_nodes_info()
+  end
+
+  @doc """
   Refreshes the nodes cache by fetching fresh runtime info from all nodes.
-  Call this periodically (e.g., every 30 seconds) to keep the cache fresh.
   """
   def refresh_nodes_cache do
-    build_nodes_info()
+    data = build_nodes_info()
+
+    try do
+      :ets.insert(@nodes_cache_table, {
+        @nodes_info_cache_key,
+        %{data: data, updated_at: System.monotonic_time(:millisecond)}
+      })
+    rescue
+      ArgumentError -> :ok
+    end
+
+    data
   end
 
   @doc """
@@ -416,7 +449,7 @@ defmodule NebulaAPI.APIServer do
   """
   def get_available_nodes_info(module, fn_call) do
     workers = get_all_workers(module, fn_call)
-    all_nodes_info = build_nodes_info()
+    all_nodes_info = get_nodes_info()
 
     # Get the nodes that have workers
     worker_nodes =
@@ -549,7 +582,8 @@ defmodule NebulaAPI.APIServer do
     |> Enum.map(fn {target_node, worker} ->
       Task.async(fn ->
         try do
-          result = GenServer.call(worker, fn_call, timeout)
+          remaining = max(deadline - System.monotonic_time(:millisecond), 100)
+          result = GenServer.call(worker, fn_call, remaining)
           {:ok, result, target_node}
         catch
           :exit, {:timeout, _} -> {:timeout, target_node}
@@ -571,7 +605,8 @@ defmodule NebulaAPI.APIServer do
       |> Enum.map(fn {target_node, worker} ->
         Task.async(fn ->
           try do
-            result = GenServer.call(worker, fn_call, timeout)
+            remaining = max(deadline - System.monotonic_time(:millisecond), 100)
+            result = GenServer.call(worker, fn_call, remaining)
             send(parent, {ref, {:ok, result, target_node}})
           catch
             :exit, {:timeout, _} -> send(parent, {ref, {:timeout, target_node}})
@@ -637,7 +672,8 @@ defmodule NebulaAPI.APIServer do
       |> Enum.map(fn {target_node, worker} ->
         Task.async(fn ->
           try do
-            result = GenServer.call(worker, fn_call, timeout)
+            remaining = max(deadline - System.monotonic_time(:millisecond), 100)
+            result = GenServer.call(worker, fn_call, remaining)
             send(parent, {ref, {:ok, result, target_node}})
           catch
             :exit, {:timeout, _} -> send(parent, {ref, {:timeout, target_node}})
