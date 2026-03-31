@@ -65,7 +65,7 @@ defmodule NebulaAPI.AST.Parser do
   end
 
   def parse_fundef_ast({fn_name, _, fn_args}) do
-    fn_args
+    (fn_args || [])
     |> Enum.reduce(
       %{
         name: fn_name,

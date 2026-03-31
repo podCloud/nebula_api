@@ -119,5 +119,13 @@ defmodule NebulaAPI.ASTTest do
       assert NebulaAPI.AST.__wrap_nebula_api_result({:error, :quorum_timeout, [:partial]}) ==
                {:error, :quorum_timeout, [:partial]}
     end
+
+    test "preserves 3-tuple ok terms (first/multicast strategies)" do
+      assert NebulaAPI.AST.__wrap_nebula_api_result({:ok, :value, :node@host}) ==
+               {:ok, :value, :node@host}
+
+      assert NebulaAPI.AST.__wrap_nebula_api_result({:ok, "result", :"worker@10.0.0.1"}) ==
+               {:ok, "result", :"worker@10.0.0.1"}
+    end
   end
 end

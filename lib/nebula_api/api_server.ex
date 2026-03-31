@@ -382,6 +382,7 @@ defmodule NebulaAPI.APIServer do
           case t do
             t when is_list(t) -> t
             t when is_atom(t) -> [t]
+            _ -> []
           end
         end
       end) || []

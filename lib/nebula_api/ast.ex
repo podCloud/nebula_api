@@ -36,6 +36,7 @@ defmodule NebulaAPI.AST do
   def __wrap_nebula_api_result(result) do
     case result do
       {:error, _, _} -> result
+      {:ok, _, _} -> result
       {:error, _} -> result
       {:ok, _} -> result
       _ -> {:ok, result}
