@@ -17,9 +17,9 @@ defmodule NebulaAPI.IntegrationTest do
     pid
   end
 
-  setup do
-    # Ensure :pg is started
-    case :pg.start_link(@pg_scope) do
+  setup_all do
+    # Start :pg unlinked so it survives across tests
+    case :pg.start(@pg_scope) do
       {:ok, _} -> :ok
       {:error, {:already_started, _}} -> :ok
     end

@@ -111,5 +111,13 @@ defmodule NebulaAPI.ASTTest do
     test "preserves :error tuples" do
       assert NebulaAPI.AST.__wrap_nebula_api_result({:error, :reason}) == {:error, :reason}
     end
+
+    test "preserves 3-tuple error terms (quorum strategies)" do
+      assert NebulaAPI.AST.__wrap_nebula_api_result({:error, :quorum_not_reached, []}) ==
+               {:error, :quorum_not_reached, []}
+
+      assert NebulaAPI.AST.__wrap_nebula_api_result({:error, :quorum_timeout, [:partial]}) ==
+               {:error, :quorum_timeout, [:partial]}
+    end
   end
 end

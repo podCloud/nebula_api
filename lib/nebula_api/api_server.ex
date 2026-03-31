@@ -623,6 +623,9 @@ defmodule NebulaAPI.APIServer do
       Task.shutdown(task, :brutal_kill)
     end)
 
+    # Flush stray messages from tasks that sent before being killed
+    flush_ref(ref)
+
     result
   end
 
@@ -690,6 +693,9 @@ defmodule NebulaAPI.APIServer do
       Task.shutdown(task, :brutal_kill)
     end)
 
+    # Flush stray messages from tasks that sent before being killed
+    flush_ref(ref)
+
     result
   end
 
@@ -744,6 +750,14 @@ defmodule NebulaAPI.APIServer do
             {:ok, results}
           end
       end
+    end
+  end
+
+  defp flush_ref(ref) do
+    receive do
+      {^ref, _} -> flush_ref(ref)
+    after
+      0 -> :ok
     end
   end
 
