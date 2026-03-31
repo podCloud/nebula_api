@@ -94,12 +94,11 @@ defmodule NebulaAPI.Config do
     nodes
     |> Enum.filter(fn
       {_node_name, node_tags} when is_list(node_tags) ->
-        # check if any tags are included in node_tags
-        (tags -- node_tags -- node_tags -- tags) |> Enum.empty?() and
-          (node_tags -- node_tags -- tags) |> Enum.any?()
+        # keep node if ALL requested tags are present in node_tags
+        (tags -- node_tags) |> Enum.empty?()
 
       {_node_name, node_tag} when is_atom(node_tag) ->
-        [node_tag] == tags
+        Enum.member?(tags, node_tag)
     end)
   end
 
@@ -113,8 +112,8 @@ defmodule NebulaAPI.Config do
     nodes
     |> Enum.filter(fn
       {_node_name, node_tags} when is_list(node_tags) ->
-        # no match in reject list
-        (node_tags -- node_tags -- tags) |> Enum.empty?()
+        # keep node if NONE of the excluded tags are present
+        (tags -- node_tags) == tags
 
       {_node_name, node_tag} when is_atom(node_tag) ->
         not Enum.member?(tags, node_tag)
