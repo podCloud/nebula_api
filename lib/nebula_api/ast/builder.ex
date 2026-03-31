@@ -42,9 +42,11 @@ defmodule NebulaAPI.AST.Builder do
   """
   def build_remote_function(%{name: fn_name, args: fn_args}) do
     remote_fn_name = :"__nbapi_remote_#{fn_name}"
-    # Use a distinct name to avoid shadowing any user-defined `opts` parameter
-    routing_opts_var = Macro.var(:nebula_routing_opts, nil)
-    fn_args_with_routing_opts = fn_args ++ [{:nebula_routing_opts, []}]
+    # Use a hygienic variable bound to this module's context — cannot clash with any
+    # user-defined parameter, even one named `nebula_routing_opts`
+    routing_opts_var = Macro.var(:nebula_routing_opts, __MODULE__)
+    routing_opts_param = {:__inline, {:\\, [], [routing_opts_var, []]}}
+    fn_args_with_routing_opts = fn_args ++ [routing_opts_param]
 
     quote do
       defp unquote(build_function_signature(remote_fn_name, fn_args_with_routing_opts)) do
@@ -72,10 +74,12 @@ defmodule NebulaAPI.AST.Builder do
   def build_public_function(%{name: fn_name, args: fn_args}, is_local) do
     local_fn_name = :"__nbapi_local_#{fn_name}"
     remote_fn_name = :"__nbapi_remote_#{fn_name}"
-    fn_args_with_routing_opts = fn_args ++ [{:nebula_routing_opts, []}]
     fn_arg_vars = fn_args_to_vars(fn_args)
-    # Use a distinct name to avoid shadowing any user-defined `opts` parameter
-    routing_opts_var = Macro.var(:nebula_routing_opts, nil)
+    # Use a hygienic variable bound to this module's context — cannot clash with any
+    # user-defined parameter, even one named `nebula_routing_opts`
+    routing_opts_var = Macro.var(:nebula_routing_opts, __MODULE__)
+    routing_opts_param = {:__inline, {:\\, [], [routing_opts_var, []]}}
+    fn_args_with_routing_opts = fn_args ++ [routing_opts_param]
 
     quote do
       def unquote(build_function_signature(fn_name, fn_args_with_routing_opts)) do
