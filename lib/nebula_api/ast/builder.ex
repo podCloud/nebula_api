@@ -42,16 +42,16 @@ defmodule NebulaAPI.AST.Builder do
   """
   def build_remote_function(%{name: fn_name, args: fn_args}) do
     remote_fn_name = :"__nbapi_remote_#{fn_name}"
-    # Add opts parameter with nil context for proper hygiene
-    opts_var = Macro.var(:opts, nil)
-    fn_args_with_opts = fn_args ++ [{:opts, []}]
+    # Use a distinct name to avoid shadowing any user-defined `opts` parameter
+    routing_opts_var = Macro.var(:nebula_routing_opts, nil)
+    fn_args_with_routing_opts = fn_args ++ [{:nebula_routing_opts, []}]
 
     quote do
-      defp unquote(build_function_signature(remote_fn_name, fn_args_with_opts)) do
+      defp unquote(build_function_signature(remote_fn_name, fn_args_with_routing_opts)) do
         case NebulaAPI.APIServer.call_remote_method(
                __MODULE__,
                unquote(build_remote_function_call(fn_name, fn_args)),
-               unquote(opts_var)
+               unquote(routing_opts_var)
              ) do
           # Multicast :all returns a list — pass through as-is
           result when is_list(result) -> result
@@ -72,20 +72,20 @@ defmodule NebulaAPI.AST.Builder do
   def build_public_function(%{name: fn_name, args: fn_args}, is_local) do
     local_fn_name = :"__nbapi_local_#{fn_name}"
     remote_fn_name = :"__nbapi_remote_#{fn_name}"
-    fn_args_with_opts = fn_args ++ [{:opts, []}]
+    fn_args_with_routing_opts = fn_args ++ [{:nebula_routing_opts, []}]
     fn_arg_vars = fn_args_to_vars(fn_args)
-    # Use Macro.var with nil context for proper hygiene
-    opts_var = Macro.var(:opts, nil)
+    # Use a distinct name to avoid shadowing any user-defined `opts` parameter
+    routing_opts_var = Macro.var(:nebula_routing_opts, nil)
 
     quote do
-      def unquote(build_function_signature(fn_name, fn_args_with_opts)) do
+      def unquote(build_function_signature(fn_name, fn_args_with_routing_opts)) do
         # Check for call context from process dictionary (set by call_on_node/call_on_nodes)
         context_selector = Process.get(:nebula_node_selector)
         context_mode = Process.get(:nebula_call_mode)
         context_opts = Process.get(:nebula_call_opts, [])
 
-        # Merge context opts with function opts
-        merged_opts = Keyword.merge(context_opts, unquote(opts_var))
+        # Merge context opts with routing opts
+        merged_opts = Keyword.merge(context_opts, unquote(routing_opts_var))
 
         cond do
           # If we have a context selector (from call_on_node or call_on_nodes)
@@ -98,16 +98,16 @@ defmodule NebulaAPI.AST.Builder do
               )
             )
 
-          # If opts explicitly contain node_selector or multicast
-          unquote(opts_var)[:node_selector] || unquote(opts_var)[:multicast] ->
-            unquote(remote_fn_name)(unquote_splicing(fn_arg_vars), unquote(opts_var))
+          # If routing opts explicitly contain node_selector or multicast
+          unquote(routing_opts_var)[:node_selector] || unquote(routing_opts_var)[:multicast] ->
+            unquote(remote_fn_name)(unquote_splicing(fn_arg_vars), unquote(routing_opts_var))
 
           # Default behavior: local if compiled local, remote otherwise
           unquote(is_local) ->
             unquote(local_fn_name)(unquote_splicing(fn_arg_vars))
 
           true ->
-            unquote(remote_fn_name)(unquote_splicing(fn_arg_vars), unquote(opts_var))
+            unquote(remote_fn_name)(unquote_splicing(fn_arg_vars), unquote(routing_opts_var))
         end
       end
     end
