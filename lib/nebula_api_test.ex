@@ -10,10 +10,10 @@ defmodule NebulaAPI.Test do
   end
 
   on_nebula_nodes [&nebula, @api] do
-    IO.puts("Hello world from podcloud")
+    @api_greeting "Hello world from podcloud"
   end
 
   on_nebula_nodes [&youpod, !@api] do
-    IO.puts("Hello world from youpod context")
+    @worker_greeting "Hello world from youpod context"
   end
 end

@@ -48,12 +48,16 @@ defmodule NebulaAPI.AST.Builder do
 
     quote do
       defp unquote(build_function_signature(remote_fn_name, fn_args_with_opts)) do
-        NebulaAPI.APIServer.call_remote_method(
-          __MODULE__,
-          unquote(build_remote_function_call(fn_name, fn_args)),
-          unquote(opts_var)
-        )
-        |> __wrap_nebula_api_result()
+        case NebulaAPI.APIServer.call_remote_method(
+               __MODULE__,
+               unquote(build_remote_function_call(fn_name, fn_args)),
+               unquote(opts_var)
+             ) do
+          # Multicast :all returns a list — pass through as-is
+          result when is_list(result) -> result
+          # All other results: unicast, :first, :quorum
+          result -> __wrap_nebula_api_result(result)
+        end
       rescue
         e -> {:error, e}
       end
