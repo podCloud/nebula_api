@@ -205,5 +205,64 @@ defmodule NebulaAPI.ConfigTest do
     end
   end
 
+  # ============================================================================
+  # validate_with_nodes
+  # ============================================================================
+
+  describe "validate_with_nodes/2" do
+    @valid_config %{tags: [:db], not_tags: [], nodes: [], not_nodes: []}
+
+    test "returns :ok with valid tags" do
+      assert Config.validate_with_nodes(@valid_config, @nodes) == :ok
+    end
+
+    test "returns :ok with valid nodes" do
+      config = %{tags: [], not_tags: [], nodes: [:nebula], not_nodes: []}
+      assert Config.validate_with_nodes(config, @nodes) == :ok
+    end
+
+    test "returns :ok with valid full node name" do
+      config = %{tags: [], not_tags: [], nodes: [:"nebula@host1"], not_nodes: []}
+      assert Config.validate_with_nodes(config, @nodes) == :ok
+    end
+
+    test "raises CompileError for unknown tag" do
+      config = %{tags: [:nonexistent], not_tags: [], nodes: [], not_nodes: []}
+
+      assert_raise CompileError, fn ->
+        Config.validate_with_nodes(config, @nodes)
+      end
+    end
+
+    test "raises CompileError for unknown not_tag" do
+      config = %{tags: [], not_tags: [:nonexistent], nodes: [], not_nodes: []}
+
+      assert_raise CompileError, fn ->
+        Config.validate_with_nodes(config, @nodes)
+      end
+    end
+
+    test "raises CompileError for unknown node" do
+      config = %{tags: [], not_tags: [], nodes: [:unknown_node], not_nodes: []}
+
+      assert_raise CompileError, fn ->
+        Config.validate_with_nodes(config, @nodes)
+      end
+    end
+
+    test "raises CompileError for unknown not_node" do
+      config = %{tags: [], not_tags: [], nodes: [], not_nodes: [:unknown_node]}
+
+      assert_raise CompileError, fn ->
+        Config.validate_with_nodes(config, @nodes)
+      end
+    end
+
+    test "returns :ok with all empty lists" do
+      config = %{tags: [], not_tags: [], nodes: [], not_nodes: []}
+      assert Config.validate_with_nodes(config, @nodes) == :ok
+    end
+  end
+
   defp node_names(nodes), do: Enum.map(nodes, &elem(&1, 0))
 end
