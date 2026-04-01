@@ -29,22 +29,22 @@ defmodule NebulaAPI.ConfigTest do
       refute :"storage@host2" in names
     end
 
-    test "filters list-tagged nodes requiring ALL tags" do
+    test "filters nodes matching ANY of the requested tags (OR semantics)" do
       result = Config.nodes_for_tags(@nodes, [:db, :search])
       names = node_names(result)
 
-      assert :"search@host3" in names
-      assert :"full@host4" in names
-      refute :"nebula@host1" in names
-      refute :"storage@host2" in names
+      assert :"nebula@host1" in names    # has :db
+      assert :"search@host3" in names    # has [:db, :search]
+      assert :"full@host4" in names      # has [:db, :storage, :search]
+      refute :"storage@host2" in names   # has :storage, no match
     end
 
-    test "three tags narrows to only the node with all three" do
+    test "three tags matches all nodes that have at least one" do
       result = Config.nodes_for_tags(@nodes, [:db, :storage, :search])
       names = node_names(result)
 
-      assert length(names) == 1
-      assert :"full@host4" in names
+      # every node has at least one of these tags
+      assert length(names) == 4
     end
 
     test "returns empty on empty node list" do
