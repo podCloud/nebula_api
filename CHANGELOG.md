@@ -19,3 +19,8 @@ full git history preserved.
 - Zero external dependencies: `libcluster` removed — clustering is the
   consumer's concern (use libcluster, epmd, DNS, Kubernetes, etc.). The
   podCloud-specific cluster strategy now lives in the consuming application.
+
+### Documentation
+- Expanded README: "Wrap any single-node library" (cluster-wide Hammer, counters,
+  cron, singletons, feature flags, cache caveat), "When NOT to use NebulaAPI", a
+  "compile per release" callout, and an indicative performance table.
