@@ -1,6 +1,7 @@
 defmodule DemoApp.Tour do
   @moduledoc "Scripted tour, run once at boot. Each step logs a title then the result."
-  use NebulaAPI
+  # Only runtime call macros (call_on_*) — no defapi, no server — so the light AST import.
+  use NebulaAPI.AST
   require Logger
 
   def run do
