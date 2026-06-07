@@ -58,7 +58,7 @@ end
 | `:*` | every node (local everywhere) |
 
 A single selector doesn't need brackets — `defapi &db, ...`. Combine with a list —
-`defapi [&db, !@backup], ...`. Full node names with special chars: `defapi @"db@db.example", ...`.
+`defapi [&db, !@backup], ...`. Full node names with special chars: `defapi @:"db@db.example", ...`.
 
 ### Signatures and return values
 
