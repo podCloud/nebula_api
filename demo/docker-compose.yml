@@ -7,56 +7,61 @@ x-common: &common
   # is visible inside the container; run from /app/demo (the umbrella root).
   working_dir: /app/demo
   volumes:
+    # Shared source/deps/_build (like nebula). build_path "_build/#{release_name()}"
+    # separates per-node bytecode; deps fetched once via the setup step.
     - ../:/app
-    # Per-container deps + _build (anonymous volumes shadow the bind mount) so the
-    # 5 nodes don't race on `mix deps.get`/compile over the shared source, and the
-    # conditional Cachex dep stays isolated to the db container.
-    - /app/demo/deps
-    - /app/demo/_build
-  environment:
-    RELEASE_COOKIE: demo-cookie
 
 services:
   db:
     <<: *common
-    hostname: db
+    networks:
+      default:
+        aliases: [db.test]
     environment:
       RELEASE_COOKIE: demo-cookie
       RELEASE_NAME: db
-      RELEASE_NODE: db@db
+      RELEASE_NODE: db@db.test
 
   worker1:
     <<: *common
-    hostname: worker1
     depends_on: [db]
+    networks:
+      default:
+        aliases: [worker1.test]
     environment:
       RELEASE_COOKIE: demo-cookie
       RELEASE_NAME: worker1
-      RELEASE_NODE: worker1@worker1
+      RELEASE_NODE: worker1@worker1.test
 
   worker2:
     <<: *common
-    hostname: worker2
     depends_on: [db]
+    networks:
+      default:
+        aliases: [worker2.test]
     environment:
       RELEASE_COOKIE: demo-cookie
       RELEASE_NAME: worker2
-      RELEASE_NODE: worker2@worker2
+      RELEASE_NODE: worker2@worker2.test
 
   worker3:
     <<: *common
-    hostname: worker3
     depends_on: [db]
+    networks:
+      default:
+        aliases: [worker3.test]
     environment:
       RELEASE_COOKIE: demo-cookie
       RELEASE_NAME: worker3
-      RELEASE_NODE: worker3@worker3
+      RELEASE_NODE: worker3@worker3.test
 
   demo_app:
     <<: *common
-    hostname: demo_app
     depends_on: [db, worker1, worker2, worker3]
+    networks:
+      default:
+        aliases: [demo_app.test]
     environment:
       RELEASE_COOKIE: demo-cookie
       RELEASE_NAME: demo_app
-      RELEASE_NODE: demo_app@demo_app
+      RELEASE_NODE: demo_app@demo_app.test
