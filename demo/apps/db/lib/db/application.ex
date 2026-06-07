@@ -1,7 +1,7 @@
 defmodule Db.Application do
   @moduledoc false
   use Application
-  use NebulaAPI
+  use NebulaAPI.Server
 
   def start(_type, _args) do
     cluster = [

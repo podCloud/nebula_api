@@ -8,9 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `nebula_api_server/0` macro: wire it into an OTP application's supervision tree to
-  start a per-app `NebulaAPI.Server`. The server discovers that app's modules using
-  `NebulaAPI` and supervises one worker per locally-served module.
+- `use NebulaAPI.Server` + `nebula_api_server/0` macro: wire it into an OTP application's
+  supervision tree to start a per-app `NebulaAPI.Server`, which discovers that app's
+  modules using `NebulaAPI` and supervises one worker per locally-served module.
+  `use NebulaAPI.Server` is the lightweight host-module entry point — it brings the macro
+  (and the `NebulaAPI.AST` macros) into scope without the `defapi` bookkeeping that
+  `use NebulaAPI` performs.
 - Optional `:nebula` Mix compiler (`compilers: Mix.compilers() ++ [:nebula]`): fails
   compilation with an explanatory error when an app has modules with local methods but
   no `nebula_api_server()` wired into its supervisor.

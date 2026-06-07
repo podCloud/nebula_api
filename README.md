@@ -167,13 +167,18 @@ end
 ```elixir
 defmodule MyApp.Application do
   use Application
-  use NebulaAPI
+  use NebulaAPI.Server
 
   def start(_type, _args) do
     Supervisor.start_link([nebula_api_server()], strategy: :one_for_one, name: MyApp.Sup)
   end
 end
 ```
+
+`use NebulaAPI.Server` brings the `nebula_api_server/0` macro into scope (plus the
+`on_nebula_nodes` / `call_on_*` macros) — without the `defapi` bookkeeping, since the host
+module has none of its own. Use it on the module that wires the server; use `use NebulaAPI`
+on the modules that actually define `defapi` endpoints.
 
 `nebula_api_server()` discovers the app's own modules that `use NebulaAPI` and starts a
 supervised GenServer worker for each one that has local methods on this node; each worker
@@ -495,7 +500,7 @@ end
 ```elixir
 defmodule MyApp.Application do
   use Application
-  use NebulaAPI
+  use NebulaAPI.Server
 
   def start(_type, _args) do
     # Only the &db node starts the Repo; everyone runs the nebula server.
