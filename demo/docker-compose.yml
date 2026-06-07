@@ -1,0 +1,62 @@
+x-common: &common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: nebula-api-demo
+  # Mount the REPO ROOT (parent of demo/) so the `nebula_api` path dep ("../../..")
+  # is visible inside the container; run from /app/demo (the umbrella root).
+  working_dir: /app/demo
+  volumes:
+    - ../:/app
+    # Per-container deps + _build (anonymous volumes shadow the bind mount) so the
+    # 5 nodes don't race on `mix deps.get`/compile over the shared source, and the
+    # conditional Cachex dep stays isolated to the db container.
+    - /app/demo/deps
+    - /app/demo/_build
+  environment:
+    RELEASE_COOKIE: demo-cookie
+
+services:
+  db:
+    <<: *common
+    hostname: db
+    environment:
+      RELEASE_COOKIE: demo-cookie
+      RELEASE_NAME: db
+      RELEASE_NODE: db@db
+
+  worker1:
+    <<: *common
+    hostname: worker1
+    depends_on: [db]
+    environment:
+      RELEASE_COOKIE: demo-cookie
+      RELEASE_NAME: worker1
+      RELEASE_NODE: worker1@worker1
+
+  worker2:
+    <<: *common
+    hostname: worker2
+    depends_on: [db]
+    environment:
+      RELEASE_COOKIE: demo-cookie
+      RELEASE_NAME: worker2
+      RELEASE_NODE: worker2@worker2
+
+  worker3:
+    <<: *common
+    hostname: worker3
+    depends_on: [db]
+    environment:
+      RELEASE_COOKIE: demo-cookie
+      RELEASE_NAME: worker3
+      RELEASE_NODE: worker3@worker3
+
+  demo_app:
+    <<: *common
+    hostname: demo_app
+    depends_on: [db, worker1, worker2, worker3]
+    environment:
+      RELEASE_COOKIE: demo-cookie
+      RELEASE_NAME: demo_app
+      RELEASE_NODE: demo_app@demo_app
