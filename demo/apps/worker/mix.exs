@@ -11,6 +11,8 @@ defmodule Worker.MixProject do
       lockfile: "../../mix.lock",
       elixir: "~> 1.16",
       start_permanent: Mix.env() == :prod,
+      # :nebula guards against forgetting nebula_api_server() in the supervisor.
+      compilers: Mix.compilers() ++ [:nebula],
       deps: deps()
     ]
   end

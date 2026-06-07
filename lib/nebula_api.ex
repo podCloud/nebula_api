@@ -35,6 +35,12 @@ defmodule NebulaAPI do
       end
   """
   defmacro nebula_api_server do
+    # Mark the calling module so the `:nebula` Mix compiler can verify, after the whole
+    # app is compiled, that an app with local methods actually wired a server somewhere.
+    # The attribute is registered by `use NebulaAPI` (which is what brings this macro
+    # into scope), so it persists into the .beam.
+    Module.put_attribute(__CALLER__.module, :nebula_api_server_wired, true)
+
     quote do
       NebulaAPI.Server.child_spec(app_module: __MODULE__)
     end
@@ -98,9 +104,14 @@ defmodule NebulaAPI do
     )
 
     # persist: true so the marker is readable at runtime via __info__(:attributes),
-    # which is how APIServer auto-discovers the modules that `use NebulaAPI`.
+    # which is how NebulaAPI.Server discovers the modules that `use NebulaAPI`.
     Module.register_attribute(env.module, :nebula_api, persist: true)
     Module.put_attribute(env.module, :nebula_api, opts)
+
+    # persist: true so the `:nebula` Mix compiler can read it from the .beam: it marks
+    # a module in which `nebula_api_server/0` was used. The compiler errors out when an
+    # app has local methods but no module carrying this marker (server not wired).
+    Module.register_attribute(env.module, :nebula_api_server_wired, persist: true)
 
     :ok
   end
