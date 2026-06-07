@@ -7,11 +7,11 @@ config :nebula_api,
     "worker2@worker2.test": [:nebula, :worker],
     "worker3@worker3.test": [:nebula, :worker],
     "db@db.test": [:nebula, :db]
-  ],
-  # Static (like nebula): both domain modules are loaded on every node (the worker
-  # and db apps run everywhere — see demo/mix.exs apps/1), so APIServer can register
-  # them on any node. Each node only serves the methods it compiled as LOCAL.
-  registered_modules: [Db.Store, Worker.Job]
+  ]
+
+# No registered_modules: each app wires a NebulaAPI.Server into its own supervision
+# tree (via nebula_api_server/0), which discovers its modules and starts a worker
+# per locally-served one. See apps/*/lib/*/application.ex.
 
 config :libcluster,
   topologies: [
