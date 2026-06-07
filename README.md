@@ -258,7 +258,7 @@ selectors, you can use just the short part:
 ```elixir
 # These are equivalent when there's no ambiguity:
 defapi @db, do_something() do ... end
-defapi @"db@db.example", do_something() do ... end
+defapi @:"db@db.example", do_something() do ... end
 ```
 
 This keeps your code readable. `@db` and `@worker` are clear
