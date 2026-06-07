@@ -25,7 +25,7 @@ defmodule Demo.MixProject do
   defp apps("worker1"), do: [:worker, :db]
   defp apps("worker2"), do: [:worker, :db]
   defp apps("worker3"), do: [:worker, :db]
-  defp apps("db"), do: [:db]
+  defp apps("db"), do: [:worker, :db]
   defp apps(_), do: [:demo_app, :worker, :db]
 
   defp deps, do: []
