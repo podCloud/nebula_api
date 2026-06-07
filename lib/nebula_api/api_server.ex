@@ -441,7 +441,6 @@ defmodule NebulaAPI.APIServer do
   # If you need a public API endpoint for node health, use collect_node_health_data_local/0
   # directly via RPC, or create a separate module that doesn't depend on build_nodes_info.
 
-  import NebulaAPI.Config
   require NebulaAPI.Config
 
   @doc """

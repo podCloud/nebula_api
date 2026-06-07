@@ -1,23 +1,26 @@
 defmodule NebulaAPI.MixProject do
   use Mix.Project
 
+  @version "0.2.0"
+  @source_url "https://github.com/podcloud/nebula_api"
+
   def project do
     [
       app: :nebula_api,
-      version: "0.1.0",
-      build_path: "../../_build",
-      config_path: "../../config/config.exs",
-      deps_path: "../../deps",
-      lockfile: "../../mix.lock",
+      version: @version,
       elixir: "~> 1.14",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
-      deps: deps()
+      deps: deps(),
+      docs: docs(),
+      package: package(),
+      name: "NebulaAPI",
+      description: "Compile-time selective compilation and transparent distributed execution for Erlang/Elixir clusters",
+      source_url: @source_url
     ]
   end
 
-  # Run "mix help compile.app" to learn about applications.
   def application do
     [
       mod: {NebulaAPI.Application, []},
@@ -25,23 +28,45 @@ defmodule NebulaAPI.MixProject do
     ]
   end
 
-  # Specifies which paths to compile per environment.
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
 
-  # Specifies your project dependencies.
-  #
-  # Type `mix help deps` for examples and options.
   defp deps do
-    []
+    [
+      {:ex_doc, "~> 0.31", only: :dev, runtime: false}
+    ]
   end
 
-  # Aliases are shortcuts or tasks specific to the current project.
-  #
-  # See the documentation for `Mix` for more info on aliases.
-  defp aliases do
+  defp package do
     [
-      setup: ["deps.get"]
+      licenses: ["MIT"],
+      links: %{"GitHub" => @source_url},
+      files: ~w(lib mix.exs README.md LICENSE CHANGELOG.md)
     ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      extras: [
+        "README.md",
+        "docs/concepts.md",
+        "docs/configuration.md",
+        "docs/macros-reference.md",
+        "docs/examples.md",
+        "docs/api-server.md",
+        "docs/ast-deep-dive.md",
+        "docs/troubleshooting.md",
+        "docs/guides/adding-nebula-api.md"
+      ],
+      groups_for_extras: [
+        Guides: ~r/docs\/guides\//,
+        Reference: ~r/docs\//
+      ]
+    ]
+  end
+
+  defp aliases do
+    [setup: ["deps.get"]]
   end
 end
