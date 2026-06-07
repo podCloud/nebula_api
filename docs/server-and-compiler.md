@@ -51,7 +51,7 @@ At startup the server:
    on this node,
 4. starts one `NebulaAPI.APIServer.Worker` per retained module.
 
-No module list, no config. The set is discovered from the compiled `.beam` metadata.
+The set is discovered from the compiled `.beam` metadata.
 
 **Lifecycle is correct for free.** Because the server lives in the app's own tree, if the
 app stops or crashes its server and workers go down with it, and `:pg` drops their

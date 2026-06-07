@@ -11,7 +11,7 @@ defmodule Worker.Job do
   end
 
   # Quorum + conditional compilation: worker3 ALWAYS fails — the raise is compiled
-  # ONLY on @worker3 (on_nebula_nodes), no config, no randomness.
+  # ONLY on @worker3 (on_nebula_nodes), so the failure is deterministic at build time.
   defapi &worker, run_task_flaky(arg) do
     Logger.info("⚙️  [#{node()}] Worker.Job.run_task_flaky(#{inspect(arg)})")
 
