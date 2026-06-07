@@ -77,26 +77,11 @@ defmodule NebulaAPI.APIServer do
         :ok
     end
 
-    Supervisor.init(
-      [
-        pg_spec()
-      ] ++
-        (registered_modules()
-         |> Enum.map(&worker_spec/1)),
-      strategy: :one_for_one
-    )
-  end
-
-  def register_module(module) do
-    Application.put_env(
-      :nebula_api,
-      :registered_modules,
-      Enum.uniq(registered_modules() ++ [module])
-    )
-  end
-
-  def registered_modules() do
-    Application.get_env(:nebula_api, :registered_modules, [])
+    # Only the cluster-wide bits live here: the :pg scope used for routing and the
+    # ETS nodes cache created above. Per-module workers are NOT started here — each
+    # consumer app owns a NebulaAPI.Server in its own tree (see the nebula_api_server/0
+    # macro), which discovers and supervises its modules' workers.
+    Supervisor.init([pg_spec()], strategy: :one_for_one)
   end
 
   def registered_remote_methods(module) do
@@ -788,12 +773,4 @@ defmodule NebulaAPI.APIServer do
       id: :pg_nebula_api,
       start: {:pg, :start_link, [:pg_nebula_api]}
     }
-
-  defp worker_spec(module),
-    do: %{
-      id: unique_worker_id(module),
-      start: {NebulaAPI.APIServer.Worker, :start_link, [module]}
-    }
-
-  defp unique_worker_id(module), do: Macro.underscore(module) |> String.replace("/", "_")
 end

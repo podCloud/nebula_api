@@ -1,0 +1,67 @@
+x-common: &common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: nebula-api-demo
+  # Mount the REPO ROOT (parent of demo/) so the `nebula_api` path dep ("../../..")
+  # is visible inside the container; run from /app/demo (the umbrella root).
+  working_dir: /app/demo
+  volumes:
+    # Shared source/deps/_build (like nebula). build_path "_build/#{release_name()}"
+    # (keyed by RELEASE_NODE) separates per-node bytecode; deps fetched once via the setup step.
+    - ../:/app
+
+services:
+  db:
+    <<: *common
+    networks:
+      default:
+        aliases: [db.test]
+    environment:
+      RELEASE_COOKIE: demo-cookie
+      RELEASE_NAME: db
+      RELEASE_NODE: db@db.test
+
+  worker1:
+    <<: *common
+    depends_on: [db]
+    networks:
+      default:
+        aliases: [worker1.test]
+    environment:
+      RELEASE_COOKIE: demo-cookie
+      RELEASE_NAME: worker
+      RELEASE_NODE: worker@worker1.test
+
+  worker2:
+    <<: *common
+    depends_on: [db]
+    networks:
+      default:
+        aliases: [worker2.test]
+    environment:
+      RELEASE_COOKIE: demo-cookie
+      RELEASE_NAME: worker
+      RELEASE_NODE: worker@worker2.test
+
+  worker3:
+    <<: *common
+    depends_on: [db]
+    networks:
+      default:
+        aliases: [worker3.test]
+    environment:
+      RELEASE_COOKIE: demo-cookie
+      RELEASE_NAME: worker
+      RELEASE_NODE: worker@worker3.test
+
+  demo_app:
+    <<: *common
+    depends_on: [db, worker1, worker2, worker3]
+    networks:
+      default:
+        aliases: [demo_app.test]
+    environment:
+      RELEASE_COOKIE: demo-cookie
+      RELEASE_NAME: demo_app
+      RELEASE_NODE: demo_app@demo_app.test

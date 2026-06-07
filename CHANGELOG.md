@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `use NebulaAPI.Server` + `nebula_api_server/0` macro: wire it into an OTP application's
+  supervision tree to start a per-app `NebulaAPI.Server`, which discovers that app's
+  modules using `NebulaAPI` and supervises one worker per locally-served module.
+  `use NebulaAPI.Server` is the lightweight host-module entry point — it brings the macro
+  (and the `NebulaAPI.AST` macros) into scope without the `defapi` bookkeeping that
+  `use NebulaAPI` performs.
+- Optional `:nebula` Mix compiler (`compilers: Mix.compilers() ++ [:nebula]`): fails
+  compilation with an explanatory error when an app has modules with local methods but
+  no `nebula_api_server()` wired into its supervisor.
+
+### Changed
+- **Breaking:** removed the `registered_modules` config option. Module workers are now
+  discovered per app at runtime (via `nebula_api_server/0`) instead of being listed in
+  config. Migration: drop `registered_modules` and add `nebula_api_server()` to each
+  consuming app's supervisor children.
+- Workers now live in the supervision tree of the app that owns their module, so they
+  share the app's lifecycle — when the app stops or crashes, its workers go down and
+  `:pg` drops them (no more stale routing entries). The central `APIServer` is reduced
+  to the `:pg` scope, the node-health ETS cache, and routing.
+
 ## [0.2.0] - 2026-06-07
 
 First standalone release, extracted from the podCloud Nebula umbrella with its

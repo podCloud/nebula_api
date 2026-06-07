@@ -59,6 +59,18 @@ defmodule NebulaAPI.AST.Parser do
     %{config | tags: config.tags ++ [tag]} |> Map.delete(:__unparsed)
   end
 
+  # Full node name as an atom literal: @:"node@host". The @identifier clauses above
+  # only match bare identifiers; a full name contains `@`/`.`, so it's written as an
+  # atom — the same atom Config.nodes_for_nodes_names / validate_with_nodes accept.
+  defp extract_nebula_config(config = %{__unparsed: {:!, _, [{:@, _, [node]}]}})
+       when is_atom(node) do
+    %{config | not_nodes: config.not_nodes ++ [node]} |> Map.delete(:__unparsed)
+  end
+
+  defp extract_nebula_config(config = %{__unparsed: {:@, _, [node]}}) when is_atom(node) do
+    %{config | nodes: config.nodes ++ [node]} |> Map.delete(:__unparsed)
+  end
+
   # Handle :* marker for "all nodes"
   defp extract_nebula_config(config = %{__unparsed: :*}) do
     %{config | all_nodes: true} |> Map.delete(:__unparsed)

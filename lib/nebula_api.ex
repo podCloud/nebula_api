@@ -7,8 +7,6 @@ defmodule NebulaAPI do
 
     quote do
       use NebulaAPI.AST
-
-      NebulaAPI.APIServer.register_module(__MODULE__)
     end
   end
 
@@ -69,6 +67,9 @@ defmodule NebulaAPI do
       persist: true
     )
 
+    # persist: true so the marker is readable at runtime via __info__(:attributes),
+    # which is how NebulaAPI.Server discovers the modules that `use NebulaAPI`.
+    Module.register_attribute(env.module, :nebula_api, persist: true)
     Module.put_attribute(env.module, :nebula_api, opts)
 
     :ok
