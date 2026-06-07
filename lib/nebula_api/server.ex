@@ -15,7 +15,7 @@ defmodule NebulaAPI.Server do
 
   Living inside the app's own tree is what makes the lifecycle correct: when the app
   stops or crashes, this supervisor (and its workers) go down with it and `:pg` drops
-  the entries. There is no central discovery and no static module registry.
+  the entries. The serving set is discovered from the app's compiled modules.
   """
 
   use Supervisor

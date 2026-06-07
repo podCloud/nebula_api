@@ -34,9 +34,10 @@ nodes: [
 - **Tags** — a list of atoms describing the node's capabilities. Used in `defapi`
   selectors (`&tag`).
 
-There is **no** `registered_modules` option. Each app wires `nebula_api_server()` (via
-`use NebulaAPI.Server`) into its supervisor, which discovers its `defapi` modules and
-starts the workers — see [server-and-compiler.md](server-and-compiler.md).
+Workers are configured in the supervision tree, not here: each app wires
+`nebula_api_server()` (via `use NebulaAPI.Server`) into its supervisor, which discovers
+its `defapi` modules and starts the workers — see
+[server-and-compiler.md](server-and-compiler.md).
 
 ### `default_opts`
 

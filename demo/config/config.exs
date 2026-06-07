@@ -9,9 +9,9 @@ config :nebula_api,
     "db@db.test": [:nebula, :db]
   ]
 
-# No registered_modules: each app wires a NebulaAPI.Server into its own supervision
-# tree (via nebula_api_server/0), which discovers its modules and starts a worker
-# per locally-served one. See apps/*/lib/*/application.ex.
+# Each app wires a NebulaAPI.Server into its own supervision tree (via
+# nebula_api_server/0), which discovers its modules and starts a worker per
+# locally-served one. See apps/*/lib/*/application.ex.
 
 config :libcluster,
   topologies: [

@@ -182,9 +182,9 @@ on the modules that actually define `defapi` endpoints.
 
 `nebula_api_server()` discovers the app's own modules that `use NebulaAPI` and starts a
 supervised GenServer worker for each one that has local methods on this node; each worker
-registers in `:pg` process groups for discovery across nodes. No module list to maintain —
-and because the server lives in the app's own tree, its workers die with the app (so `:pg`
-never holds stale entries).
+registers in `:pg` process groups for discovery across nodes. The set is discovered, never
+declared — and because the server lives in the app's own tree, its workers die with the
+app (so `:pg` never holds stale entries).
 
 #### Optional: guard against forgetting it
 
@@ -673,9 +673,6 @@ config :nebula_api,
     "db@db.example": [:cluster, :db],
     "worker@worker.example": [:cluster, :worker]
   ],
-
-  # No module list: each app wires `nebula_api_server()` into its own supervision
-  # tree, which discovers its defapi modules and starts the RPC workers.
 
   # Optional: override node identity for dev/test.
   # In production, compile with: elixir --name node@host -S mix compile
