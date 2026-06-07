@@ -45,8 +45,8 @@ you route to nodes by what they can do.
 config :nebula_api,
   nodes: [
     "api@api.example": [:cluster, :api],
-    "db@db.example": [:cluster, :db],
-    "db2@db2.example": [:cluster, :db],     # another :db node
+    "db@db1.example": [:cluster, :db],
+    "db@db2.example": [:cluster, :db],        # another :db node
     "worker@worker.example": [:cluster, :worker]
   ]
 ```

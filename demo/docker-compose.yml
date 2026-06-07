@@ -8,7 +8,7 @@ x-common: &common
   working_dir: /app/demo
   volumes:
     # Shared source/deps/_build (like nebula). build_path "_build/#{release_name()}"
-    # separates per-node bytecode; deps fetched once via the setup step.
+    # (keyed by RELEASE_NODE) separates per-node bytecode; deps fetched once via the setup step.
     - ../:/app
 
 services:
@@ -30,8 +30,8 @@ services:
         aliases: [worker1.test]
     environment:
       RELEASE_COOKIE: demo-cookie
-      RELEASE_NAME: worker1
-      RELEASE_NODE: worker1@worker1.test
+      RELEASE_NAME: worker
+      RELEASE_NODE: worker@worker1.test
 
   worker2:
     <<: *common
@@ -41,8 +41,8 @@ services:
         aliases: [worker2.test]
     environment:
       RELEASE_COOKIE: demo-cookie
-      RELEASE_NAME: worker2
-      RELEASE_NODE: worker2@worker2.test
+      RELEASE_NAME: worker
+      RELEASE_NODE: worker@worker2.test
 
   worker3:
     <<: *common
@@ -52,8 +52,8 @@ services:
         aliases: [worker3.test]
     environment:
       RELEASE_COOKIE: demo-cookie
-      RELEASE_NAME: worker3
-      RELEASE_NODE: worker3@worker3.test
+      RELEASE_NAME: worker
+      RELEASE_NODE: worker@worker3.test
 
   demo_app:
     <<: *common
