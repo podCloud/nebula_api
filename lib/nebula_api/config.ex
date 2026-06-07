@@ -4,15 +4,9 @@ defmodule NebulaAPI.Config do
     default_opts: []
   ]
 
-  @app_keys [:registered_modules]
-
   def config() do
-    app_config =
-      Application.get_all_env(:nebula_api)
-      |> Keyword.drop(@app_keys)
-
     @defaults
-    |> Keyword.merge(app_config)
+    |> Keyword.merge(Application.get_all_env(:nebula_api))
   end
 
   def nodes() do
