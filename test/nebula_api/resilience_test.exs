@@ -70,5 +70,27 @@ defmodule NebulaAPI.ResilienceTest do
 
       GenServer.stop(pid)
     end
+
+    test "a late worker reply does not land in the caller's mailbox" do
+      # Replies 200ms AFTER the 50ms timeout.
+      pid = start_fake(GarbageMod, :slow, 0, 250, {:ok, :too_late})
+
+      assert {:error, :timeout} =
+               APIServer.call_remote_method(GarbageMod, {:slow}, timeout: 50)
+
+      # Let the worker emit its late reply.
+      Process.sleep(400)
+
+      # No {reference, _} 2-tuple (the gen_server:call garbage shape) may be left
+      # in our mailbox: it was confined to the dead Task.
+      {:messages, msgs} = Process.info(self(), :messages)
+
+      refute Enum.any?(msgs, fn
+               {ref, _} when is_reference(ref) -> true
+               _ -> false
+             end)
+
+      GenServer.stop(pid)
+    end
   end
 end
