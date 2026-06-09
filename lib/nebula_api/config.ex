@@ -43,6 +43,16 @@ defmodule NebulaAPI.Config do
 
                   is_atom(tags) ->
                     [tags]
+
+                  true ->
+                    raise CompileError,
+                      description: """
+                      Invalid tags for node #{inspect(name)}: #{inspect(tags)}
+
+                      Each node's tags must be an atom or a list of atoms, e.g.
+                        "node@host": :db
+                        "node@host": [:db, :api]
+                      """
                 end
           }
         end

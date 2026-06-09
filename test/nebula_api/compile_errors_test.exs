@@ -35,4 +35,21 @@ defmodule NebulaAPI.CompileErrorsTest do
       end
     end
   end
+
+  describe "invalid node tags in config (L5)" do
+    @parsed %{tags: [:db], not_tags: [], nodes: [], not_nodes: []}
+
+    test "tags that are neither an atom nor a list raise a clear CompileError" do
+      nodes = [{:"test@host", "not-a-list-or-atom"}]
+
+      assert_raise CompileError, ~r/tags.*test@host/i, fn ->
+        Config.validate_with_nodes(@parsed, nodes)
+      end
+    end
+
+    test "an atom or a list of atoms stays valid" do
+      assert Config.validate_with_nodes(@parsed, [{:"test@host", :db}]) == :ok
+      assert Config.validate_with_nodes(@parsed, [{:"test@host", [:db, :api]}]) == :ok
+    end
+  end
 end
