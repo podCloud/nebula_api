@@ -50,13 +50,13 @@ defmodule NebulaAPI.MixProject do
       main: "readme",
       extras: [
         "README.md",
+        {"docs/README.md", title: "Documentation", filename: "documentation"},
         "docs/concepts.md",
         "docs/configuration.md",
         "docs/macros-reference.md",
-        "docs/examples.md",
-        "docs/api-server.md",
-        "docs/ast-deep-dive.md",
+        "docs/server-and-compiler.md",
         "docs/troubleshooting.md",
+        "docs/deep-dive/ast-deep-dive.md",
         "docs/guides/adding-nebula-api.md"
       ],
       groups_for_extras: [
