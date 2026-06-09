@@ -11,6 +11,7 @@ defmodule NebulaAPI.Application do
     Logger.debug("Starting NebulaAPI Application.")
 
     children = [
+      {Task.Supervisor, name: NebulaAPI.TaskSupervisor},
       NebulaAPI.APIServer
     ]
 
