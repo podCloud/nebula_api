@@ -93,4 +93,26 @@ defmodule NebulaAPI.ResilienceTest do
       GenServer.stop(pid)
     end
   end
+
+  describe "multicast :all — timeout resilience (H2)" do
+    test "a worker slower than the timeout returns a partial list without crashing" do
+      pid = start_fake(AllTimeoutMod, :slow, 0, 400, {:ok, :too_late})
+
+      result =
+        APIServer.call_remote_method(
+          AllTimeoutMod,
+          {:slow},
+          multicast: true,
+          strategy: :all,
+          timeout: 80
+        )
+
+      assert is_list(result)
+      assert [{:timeout, _node}] = result
+      # No crash: we're still here.
+      assert Process.alive?(self())
+
+      GenServer.stop(pid)
+    end
+  end
 end

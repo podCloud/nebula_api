@@ -487,6 +487,23 @@ defmodule NebulaAPI.APIServer do
     Task.await(task, :infinity)
   end
 
+  # Node-tagged multicast call, built on safe_call/3. Same return shape as the
+  # previous inline code: {status, value, node} on a reply, {:timeout, node} /
+  # {:error, reason, node} on an exit.
+  defp tagged_call(worker, fn_call, timeout, target_node) do
+    case safe_call(worker, fn_call, timeout) do
+      {:replied, reply} ->
+        {status, value} = unwrap_worker_result(reply)
+        {status, value, target_node}
+
+      {:exit, :timeout} ->
+        {:timeout, target_node}
+
+      {:exit, reason} ->
+        {:error, reason, target_node}
+    end
+  end
+
   defp call_first_worker(module, fn_call, timeout) do
     case get_remote_method_worker(module, fn_call) do
       worker when is_pid(worker) ->
@@ -602,24 +619,56 @@ defmodule NebulaAPI.APIServer do
   end
 
   defp do_multicast_all(target_workers, fn_call, timeout) do
+    parent = self()
+    ref = make_ref()
     deadline = System.monotonic_time(:millisecond) + timeout
 
-    target_workers
-    |> Enum.map(fn {target_node, worker} ->
-      Task.async(fn ->
-        try do
+    tasks =
+      target_workers
+      |> Enum.map(fn {target_node, worker} ->
+        Task.async(fn ->
           remaining = max(deadline - System.monotonic_time(:millisecond), 100)
-          result = GenServer.call(worker, fn_call, remaining)
-          {status, value} = unwrap_worker_result(result)
-          {status, value, target_node}
-        catch
-          :exit, {:timeout, _} -> {:timeout, target_node}
-          :exit, reason -> {:error, reason, target_node}
-        end
+          send(parent, {ref, tagged_call(worker, fn_call, remaining, target_node)})
+        end)
       end)
-    end)
-    |> Task.await_many(max(deadline - System.monotonic_time(:millisecond), 100))
+
+    received = wait_for_all(ref, length(target_workers), deadline, [])
+
+    Enum.each(tasks, fn task -> Task.shutdown(task, :brutal_kill) end)
+    flush_ref(ref)
+
+    # Guarantee one entry per targeted node: nodes that did not answer before the
+    # deadline are reported as {:timeout, node} instead of being silently dropped.
+    # This preserves the previous Task.await_many contract (one result per node)
+    # without exiting the caller on timeout.
+    answered = MapSet.new(received, &result_node/1)
+
+    timeouts =
+      for {target_node, _worker} <- target_workers,
+          not MapSet.member?(answered, target_node),
+          do: {:timeout, target_node}
+
+    received ++ timeouts
   end
+
+  defp wait_for_all(_ref, 0, _deadline, results) do
+    Enum.reverse(results)
+  end
+
+  defp wait_for_all(ref, remaining, deadline, results) do
+    remaining_ms = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {^ref, response} ->
+        wait_for_all(ref, remaining - 1, deadline, [response | results])
+    after
+      remaining_ms ->
+        Enum.reverse(results)
+    end
+  end
+
+  defp result_node({:timeout, target_node}), do: target_node
+  defp result_node({_status, _value, target_node}), do: target_node
 
   defp do_multicast_first(target_workers, fn_call, timeout) do
     parent = self()
