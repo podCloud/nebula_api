@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-06-08
 
 ### Added
 - `use NebulaAPI.Server` + `nebula_api_server/0` macro: wire it into an OTP application's
@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional `:nebula` Mix compiler (`compilers: Mix.compilers() ++ [:nebula]`): fails
   compilation with an explanatory error when an app has modules with local methods but
   no `nebula_api_server()` wired into its supervisor.
+- Select a full node name with an atom selector `@:"node@host"` in `defapi` /
+  `on_nebula_nodes` — the parser previously accepted only short-name identifiers (`@db`).
 
 ### Changed
 - **Breaking:** removed the `registered_modules` config option. Module workers are now
@@ -27,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   share the app's lifecycle — when the app stops or crashes, its workers go down and
   `:pg` drops them (no more stale routing entries). The central `APIServer` is reduced
   to the `:pg` scope, the node-health ETS cache, and routing.
+
+### Documentation
+- Rewrote the README and `docs/` to be generic and library-only, and added a 5-node
+  `docker compose` demo under `demo/`.
 
 ## [0.2.0] - 2026-06-07
 
