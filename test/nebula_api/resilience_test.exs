@@ -40,6 +40,25 @@ defmodule NebulaAPI.ResilienceTest do
     pid
   end
 
+  # A module carrying the persisted :nebula_local_api_methods marker the worker
+  # reads to register itself and validate incoming calls.
+  defmodule LocalMethodsMod do
+    Module.register_attribute(__MODULE__, :nebula_local_api_methods,
+      accumulate: true,
+      persist: true
+    )
+
+    @nebula_local_api_methods {:slow, 0}
+    @nebula_local_api_methods {:fast, 0}
+
+    def slow do
+      Process.sleep(300)
+      {:ok, :slow}
+    end
+
+    def fast, do: {:ok, :fast}
+  end
+
   describe "unicast — timeout resilience (H1)" do
     test "a worker slower than the timeout returns {:error, :timeout} without crashing the caller" do
       pid = start_fake(UnicastTimeoutMod, :slow, 0, 300, {:ok, :too_late})
@@ -113,6 +132,28 @@ defmodule NebulaAPI.ResilienceTest do
       assert Process.alive?(self())
 
       GenServer.stop(pid)
+    end
+  end
+
+  describe "worker — non-blocking execution (H3)" do
+    test "a slow call does not block a concurrent fast call" do
+      {:ok, worker} = NebulaAPI.APIServer.Worker.start_link(LocalMethodsMod)
+      parent = self()
+
+      spawn(fn -> send(parent, {:slow_done, GenServer.call(worker, {:slow}, 5_000)}) end)
+      # Let the slow call reach the worker.
+      Process.sleep(30)
+
+      t0 = System.monotonic_time(:millisecond)
+      fast = GenServer.call(worker, {:fast}, 5_000)
+      elapsed = System.monotonic_time(:millisecond) - t0
+
+      assert fast == {:ok, :fast}
+      # The fast call must NOT have waited out the slow call's 300ms.
+      assert elapsed < 150
+      assert_receive {:slow_done, {:ok, :slow}}, 1_000
+
+      GenServer.stop(worker)
     end
   end
 end
