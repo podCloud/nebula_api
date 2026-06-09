@@ -459,12 +459,41 @@ defmodule NebulaAPI.APIServer do
     |> List.first()
   end
 
+  # Wraps a GenServer.call: tells a received reply apart from an exit (timeout / other).
+  # `{:replied, term}` = the worker replied (term may be a business-level error).
+  # `{:exit, :timeout}` / `{:exit, reason}` = the call exited without a reply.
+  defp safe_call(worker, fn_call, timeout) do
+    {:replied, GenServer.call(worker, fn_call, timeout)}
+  catch
+    :exit, {:timeout, _} -> {:exit, :timeout}
+    :exit, reason -> {:exit, reason}
+  end
+
+  # Confined unicast: the GenServer.call runs in a throwaway Task, so that a late
+  # reply {ref, reply} (left behind by a call that timed out) lands in the Task's
+  # mailbox — which dies — and never in the caller's. The Task always returns
+  # quickly (safe_call has an internal timeout), so Task.await/:infinity can neither
+  # block nor exit.
+  defp confined_call(worker, fn_call, timeout) do
+    task =
+      Task.async(fn ->
+        case safe_call(worker, fn_call, timeout) do
+          {:replied, reply} -> reply
+          {:exit, :timeout} -> {:error, :timeout}
+          {:exit, reason} -> {:error, reason}
+        end
+      end)
+
+    Task.await(task, :infinity)
+  end
+
   defp call_first_worker(module, fn_call, timeout) do
-    with worker <- module |> get_remote_method_worker(fn_call),
-         {:is_pid, true} <- {:is_pid, is_pid(worker)} do
-      GenServer.call(worker, fn_call, timeout)
-    else
-      {:is_pid, false} -> {:error, "No worker found for remote method #{inspect(fn_call)}"}
+    case get_remote_method_worker(module, fn_call) do
+      worker when is_pid(worker) ->
+        confined_call(worker, fn_call, timeout)
+
+      _ ->
+        {:error, "No worker found for remote method #{inspect(fn_call)}"}
     end
   end
 
