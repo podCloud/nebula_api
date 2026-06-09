@@ -52,4 +52,28 @@ defmodule NebulaAPI.CompileErrorsTest do
       assert Config.validate_with_nodes(@parsed, [{:"test@host", [:db, :api]}]) == :ok
     end
   end
+
+  describe "defapi without `use NebulaAPI` (L1)" do
+    setup do
+      Application.put_env(:nebula_api, :nodes, [{:"test@host", [:db]}])
+      on_exit(fn -> Application.delete_env(:nebula_api, :nodes) end)
+      :ok
+    end
+
+    test "using defapi from a `use NebulaAPI.AST` module raises a clear CompileError" do
+      code = """
+      defmodule NebulaAPI.CompileErrorsTest.MissingUse do
+        use NebulaAPI.AST
+
+        defapi &db, foo() do
+          :ok
+        end
+      end
+      """
+
+      assert_raise CompileError, ~r/use NebulaAPI/, fn ->
+        Code.eval_string(code)
+      end
+    end
+  end
 end

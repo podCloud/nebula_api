@@ -80,10 +80,22 @@ defmodule NebulaAPI.AST do
       true
     else
       execution_nodes = nebula_ast |> get_execution_nodes_from_nebula_ast!()
+
       self_node =
-        __CALLER__.module
-        |> Module.get_attribute(:nebula_api)
-        |> Keyword.fetch!(:self_node)
+        case Module.get_attribute(__CALLER__.module, :nebula_api) do
+          nil ->
+            raise CompileError,
+              description: """
+              defapi used in #{inspect(__CALLER__.module)} without `use NebulaAPI`.
+
+              Only `use NebulaAPI` registers the bookkeeping defapi needs. Use it on
+              modules that define defapi endpoints — `use NebulaAPI.AST` is for
+              on_nebula_nodes / call_on_* only.
+              """
+
+          opts ->
+            Keyword.fetch!(opts, :self_node)
+        end
 
       execution_nodes
       |> Keyword.keys()
