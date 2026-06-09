@@ -58,7 +58,6 @@ defmodule NebulaAPI.APIServer do
   @default_timeout 5000
   @nodes_cache_table :nebula_nodes_cache
   @nodes_info_cache_key :__nodes_info_snapshot__
-  @nodes_info_ttl_ms 5_000
 
   def start_link(init_arg) do
     Supervisor.start_link(__MODULE__, init_arg, name: __MODULE__)
@@ -77,11 +76,15 @@ defmodule NebulaAPI.APIServer do
         :ok
     end
 
-    # Only the cluster-wide bits live here: the :pg scope used for routing and the
-    # ETS nodes cache created above. Per-module workers are NOT started here — each
-    # consumer app owns a NebulaAPI.Server in its own tree (see the nebula_api_server/0
-    # macro), which discovers and supervises its modules' workers.
-    Supervisor.init([pg_spec()], strategy: :one_for_one)
+    # Only the cluster-wide bits live here: the :pg scope used for routing, the ETS
+    # nodes cache created above, and the per-node NodesInfoCache that refreshes the
+    # node-info snapshot in the background. Per-module workers are NOT started here —
+    # each consumer app owns a NebulaAPI.Server in its own tree (see the
+    # nebula_api_server/0 macro), which discovers and supervises its modules' workers.
+    Supervisor.init(
+      [pg_spec(), NebulaAPI.APIServer.NodesInfoCache],
+      strategy: :one_for_one
+    )
   end
 
   def registered_remote_methods(module) do
@@ -310,14 +313,16 @@ defmodule NebulaAPI.APIServer do
   end
 
   @doc """
-  Returns cached nodes_info if still fresh (within TTL), otherwise rebuilds.
-  Default TTL is #{@nodes_info_ttl_ms}ms.
+  Returns the latest cluster node-info snapshot.
+
+  Reads the snapshot written by `NebulaAPI.APIServer.NodesInfoCache` (which keeps
+  it fresh in the background) — it does NOT rebuild on read, so concurrent callers
+  never trigger an RPC fan-out. Only on a cold cache (no snapshot yet, before the
+  first refresh) does it build once as a fallback, so it never returns an empty map.
   """
   def get_nodes_info do
-    now = System.monotonic_time(:millisecond)
-
     case :ets.lookup(@nodes_cache_table, @nodes_info_cache_key) do
-      [{_, %{data: data, updated_at: updated_at}}] when now - updated_at < @nodes_info_ttl_ms ->
+      [{_, %{data: data}}] ->
         data
 
       _ ->

@@ -153,6 +153,41 @@ defmodule NebulaAPI.ResilienceTest do
     end
   end
 
+  describe "node-info cache refresh (M4)" do
+    test "NodesInfoCache repopulates the snapshot periodically" do
+      # Wipe the snapshot, start a fast-refreshing cache, expect it back.
+      :ets.delete(:nebula_nodes_cache, :__nodes_info_snapshot__)
+
+      {:ok, pid} = NebulaAPI.APIServer.NodesInfoCache.start_link(name: nil, interval: 50)
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      # Let it tick a couple of times.
+      Process.sleep(150)
+
+      assert match?(
+               [{_, %{data: _}}],
+               :ets.lookup(:nebula_nodes_cache, :__nodes_info_snapshot__)
+             )
+    end
+
+    test "get_nodes_info serves an existing snapshot without rebuilding it" do
+      marker = %{:"marker@host" => %{long_name: :"marker@host", connected: false}}
+
+      # updated_at deliberately far in the past: under the old TTL logic this would
+      # have forced a rebuild; the new behavior serves it regardless of age.
+      stale_at = System.monotonic_time(:millisecond) - 60_000
+
+      :ets.insert(
+        :nebula_nodes_cache,
+        {:__nodes_info_snapshot__, %{data: marker, updated_at: stale_at}}
+      )
+
+      # A stale snapshot is served as-is (the cache keeps it fresh in the
+      # background); get_nodes_info no longer rebuilds on read.
+      assert APIServer.get_nodes_info() == marker
+    end
+  end
+
   describe "worker — non-blocking execution (H3)" do
     test "a slow call does not block a concurrent fast call" do
       {:ok, worker} = NebulaAPI.APIServer.Worker.start_link(LocalMethodsMod)

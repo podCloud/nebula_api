@@ -1,7 +1,8 @@
 defmodule NebulaAPI.Config do
   @defaults [
     nodes: [],
-    default_opts: []
+    default_opts: [],
+    nodes_info_refresh_interval: 5_000
   ]
 
   def config() do
@@ -15,6 +16,11 @@ defmodule NebulaAPI.Config do
 
   def default_opts() do
     config()[:default_opts]
+  end
+
+  # How often (ms) NodesInfoCache refreshes the cluster node-info snapshot.
+  def nodes_info_refresh_interval() do
+    config()[:nodes_info_refresh_interval]
   end
 
   def validate_with_nodes(config, nodes) do
