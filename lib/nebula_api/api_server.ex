@@ -680,15 +680,8 @@ defmodule NebulaAPI.APIServer do
       target_workers
       |> Enum.map(fn {target_node, worker} ->
         Task.async(fn ->
-          try do
-            remaining = max(deadline - System.monotonic_time(:millisecond), 100)
-            result = GenServer.call(worker, fn_call, remaining)
-            {status, value} = unwrap_worker_result(result)
-            send(parent, {ref, {status, value, target_node}})
-          catch
-            :exit, {:timeout, _} -> send(parent, {ref, {:timeout, target_node}})
-            :exit, reason -> send(parent, {ref, {:error, reason, target_node}})
-          end
+          remaining = max(deadline - System.monotonic_time(:millisecond), 100)
+          send(parent, {ref, tagged_call(worker, fn_call, remaining, target_node)})
         end)
       end)
 
@@ -751,15 +744,8 @@ defmodule NebulaAPI.APIServer do
       target_workers
       |> Enum.map(fn {target_node, worker} ->
         Task.async(fn ->
-          try do
-            remaining = max(deadline - System.monotonic_time(:millisecond), 100)
-            result = GenServer.call(worker, fn_call, remaining)
-            {status, value} = unwrap_worker_result(result)
-            send(parent, {ref, {status, value, target_node}})
-          catch
-            :exit, {:timeout, _} -> send(parent, {ref, {:timeout, target_node}})
-            :exit, reason -> send(parent, {ref, {:error, reason, target_node}})
-          end
+          remaining = max(deadline - System.monotonic_time(:millisecond), 100)
+          send(parent, {ref, tagged_call(worker, fn_call, remaining, target_node)})
         end)
       end)
 
