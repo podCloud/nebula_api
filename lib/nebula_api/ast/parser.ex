@@ -76,6 +76,22 @@ defmodule NebulaAPI.AST.Parser do
     %{config | all_nodes: true} |> Map.delete(:__unparsed)
   end
 
+  # Anything else is not a valid selector: fail with a clear compile-time message
+  # instead of an opaque FunctionClauseError from this module.
+  defp extract_nebula_config(%{__unparsed: other}) do
+    raise CompileError,
+      description: """
+      Invalid nebula selector: #{Macro.to_string(other)}
+
+      Accepted forms:
+        - @node / !@node          (node short or full name)
+        - &tag / !&tag            (capability tag)
+        - @:"node@host"           (full node name as an atom)
+        - [..]                    (a list combining the above)
+        - :*                      (all nodes)
+      """
+  end
+
   def parse_fundef_ast({fn_name, _, fn_args}) do
     (fn_args || [])
     |> Enum.reduce(
@@ -93,6 +109,16 @@ defmodule NebulaAPI.AST.Parser do
 
         {:\\, _, [{arg, _, nil}, default]}, fundef ->
           %{fundef | args: fundef.args ++ [{arg, default}], args_count: fundef.args_count + 1}
+
+        arg, _fundef ->
+          raise CompileError,
+            description: """
+            Unsupported defapi argument: #{Macro.to_string(arg)}
+
+            defapi signatures accept simple variables and defaults only
+            (e.g. get(id), list(filters \\\\ [])), not pattern-matched
+            arguments like maps, lists or tuples.
+            """
       end
     )
   end
