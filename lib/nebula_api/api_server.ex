@@ -515,7 +515,7 @@ defmodule NebulaAPI.APIServer do
       {:ok, selected_node} ->
         if selected_node && Map.has_key?(workers_by_node, selected_node) do
           worker = workers_by_node[selected_node]
-          GenServer.call(worker, fn_call, timeout)
+          confined_call(worker, fn_call, timeout)
         else
           {:error, "No worker found on selected node #{inspect(selected_node)}"}
         end

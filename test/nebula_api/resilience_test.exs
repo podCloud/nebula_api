@@ -52,5 +52,23 @@ defmodule NebulaAPI.ResilienceTest do
 
       GenServer.stop(pid)
     end
+
+    test "through a node selector, a too-slow worker returns {:error, :timeout} without crashing" do
+      pid = start_fake(UnicastSelectorMod, :slow, 0, 300, {:ok, :too_late})
+      target = node()
+
+      result =
+        APIServer.call_remote_method(
+          UnicastSelectorMod,
+          {:slow},
+          node_selector: fn _nodes_info -> target end,
+          timeout: 50
+        )
+
+      assert {:error, :timeout} = result
+      assert Process.alive?(self())
+
+      GenServer.stop(pid)
+    end
   end
 end
