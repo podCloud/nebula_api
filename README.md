@@ -41,9 +41,10 @@ need a database connection don't load Ecto at all.
 your topology? `CompileError`. Typo in a node name? Caught before it
 ships. No silent RPC calls into the void.
 
-**Zero runtime overhead.** Local calls are plain function calls — no
-process dictionary lookup, no routing table, no RPC serialization. The
-decision was made once, at compile time.
+**Almost zero runtime overhead.** A locally-resolved call is a direct
+function call plus a handful of process-dictionary reads (~0.00002 ms) to
+check for an active routing context — no routing table, no RPC
+serialization. The decision was made once, at compile time.
 
 > **"Compile per release" — the one mental shift.** NebulaAPI produces
 > different bytecode per node, so each release is its own build. For Elixir
@@ -359,6 +360,9 @@ end
 
 ### `call_on_all_nodes` — broadcast
 
+Calls every node that serves this method (i.e. has a registered worker for it),
+not necessarily every configured node.
+
 ```elixir
 call_on_all_nodes timeout: 5_000 do
   MyApp.Cache.invalidate(:all)
@@ -654,13 +658,14 @@ Indicative, order-of-magnitude:
 
 | Call | Typical latency |
 |---|---|
-| Local call (plain Elixir) | ~0.1 µs |
-| NebulaAPI, resolved local | ~0.1 µs |
+| Local call (plain Elixir) | ~0.000005 ms |
+| NebulaAPI, resolved local | ~0.00002 ms |
 | NebulaAPI, cross-node (Erlang distribution RPC) | ~0.2–2 ms |
 
-The point: a locally-resolved NebulaAPI call adds nothing — it compiled down to a
-direct function call. Cross-node calls are standard Erlang distribution RPC, i.e.
-fast.
+The point: a locally-resolved NebulaAPI call adds almost nothing — a direct
+function call plus a few process-dictionary reads (~0.00002 ms per call), roughly
+10,000× cheaper than a cross-node call. Cross-node calls are standard Erlang
+distribution RPC, i.e. fast.
 
 ## Configuration reference
 

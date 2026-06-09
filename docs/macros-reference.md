@@ -182,8 +182,9 @@ target nodes.
 
 ## `call_on_all_nodes` — broadcast
 
-Convenience wrapper for multicast over every configured node. Same options as
-`call_on_nodes`.
+Convenience wrapper for multicast over every node that **serves this method** —
+i.e. every node that has a registered worker for it, not necessarily every
+configured node. Same options as `call_on_nodes`.
 
 ```elixir
 call_on_all_nodes timeout: 5_000 do
