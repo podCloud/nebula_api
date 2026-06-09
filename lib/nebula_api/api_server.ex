@@ -227,10 +227,7 @@ defmodule NebulaAPI.APIServer do
         timeout: 6000,
         on_timeout: :kill_task
       )
-      |> Enum.map(fn
-        {:ok, result} -> result
-        {:exit, :timeout} -> {:timeout, :unknown}
-      end)
+      |> Enum.map(&normalize_stream_result/1)
       |> Enum.filter(fn
         {:timeout, :unknown} -> false
         _ -> true
@@ -278,6 +275,15 @@ defmodule NebulaAPI.APIServer do
     end)
     |> Map.new()
   end
+
+  # Normalize one Task.async_stream result. A successful task yields {:ok, value};
+  # a timed-out task yields {:exit, :timeout}; any OTHER exit (the task crashed —
+  # e.g. a raise in collect_node_health_data_local) must not be fatal to the whole
+  # build, so it is mapped to a drop marker too instead of raising FunctionClauseError.
+  @doc false
+  def normalize_stream_result({:ok, result}), do: result
+  def normalize_stream_result({:exit, :timeout}), do: {:timeout, :unknown}
+  def normalize_stream_result({:exit, _reason}), do: {:timeout, :unknown}
 
   @doc """
   Gets cached node info from ETS.

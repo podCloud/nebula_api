@@ -135,6 +135,24 @@ defmodule NebulaAPI.ResilienceTest do
     end
   end
 
+  describe "build_nodes_info — a crashing node is not fatal (L3)" do
+    test "a non-timeout task exit is dropped, not raised" do
+      # async_stream yields {:exit, reason} when a task crashes (not just on timeout).
+      # Such a result must be treated as a drop, never crash the whole build.
+      assert APIServer.normalize_stream_result({:exit, %ArithmeticError{}}) ==
+               {:timeout, :unknown}
+
+      assert APIServer.normalize_stream_result({:exit, :killed}) == {:timeout, :unknown}
+    end
+
+    test "successful and timed-out results keep their existing behavior" do
+      assert APIServer.normalize_stream_result({:ok, {:ok, %{a: 1}, :n@h}}) ==
+               {:ok, %{a: 1}, :n@h}
+
+      assert APIServer.normalize_stream_result({:exit, :timeout}) == {:timeout, :unknown}
+    end
+  end
+
   describe "worker — non-blocking execution (H3)" do
     test "a slow call does not block a concurrent fast call" do
       {:ok, worker} = NebulaAPI.APIServer.Worker.start_link(LocalMethodsMod)
