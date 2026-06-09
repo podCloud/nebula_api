@@ -155,5 +155,18 @@ defmodule NebulaAPI.ResilienceTest do
 
       GenServer.stop(worker)
     end
+
+    test "an unknown-method call returns an error without killing the worker" do
+      {:ok, worker} = NebulaAPI.APIServer.Worker.start_link(LocalMethodsMod)
+
+      assert {:error, {:undefined_local_method, LocalMethodsMod, :nope, 0}} =
+               GenServer.call(worker, {:nope}, 1_000)
+
+      # The worker survives and keeps serving its real methods.
+      assert Process.alive?(worker)
+      assert GenServer.call(worker, {:fast}, 1_000) == {:ok, :fast}
+
+      GenServer.stop(worker)
+    end
   end
 end
