@@ -17,7 +17,7 @@ end
 
 # On any node — same call, same result:
 MyApp.Users.find(42)
-#=> {:ok, %User{id: 42, ...}}
+#=> %User{id: 42, ...}
 ```
 
 On the `:db` node, `find/1` runs locally. On every other node, it
@@ -209,11 +209,11 @@ compile error raised for a `defapi` targeting an unknown node.
 ```elixir
 # On @db (has &db) → local Repo.get!
 MyApp.Users.find(42)
-#=> {:ok, %User{id: 42, ...}}
+#=> %User{id: 42, ...}
 
 # On @worker (no &db) → transparent RPC to a &db node
 MyApp.Users.find(42)
-#=> {:ok, %User{id: 42, ...}}
+#=> %User{id: 42, ...}
 ```
 
 ## Selectors
@@ -371,11 +371,38 @@ end
 
 ### Multicast strategies
 
+Multicast results are always tagged by node. A node that answered yields
+`{node, value}` (whatever the body returned); a node whose call failed at the
+transport level yields `{node, {:nebula_error, reason}}`.
+
 | Strategy | Behavior |
 |---|---|
-| `:all` | Wait for every node (or timeout). Returns `[result]`. |
-| `:first` | Return first success. Kill remaining tasks. |
-| `:quorum` | Wait for N successes. Early exit if quorum unreachable. |
+| `:all` | Wait for every node (or timeout). Returns a list of `{node, value}` / `{node, {:nebula_error, reason}}`. |
+| `:first` | Returns the first `{node, value}` that counts as a success. If none qualify, returns the full list of responses. |
+| `:quorum` | Reached: the list of `{node, value}`. Not reached: `{:nebula_error, :quorum_not_reached, results}` or `{:nebula_error, :quorum_timeout, results}`. |
+
+#### Defining "success" — `success:` / `failure:`
+
+By default, a node counts as a success for `:first` and `:quorum` as soon as it
+*responds* (a `{:nebula_error, _}` never counts). To base success on the
+returned value instead, pass a predicate:
+
+```elixir
+# Only count a node when it returned {:ok, _}
+call_on_nodes &db, strategy: :quorum, quorum_count: 2,
+  success: &match?({:ok, _}, &1) do
+  MyApp.Users.write_replica(user)
+end
+
+# Mirror form: treat {:error, _} as failure, everything else as success
+call_on_nodes &worker, strategy: :first,
+  failure: &match?({:error, _}, &1) do
+  MyApp.Jobs.transcode(file, opts)
+end
+```
+
+A transport failure (`{:nebula_error, _}`) is never a success, regardless of the
+predicate.
 
 ## Node info and intelligent routing
 
@@ -426,20 +453,27 @@ end do
 end
 ```
 
-## Result wrapping
+## Return values
 
-All `defapi` functions wrap return values consistently:
+NebulaAPI never wraps your return value. A `defapi` body returns exactly what it
+computed — local or over RPC, the result is identical:
 
 ```elixir
+defapi &math, add(a, b) do
+  a + b
+end
+
+Math.add(3, 7)   #=> 10
+
 defapi &db, find(id) do
   Repo.get(User, id)      # returns %User{} or nil
 end
 
-find(1)        #=> {:ok, %User{...}}
-find(999)      #=> {:ok, nil}
-find(:bad)     #=> {:error, %Ecto.Query.CastError{...}}
+find(1)        #=> %User{...}
+find(999)      #=> nil
 
-# Tuples you return yourself are preserved as-is:
+# Tuples you return yourself are passed through untouched — including your own
+# {:ok, _} / {:error, _}:
 defapi &db, create(attrs) do
   Repo.insert(User.changeset(attrs))  # {:ok, user} or {:error, changeset}
 end
@@ -447,6 +481,31 @@ end
 create(%{name: "Ada"})   #=> {:ok, %User{...}}
 create(%{})              #=> {:error, %Ecto.Changeset{...}}
 ```
+
+### `:nebula_error` — library and transport failures only
+
+The one value NebulaAPI *does* inject is `{:nebula_error, reason}`. It signals a
+failure of the library or the transport — never a business outcome:
+
+- a call timed out,
+- no worker is available for the method,
+- a network/RPC crash,
+- the body raised an exception (`{:nebula_error, exception}`),
+- a quorum wasn't reached.
+
+```elixir
+# No &db node is up to answer
+find(1)   #=> {:nebula_error, :no_worker}
+
+# The body raised
+find(1)   #=> {:nebula_error, %RuntimeError{...}}
+```
+
+This keeps the two worlds cleanly separated: any `:ok` / `:error` you ever see in
+a return value is **business** — it's what your function chose to return.
+`:nebula_error` is **infrastructure** — the lib telling you the call itself
+didn't complete. You never have to guess whether an `{:error, _}` came from your
+code or from the framework.
 
 ## Worked example: a 3-role cluster
 
@@ -527,8 +586,10 @@ end
 defmodule MyAppWeb.UserController do
   def show(conn, %{"id" => id}) do
     # "Just works" on any node. Local on @db, RPC everywhere else.
-    with {:ok, user} <- MyApp.Users.get(id) do
-      render(conn, :show, user: user)
+    # get/1 wraps Repo.get/2, so it returns a %User{} (or nil) directly.
+    case MyApp.Users.get(id) do
+      %MyApp.User{} = user -> render(conn, :show, user: user)
+      nil -> send_resp(conn, 404, "Not found")
     end
   end
 

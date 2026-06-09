@@ -70,19 +70,34 @@ defapi &db, list(filters \\ []), do: Repo.all(query(filters))
 defapi :*, health(), do: %{node: node()}
 ```
 
-Return values are wrapped consistently:
+Return values are passed through verbatim — **no wrapping**. The body's value is
+returned exactly as-is to the caller:
 
 ```elixir
+defapi &db, add(a, b) do
+  a + b                      # Math.add(3, 7) → 10 (not {:ok, 10})
+end
+
 defapi &db, get(id) do
-  Repo.get(User, id)         # raw value → {:ok, value}
+  Repo.get(User, id)         # %User{} or nil, untouched
 end
 
 defapi &db, create(attrs) do
   Repo.insert(changeset)     # {:ok, _} / {:error, _} preserved as-is
 end
-
-# A raised exception becomes {:error, exception}
 ```
+
+The only values NebulaAPI ever injects are `:nebula_error` tuples, and those signal a
+**library/transport failure** — never a business outcome:
+
+| Layer | Shape | Meaning |
+|-------|-------|---------|
+| Business | the body's own value (incl. `:ok` / `:error` / `{:ok, _}` / `{:error, _}`) | returned untouched |
+| Library / transport | `{:nebula_error, reason}` | timeout, no worker available, worker crash, body exception, quorum not reached |
+
+So `:ok` and `:error` always come from your code; `:nebula_error` always comes from
+NebulaAPI. A raised exception inside the body is caught and surfaced as
+`{:nebula_error, exception}`.
 
 ---
 
@@ -153,6 +168,9 @@ end
 |--------|------|---------|
 | `timeout` | integer (ms) | 5000 |
 
+**Return value.** On success, you get the body's value exactly as-is (no wrapping). If the
+transport fails (timeout, no worker, crash), you get `{:nebula_error, reason}`.
+
 ---
 
 ## `call_on_nodes` — multicast
@@ -168,15 +186,57 @@ end
 | `timeout` | integer (ms) | 5000 | |
 | `strategy` | atom | `:all` | `:all` / `:first` / `:quorum` |
 | `quorum_count` | integer | `div(n, 2) + 1` | for `:quorum` |
+| `success` | `fn value -> boolean` | a worker that *responded* | what counts as a business success for `:first` / `:quorum` |
+| `failure` | `fn value -> boolean` | — | mirror of `success`: a matching value is treated as a non-success |
 
 | Strategy | Behavior |
 |----------|----------|
-| `:all` | wait for every node (or timeout); returns a list |
-| `:first` | first success wins; remaining tasks cancelled |
-| `:quorum` | wait for N successes; early-exit if unreachable |
+| `:all` | wait for every node (or timeout); returns a list of all results |
+| `:first` | return the first **success**; remaining tasks cancelled |
+| `:quorum` | wait for N **successes**; early-exit if it can no longer be reached |
 
 A selector function receives the live `nodes_info` map (see below) and returns the list of
 target nodes.
+
+### Return values
+
+Each per-node result keeps the body's value verbatim, tagged with its node. Transport
+failures for a given node surface as `{:nebula_error, reason}` in that node's slot.
+
+| Strategy | Returns |
+|----------|---------|
+| `:all` | a list of `{node, value}` — failed nodes appear as `{node, {:nebula_error, reason}}` |
+| `:first` | the first `{node, value}` that counts as a success; if none succeed, the list of all responses |
+| `:quorum` (reached) | the list of `{node, value}` that satisfied the quorum |
+| `:quorum` (not reached) | `{:nebula_error, :quorum_not_reached, results}` |
+| `:quorum` (timed out) | `{:nebula_error, :quorum_timeout, results}` |
+
+In every case `value` is the unwrapped body value (your `:ok` / `:error` / plain term),
+and `results` is the list of `{node, value}` collected so far.
+
+### Defining success: `success:` / `failure:`
+
+By default, **any worker that responded** counts as a success for `:first` and `:quorum` —
+a body returning `{:error, :not_found}` is still a successful *response*. When you need a
+quorum or first-wins to hinge on the **business** outcome, narrow it with `success:` (or its
+mirror `failure:`):
+
+```elixir
+# A write quorum that only accepts {:ok, _} replies.
+call_on_nodes &replica, strategy: :quorum, success: &match?({:ok, _}, &1) do
+  MyApp.Store.write(key, value)
+end
+
+# Equivalent framing via the mirror option.
+call_on_nodes &replica, strategy: :first, failure: &match?({:error, _}, &1) do
+  MyApp.Store.read(key)
+end
+```
+
+`success:` is `fn value -> boolean`; `failure:` is its negation (a matching `value` is *not*
+a success). Either way, a `{:nebula_error, _}` result is **never** a success regardless of
+the predicate — the predicate only ever runs against the body's own value, so library and
+transport failures can never be mistaken for a healthy reply.
 
 ---
 

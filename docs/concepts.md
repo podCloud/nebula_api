@@ -93,18 +93,60 @@ The caller always uses the same `MyApp.Users.get(id)` — the routing was decide
 release was built. See [the AST deep-dive](deep-dive/ast-deep-dive.md) for exactly what
 gets generated.
 
-## Result wrapping
+## Return values
 
-All `defapi` functions wrap their result consistently:
+`defapi` functions don't wrap anything. A body returns its value verbatim:
 
-| Return value | Wrapped result |
-|--------------|----------------|
-| `value` | `{:ok, value}` |
-| `{:ok, value}` | `{:ok, value}` (unchanged) |
-| `{:error, reason}` | `{:error, reason}` (unchanged) |
-| Exception raised | `{:error, exception}` |
+```elixir
+Math.add(3, 7)        # => 10        (not {:ok, 10})
+Repo.get(User, id)    # => %User{} or nil
+```
 
-This means error handling is the same whether the call ran locally or via RPC.
+If your function returns `{:ok, x}` or `{:error, y}`, that tuple passes through
+untouched. `:ok` and `:error` in a return value are **always yours** — they mean whatever
+your business logic means by them. NebulaAPI never injects them.
+
+### Library failures: `:nebula_error`
+
+The only thing NebulaAPI adds is a distinct channel for **library and transport
+failures** — never business outcomes. These are things that happen *around* your body, not
+*in* it: a timeout, no worker available, a network crash, an exception raised inside the
+body, or a quorum that wasn't reached. They take the form:
+
+```elixir
+{:nebula_error, reason}
+```
+
+Because `:nebula_error` is reserved for the lib, you can always tell a transport problem
+apart from a business `{:error, reason}` your code chose to return.
+
+An exception raised inside the body becomes `{:nebula_error, exception}` instead of
+crashing the caller.
+
+### Unicast
+
+A call routed to a single node either succeeds — returning the body's value verbatim — or
+fails at the transport level, returning `{:nebula_error, reason}`.
+
+### Multicast
+
+A `:*` selector fans out to several nodes. The shape of the result depends on the
+collection strategy:
+
+| Strategy | Result |
+|----------|--------|
+| `:all` | a list of `{node, value}` (or `{node, {:nebula_error, reason}}` for nodes that failed) |
+| `:first` | the first `{node, value}` that counts as a success; if none, the list of replies |
+| `:quorum` (reached) | the list of `{node, value}` that answered |
+| `:quorum` (not reached) | `{:nebula_error, :quorum_not_reached, results}` or `{:nebula_error, :quorum_timeout, results}` |
+
+What counts as a "success" for `:first` and `:quorum` is configurable with a `success:`
+(or `failure:`) option — a predicate `fn value -> boolean`. The default treats any node
+that answered as a success. To require a business-level success instead:
+
+```elixir
+success: &match?({:ok, _}, &1)
+```
 
 ## The three `use` macros
 

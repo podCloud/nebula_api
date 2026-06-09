@@ -200,21 +200,30 @@ For each `defapi`, the builder generates **three** functions:
 - `__nbapi_remote_<name>` — private; dispatches via `NebulaAPI.APIServer`
 - `<name>` — the public router that delegates to local or remote based on context
 
+**Return contract.** None of these wrap the body's value. The value of the `defapi`
+body is returned **verbatim** — `10`, `%User{}`, `{:ok, x}`, `{:error, y}`,
+`{:ok, a, b}` are all passthrough. The `{:nebula_error, reason}` tuple is reserved for
+**library/transport failures**: a timeout, no available worker, a worker crash, an
+exception raised by the body, or a quorum that could not be reached. For a multicast
+call the router returns a list of `{node, value}` entries, with a failing node yielding
+`{node, {:nebula_error, reason}}`.
+
 ### Local function
 
 When the current node matches the selector, `build_local_function/3` emits the real
-body; otherwise it emits a stub that raises if called directly.
+body; otherwise it emits a stub that raises if called directly. The body's value is
+returned **as-is** — there is no wrapping. Only a raised exception is translated, into
+`{:nebula_error, exception}`.
 
 ```elixir
 # is_local? = true
 defp __nbapi_local_get(id) do
-  Repo.get(User, id)
-  |> __wrap_nebula_api_result()
+  Repo.get(User, id)   # value returned verbatim — no wrapping
 rescue
   e ->
     require Logger
     Logger.error(Exception.format(:error, e, __STACKTRACE__))
-    {:error, e}
+    {:nebula_error, e}
 end
 
 # is_local? = false
@@ -226,16 +235,15 @@ end
 ### Remote function
 
 `build_remote_function/1` is generated on **every** node. It dispatches through the
-APIServer and threads routing options:
+APIServer and threads routing options. Whatever `call_remote_method/3` returns is passed
+straight back to the caller — no re-wrapping, no `is_list` branching. A local exception
+becomes `{:nebula_error, exception}`:
 
 ```elixir
 defp __nbapi_remote_get(id, nebula_routing_opts \\ []) do
-  case NebulaAPI.APIServer.call_remote_method(__MODULE__, {:get, id}, nebula_routing_opts) do
-    result when is_list(result) -> result          # multicast :all → pass through
-    result -> __wrap_nebula_api_result(result)       # unicast / :first / :quorum
-  end
+  NebulaAPI.APIServer.call_remote_method(__MODULE__, {:get, id}, nebula_routing_opts)
 rescue
-  e -> {:error, e}
+  e -> {:nebula_error, e}
 end
 ```
 
@@ -331,10 +339,9 @@ def get(id, opts \\ [], nebula_routing_opts \\ []) do
 end
 
 defp __nbapi_local_get(id, opts \\ []) do
-  Repo.get(User, id, opts)
-  |> __wrap_nebula_api_result()
+  Repo.get(User, id, opts)   # body value returned as-is
 rescue
-  e -> {:error, e}
+  e -> {:nebula_error, e}
 end
 ```
 
@@ -351,7 +358,9 @@ end
 
 defp __nbapi_remote_get(id, opts \\ [], nebula_routing_opts \\ []) do
   NebulaAPI.APIServer.call_remote_method(MyApp.Users, {:get, id, opts}, nebula_routing_opts)
-  |> __wrap_nebula_api_result()
+  # result returned verbatim
+rescue
+  e -> {:nebula_error, e}
 end
 ```
 

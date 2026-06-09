@@ -86,14 +86,32 @@ compile`), or in dev/test set `default_opts: [self_node: ...]`. See
 ## 5. Call it — same API everywhere
 
 ```elixir
-# Local on a :db node, transparent RPC elsewhere:
-{:ok, user} = MyApp.Users.get(42)
+# Local on a :db node, transparent RPC elsewhere.
+# The body's value is returned as-is — no wrapping. Repo.get/2 returns the
+# struct or nil, so that's exactly what you get back:
+user = MyApp.Users.get(42)
+#=> %User{id: 42, ...}  (or nil if not found)
+
+# Transport failures (timeout, no worker, crash, exception in the body) come
+# back as {:nebula_error, reason} — never confused with a business result:
+case MyApp.Users.get(42) do
+  {:nebula_error, reason} -> handle_transport_failure(reason)
+  user -> use(user)
+end
 
 # Override routing when you need to:
 call_on_node @worker do
   MyApp.Jobs.transcode(path, opts)
 end
 ```
+
+Returns are passthrough: a `defapi` body hands back its value verbatim. A body that
+returns `10` yields `10`; one that returns `{:ok, x}` / `{:error, y}` yields exactly that —
+`:ok` / `:error` always mean business outcome. Only the lib and transport layer speak
+`{:nebula_error, reason}`.
+
+For a **multicast** call (selector matching several nodes), results are tagged per node:
+`{node, value}` on success, `{node, {:nebula_error, reason}}` when that node's call failed.
 
 ## Conditional code with `on_nebula_nodes`
 
@@ -117,8 +135,9 @@ end
 - **Keep functions small and single-purpose** — they're RPC boundaries.
 - **Return plain data** — results cross Erlang distribution; no PIDs/refs/connections.
 - **Be explicit in docs** about which node a function runs on.
-- **Handle errors** in the body when you care about the shape; otherwise rely on the
-  automatic `{:ok, _}` / `{:error, _}` wrapping.
+- **Own your return shape** — the body's value passes through untouched, so return
+  whatever your callers expect (`{:ok, _}` / `{:error, _}` for business outcomes, or a bare
+  value). Reserve `{:nebula_error, reason}` for what it means: a lib/transport failure.
 
 ## See Also
 
