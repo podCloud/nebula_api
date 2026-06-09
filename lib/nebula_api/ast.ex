@@ -25,21 +25,10 @@ defmodule NebulaAPI.AST do
                    call_on_node: 3,
                    call_on_nodes: 2,
                    call_on_nodes: 3,
-                   call_on_all_nodes: 1,
-                   __wrap_nebula_api_result: 1
+                   call_on_all_nodes: 1
                  ]
                )
              )
-    end
-  end
-
-  def __wrap_nebula_api_result(result) do
-    case result do
-      {:error, _, _} -> result
-      {:ok, _, _} -> result
-      {:error, _} -> result
-      {:ok, _} -> result
-      _ -> {:ok, result}
     end
   end
 

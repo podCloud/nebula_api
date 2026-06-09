@@ -43,14 +43,14 @@ defmodule NebulaAPI.IntegrationTest do
       end)
 
       result = APIServer.call_remote_method(TestModule, {:greet, "world"})
-      assert result == {:ok, "Hello world"}
+      assert result == "Hello world"
 
       GenServer.stop(pid)
     end
 
-    test "returns error when no worker available" do
+    test "returns a transport error when no worker available" do
       result = APIServer.call_remote_method(NoWorkerModule, {:missing, "arg"})
-      assert {:error, _} = result
+      assert {:nebula_error, _} = result
     end
   end
 
@@ -76,7 +76,7 @@ defmodule NebulaAPI.IntegrationTest do
       assert is_list(results)
       # Single node = single result after dedup
       assert length(results) == 1
-      assert [{:ok, val, _node}] = results
+      assert [{_node, val}] = results
       assert val in [10, 15]
 
       GenServer.stop(pid1)
@@ -112,7 +112,9 @@ defmodule NebulaAPI.IntegrationTest do
         multicast: true, strategy: :first, timeout: 2000
       )
 
-      assert {:ok, _, _node} = result
+      # Single node → workers dedup to one; :first returns that one responder.
+      assert {_node, res} = result
+      assert res in [:fast_result, :slow_result]
 
       GenServer.stop(pid1)
       GenServer.stop(pid2)
@@ -135,8 +137,8 @@ defmodule NebulaAPI.IntegrationTest do
         multicast: true, strategy: :quorum, quorum_count: 1, timeout: 2000
       )
 
-      assert {:ok, results} = result
-      assert length(results) >= 1
+      assert is_list(result)
+      assert length(result) >= 1
 
       Enum.each(pids, &GenServer.stop/1)
     end
@@ -153,7 +155,7 @@ defmodule NebulaAPI.IntegrationTest do
         timeout: 1000
       )
 
-      assert {:error, _} = result
+      assert {:nebula_error, _} = result
     end
   end
 
@@ -172,7 +174,7 @@ defmodule NebulaAPI.IntegrationTest do
         multicast: true, strategy: :all, timeout: 1000
       )
 
-      assert [{:ok, :done, _}] = result
+      assert [{_node, :done}] = result
 
       GenServer.stop(pid)
     end
@@ -216,9 +218,7 @@ defmodule NebulaAPI.IntegrationTest.FakeWorker do
   def init(state), do: {:ok, state}
 
   def handle_call(fn_call, _from, state) do
-    # Simulate real defapi behavior: __nbapi_local_* wraps with __wrap_nebula_api_result
-    raw_result = state.response_fn.(fn_call)
-    result = NebulaAPI.AST.__wrap_nebula_api_result(raw_result)
-    {:reply, result, state}
+    # Real defapi workers return the body's raw value (no wrapping).
+    {:reply, state.response_fn.(fn_call), state}
   end
 end

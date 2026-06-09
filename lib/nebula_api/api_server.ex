@@ -161,7 +161,7 @@ defmodule NebulaAPI.APIServer do
         stacktrace: #{Exception.format_stacktrace(__STACKTRACE__)}
       """)
 
-      {:error, err}
+      {:nebula_error, err}
   end
 
   @doc """
@@ -485,33 +485,30 @@ defmodule NebulaAPI.APIServer do
   # mailbox — which dies — and never in the caller's. The Task always returns
   # quickly (safe_call has an internal timeout), so Task.await/:infinity can neither
   # block nor exit.
+  #
+  # The body's return value is passed through untouched; only a transport failure
+  # turns into {:nebula_error, reason}.
   defp confined_call(worker, fn_call, timeout) do
     task =
       Task.async(fn ->
         case safe_call(worker, fn_call, timeout) do
           {:replied, reply} -> reply
-          {:exit, :timeout} -> {:error, :timeout}
-          {:exit, reason} -> {:error, reason}
+          {:exit, :timeout} -> {:nebula_error, :timeout}
+          {:exit, reason} -> {:nebula_error, reason}
         end
       end)
 
     Task.await(task, :infinity)
   end
 
-  # Node-tagged multicast call, built on safe_call/3. Same return shape as the
-  # previous inline code: {status, value, node} on a reply, {:timeout, node} /
-  # {:error, reason, node} on an exit.
+  # Node-tagged multicast call, built on safe_call/3. Returns {node, value} when the
+  # worker replied (value passed through as-is), or {node, {:nebula_error, reason}}
+  # on a transport failure.
   defp tagged_call(worker, fn_call, timeout, target_node) do
     case safe_call(worker, fn_call, timeout) do
-      {:replied, reply} ->
-        {status, value} = unwrap_worker_result(reply)
-        {status, value, target_node}
-
-      {:exit, :timeout} ->
-        {:timeout, target_node}
-
-      {:exit, reason} ->
-        {:error, reason, target_node}
+      {:replied, reply} -> {target_node, reply}
+      {:exit, :timeout} -> {target_node, {:nebula_error, :timeout}}
+      {:exit, reason} -> {target_node, {:nebula_error, reason}}
     end
   end
 
@@ -521,7 +518,7 @@ defmodule NebulaAPI.APIServer do
         confined_call(worker, fn_call, timeout)
 
       _ ->
-        {:error, "No worker found for remote method #{inspect(fn_call)}"}
+        {:nebula_error, {:no_worker, fn_call}}
     end
   end
 
@@ -545,11 +542,11 @@ defmodule NebulaAPI.APIServer do
           worker = workers_by_node[selected_node]
           confined_call(worker, fn_call, timeout)
         else
-          {:error, "No worker found on selected node #{inspect(selected_node)}"}
+          {:nebula_error, {:no_worker_on_node, selected_node}}
         end
 
       {:error, reason} ->
-        {:error, reason}
+        {:nebula_error, reason}
     end
   end
 
@@ -580,7 +577,7 @@ defmodule NebulaAPI.APIServer do
         do_multicast_call(target_workers, fn_call, timeout, strategy, opts)
 
       {:error, reason} ->
-        {:error, reason}
+        {:nebula_error, reason}
     end
   end
 
@@ -618,16 +615,33 @@ defmodule NebulaAPI.APIServer do
   defp do_multicast_call(target_workers, fn_call, timeout, strategy, opts) do
     case strategy do
       :first ->
-        do_multicast_first(target_workers, fn_call, timeout)
+        do_multicast_first(target_workers, fn_call, timeout, opts)
 
       :quorum ->
         quorum_count = Keyword.get(opts, :quorum_count, div(length(target_workers), 2) + 1)
-        do_multicast_quorum(target_workers, fn_call, timeout, quorum_count)
+        do_multicast_quorum(target_workers, fn_call, timeout, quorum_count, opts)
 
       _all ->
         do_multicast_all(target_workers, fn_call, timeout)
     end
   end
+
+  # Success predicate for :first/:quorum, derived from the call opts. By default any
+  # worker that replied (no transport error) is a success. `success: fn value -> bool`
+  # narrows that to a business success; `failure:` is its mirror.
+  defp success_predicate(opts) do
+    cond do
+      f = Keyword.get(opts, :success) -> f
+      f = Keyword.get(opts, :failure) -> fn value -> not f.(value) end
+      true -> fn _value -> true end
+    end
+  end
+
+  # A multicast response is {node, value} (replied) or {node, {:nebula_error, reason}}
+  # (transport failed). A transport failure is never a success; otherwise the
+  # predicate decides.
+  defp response_success?({_node, {:nebula_error, _reason}}, _predicate), do: false
+  defp response_success?({_node, value}, predicate), do: predicate.(value)
 
   defp do_multicast_all(target_workers, fn_call, timeout) do
     parent = self()
@@ -649,15 +663,14 @@ defmodule NebulaAPI.APIServer do
     flush_ref(ref)
 
     # Guarantee one entry per targeted node: nodes that did not answer before the
-    # deadline are reported as {:timeout, node} instead of being silently dropped.
-    # This preserves the previous Task.await_many contract (one result per node)
-    # without exiting the caller on timeout.
+    # deadline are reported as {node, {:nebula_error, :timeout}} instead of being
+    # silently dropped (one result per node, without exiting the caller on timeout).
     answered = MapSet.new(received, &result_node/1)
 
     timeouts =
       for {target_node, _worker} <- target_workers,
           not MapSet.member?(answered, target_node),
-          do: {:timeout, target_node}
+          do: {target_node, {:nebula_error, :timeout}}
 
     received ++ timeouts
   end
@@ -678,15 +691,14 @@ defmodule NebulaAPI.APIServer do
     end
   end
 
-  defp result_node({:timeout, target_node}), do: target_node
-  defp result_node({_status, _value, target_node}), do: target_node
+  defp result_node({target_node, _value}), do: target_node
 
-  defp do_multicast_first(target_workers, fn_call, timeout) do
+  defp do_multicast_first(target_workers, fn_call, timeout, opts) do
     parent = self()
     ref = make_ref()
     deadline = System.monotonic_time(:millisecond) + timeout
+    predicate = success_predicate(opts)
 
-    # Spawn tasks for each worker using Task.async
     tasks =
       target_workers
       |> Enum.map(fn {target_node, worker} ->
@@ -696,47 +708,39 @@ defmodule NebulaAPI.APIServer do
         end)
       end)
 
-    # Wait for first successful response
-    result = wait_for_first(ref, length(target_workers), deadline, [])
+    # Return the first response that counts as a success (replied + predicate)
+    result = wait_for_first(ref, length(target_workers), deadline, predicate, [])
 
-    # Shutdown remaining tasks gracefully
-    Enum.each(tasks, fn task ->
-      Task.shutdown(task, :brutal_kill)
-    end)
-
-    # Flush stray messages from tasks that sent before being killed
+    Enum.each(tasks, fn task -> Task.shutdown(task, :brutal_kill) end)
     flush_ref(ref)
 
     result
   end
 
-  defp wait_for_first(_ref, 0, _deadline, results) do
-    # All failed, return all results
-    results
+  defp wait_for_first(_ref, 0, _deadline, _predicate, results) do
+    # No success: return every response we collected.
+    Enum.reverse(results)
   end
 
-  defp wait_for_first(ref, remaining, deadline, results) do
+  defp wait_for_first(ref, remaining, deadline, predicate, results) do
     remaining_ms = max(deadline - System.monotonic_time(:millisecond), 0)
 
     receive do
-      {^ref, {:ok, _, _} = success} ->
-        # Got a success, return immediately
-        success
-
-      {^ref, failure} ->
-        # Got a failure, continue waiting
-        wait_for_first(ref, remaining - 1, deadline, [failure | results])
+      {^ref, response} ->
+        if response_success?(response, predicate) do
+          response
+        else
+          wait_for_first(ref, remaining - 1, deadline, predicate, [response | results])
+        end
     after
       remaining_ms ->
-        # Timeout, return what we have
-        results
+        Enum.reverse(results)
     end
   end
 
-  defp do_multicast_quorum(target_workers, fn_call, timeout, quorum_count) do
+  defp do_multicast_quorum(target_workers, fn_call, timeout, quorum_count, opts) do
     worker_count = length(target_workers)
 
-    # Validate that quorum is achievable
     if quorum_count > worker_count do
       Logger.warning(
         "Quorum count #{quorum_count} is greater than available workers #{worker_count}"
@@ -749,8 +753,8 @@ defmodule NebulaAPI.APIServer do
     parent = self()
     ref = make_ref()
     deadline = System.monotonic_time(:millisecond) + timeout
+    predicate = success_predicate(opts)
 
-    # Spawn tasks for each worker using Task.async
     tasks =
       target_workers
       |> Enum.map(fn {target_node, worker} ->
@@ -760,80 +764,76 @@ defmodule NebulaAPI.APIServer do
         end)
       end)
 
-    # Wait for quorum with validation
-    result = wait_for_quorum(ref, worker_count, deadline, effective_quorum, [], [])
+    result = wait_for_quorum(ref, worker_count, deadline, effective_quorum, predicate, [], [])
 
-    # Shutdown remaining tasks gracefully
-    Enum.each(tasks, fn task ->
-      Task.shutdown(task, :brutal_kill)
-    end)
-
-    # Flush stray messages from tasks that sent before being killed
+    Enum.each(tasks, fn task -> Task.shutdown(task, :brutal_kill) end)
     flush_ref(ref)
 
     result
   end
 
-  defp wait_for_quorum(_ref, 0, _deadline, needed, successes, failures) do
-    # All responses received - check if we actually got enough successes
-    results = successes ++ failures
+  # Quorum reached → the list of {node, value} responses.
+  # Quorum not reached → {:nebula_error, :quorum_not_reached | :quorum_timeout, results}.
+  defp wait_for_quorum(_ref, 0, _deadline, needed, _predicate, successes, failures) do
+    results = Enum.reverse(successes) ++ Enum.reverse(failures)
 
     if needed > 0 do
       Logger.warning("Quorum not reached: needed #{needed} more successes")
-      {:error, :quorum_not_reached, results}
+      {:nebula_error, :quorum_not_reached, results}
     else
-      {:ok, results}
+      results
     end
   end
 
-  defp wait_for_quorum(_ref, _remaining, _deadline, 0, successes, failures) do
-    # Quorum reached with enough successes
-    {:ok, successes ++ failures}
+  defp wait_for_quorum(_ref, _remaining, _deadline, 0, _predicate, successes, failures) do
+    Enum.reverse(successes) ++ Enum.reverse(failures)
   end
 
-  defp wait_for_quorum(ref, remaining, deadline, needed, successes, failures) do
+  defp wait_for_quorum(ref, remaining, deadline, needed, predicate, successes, failures) do
     # Check if quorum is still achievable (remaining workers >= needed successes)
     if remaining < needed do
-      # Not enough workers left to reach quorum, return early
       Logger.warning("Quorum unreachable: #{remaining} workers remaining but need #{needed}")
-      {:error, :quorum_not_reached, successes ++ failures}
+
+      {:nebula_error, :quorum_not_reached, Enum.reverse(successes) ++ Enum.reverse(failures)}
     else
       remaining_ms = max(deadline - System.monotonic_time(:millisecond), 0)
 
       receive do
-        {^ref, {:ok, _, _} = success} ->
-          wait_for_quorum(
-            ref,
-            remaining - 1,
-            deadline,
-            needed - 1,
-            [success | successes],
-            failures
-          )
-
-        {^ref, failure} ->
-          wait_for_quorum(ref, remaining - 1, deadline, needed, successes, [failure | failures])
+        {^ref, response} ->
+          if response_success?(response, predicate) do
+            wait_for_quorum(
+              ref,
+              remaining - 1,
+              deadline,
+              needed - 1,
+              predicate,
+              [response | successes],
+              failures
+            )
+          else
+            wait_for_quorum(
+              ref,
+              remaining - 1,
+              deadline,
+              needed,
+              predicate,
+              successes,
+              [response | failures]
+            )
+          end
       after
         remaining_ms ->
-          # Timeout, return what we have with warning if quorum not reached
-          results = successes ++ failures
+          results = Enum.reverse(successes) ++ Enum.reverse(failures)
 
           if needed > 0 do
             Logger.warning("Quorum timeout: still needed #{needed} more successes")
-            {:error, :quorum_timeout, results}
+            {:nebula_error, :quorum_timeout, results}
           else
-            {:ok, results}
+            results
           end
       end
     end
   end
-
-  # Unwrap worker results to avoid double-wrapping.
-  # Real defapi workers return {:ok, val} from __nbapi_local_* via __wrap_nebula_api_result.
-  # Test doubles may return raw values — those fall through to {:ok, other}.
-  defp unwrap_worker_result({:ok, val}), do: {:ok, val}
-  defp unwrap_worker_result({:error, reason}), do: {:error, reason}
-  defp unwrap_worker_result(other), do: {:ok, other}
 
   defp flush_ref(ref) do
     receive do

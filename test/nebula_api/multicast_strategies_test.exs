@@ -48,7 +48,7 @@ defmodule NebulaAPI.MulticastStrategiesTest do
 
       result = APIServer.call_remote_method(NonExistentModule, {:test_fn}, opts)
 
-      assert {:error, _} = result
+      assert {:nebula_error, _} = result
     end
   end
 

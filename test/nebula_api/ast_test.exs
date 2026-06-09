@@ -97,35 +97,4 @@ defmodule NebulaAPI.ASTTest do
     end
   end
 
-  describe "__wrap_nebula_api_result/1" do
-    test "wraps raw results with :ok tuple" do
-      assert NebulaAPI.AST.__wrap_nebula_api_result(:some_value) == {:ok, :some_value}
-      assert NebulaAPI.AST.__wrap_nebula_api_result("string") == {:ok, "string"}
-      assert NebulaAPI.AST.__wrap_nebula_api_result(%{key: :value}) == {:ok, %{key: :value}}
-    end
-
-    test "preserves :ok tuples" do
-      assert NebulaAPI.AST.__wrap_nebula_api_result({:ok, :result}) == {:ok, :result}
-    end
-
-    test "preserves :error tuples" do
-      assert NebulaAPI.AST.__wrap_nebula_api_result({:error, :reason}) == {:error, :reason}
-    end
-
-    test "preserves 3-tuple error terms (quorum strategies)" do
-      assert NebulaAPI.AST.__wrap_nebula_api_result({:error, :quorum_not_reached, []}) ==
-               {:error, :quorum_not_reached, []}
-
-      assert NebulaAPI.AST.__wrap_nebula_api_result({:error, :quorum_timeout, [:partial]}) ==
-               {:error, :quorum_timeout, [:partial]}
-    end
-
-    test "preserves 3-tuple ok terms (first/multicast strategies)" do
-      assert NebulaAPI.AST.__wrap_nebula_api_result({:ok, :value, :node@host}) ==
-               {:ok, :value, :node@host}
-
-      assert NebulaAPI.AST.__wrap_nebula_api_result({:ok, "result", :"worker@10.0.0.1"}) ==
-               {:ok, "result", :"worker@10.0.0.1"}
-    end
-  end
 end

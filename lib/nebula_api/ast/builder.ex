@@ -19,12 +19,15 @@ defmodule NebulaAPI.AST.Builder do
     if is_local do
       quote do
         defp unquote(build_function_signature(local_fn_name, fn_args)) do
-          unquote(fn_do) |> __wrap_nebula_api_result()
+          # Transparent: the body's return value is passed through as-is (no wrapping).
+          # An exception in the body is the only thing the lib turns into a result,
+          # surfaced as {:nebula_error, exception} so it never masquerades as a value.
+          unquote(fn_do)
         rescue
           e ->
             require Logger
             Logger.error(Exception.format(:error, e, __STACKTRACE__))
-            {:error, e}
+            {:nebula_error, e}
         end
       end
     else
@@ -50,18 +53,15 @@ defmodule NebulaAPI.AST.Builder do
 
     quote do
       defp unquote(build_function_signature(remote_fn_name, fn_args_with_routing_opts)) do
-        case NebulaAPI.APIServer.call_remote_method(
-               __MODULE__,
-               unquote(build_remote_function_call(fn_name, fn_args)),
-               unquote(routing_opts_var)
-             ) do
-          # Multicast :all returns a list — pass through as-is
-          result when is_list(result) -> result
-          # All other results: unicast, :first, :quorum
-          result -> __wrap_nebula_api_result(result)
-        end
+        # Pass the result through untouched: the worker already returned the body's
+        # raw value (unicast) or the transport layer tagged it (multicast / errors).
+        NebulaAPI.APIServer.call_remote_method(
+          __MODULE__,
+          unquote(build_remote_function_call(fn_name, fn_args)),
+          unquote(routing_opts_var)
+        )
       rescue
-        e -> {:error, e}
+        e -> {:nebula_error, e}
       end
     end
   end

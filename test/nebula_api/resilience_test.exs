@@ -60,19 +60,19 @@ defmodule NebulaAPI.ResilienceTest do
   end
 
   describe "unicast — timeout resilience (H1)" do
-    test "a worker slower than the timeout returns {:error, :timeout} without crashing the caller" do
+    test "a worker slower than the timeout returns {:nebula_error, :timeout} without crashing the caller" do
       pid = start_fake(UnicastTimeoutMod, :slow, 0, 300, {:ok, :too_late})
 
       result = APIServer.call_remote_method(UnicastTimeoutMod, {:slow}, timeout: 50)
 
-      assert {:error, :timeout} = result
+      assert {:nebula_error, :timeout} = result
       # The caller (this test process) is still alive: the next line runs.
       assert Process.alive?(self())
 
       GenServer.stop(pid)
     end
 
-    test "through a node selector, a too-slow worker returns {:error, :timeout} without crashing" do
+    test "through a node selector, a too-slow worker returns {:nebula_error, :timeout} without crashing" do
       pid = start_fake(UnicastSelectorMod, :slow, 0, 300, {:ok, :too_late})
       target = node()
 
@@ -84,7 +84,7 @@ defmodule NebulaAPI.ResilienceTest do
           timeout: 50
         )
 
-      assert {:error, :timeout} = result
+      assert {:nebula_error, :timeout} = result
       assert Process.alive?(self())
 
       GenServer.stop(pid)
@@ -94,7 +94,7 @@ defmodule NebulaAPI.ResilienceTest do
       # Replies 200ms AFTER the 50ms timeout.
       pid = start_fake(GarbageMod, :slow, 0, 250, {:ok, :too_late})
 
-      assert {:error, :timeout} =
+      assert {:nebula_error, :timeout} =
                APIServer.call_remote_method(GarbageMod, {:slow}, timeout: 50)
 
       # Let the worker emit its late reply.
@@ -127,7 +127,7 @@ defmodule NebulaAPI.ResilienceTest do
         )
 
       assert is_list(result)
-      assert [{:timeout, _node}] = result
+      assert [{_node, {:nebula_error, :timeout}}] = result
       # No crash: we're still here.
       assert Process.alive?(self())
 
@@ -212,7 +212,7 @@ defmodule NebulaAPI.ResilienceTest do
     test "an unknown-method call returns an error without killing the worker" do
       {:ok, worker} = NebulaAPI.APIServer.Worker.start_link(LocalMethodsMod)
 
-      assert {:error, {:undefined_local_method, LocalMethodsMod, :nope, 0}} =
+      assert {:nebula_error, {:undefined_local_method, LocalMethodsMod, :nope, 0}} =
                GenServer.call(worker, {:nope}, 1_000)
 
       # The worker survives and keeps serving its real methods.
@@ -220,6 +220,87 @@ defmodule NebulaAPI.ResilienceTest do
       assert GenServer.call(worker, {:fast}, 1_000) == {:ok, :fast}
 
       GenServer.stop(worker)
+    end
+  end
+
+  describe "transparent return values (L2 / B)" do
+    test "a bare value passes through as-is (no :ok wrapping)" do
+      pid = start_fake(BareValueMod, :add, 0, 0, 10)
+      assert APIServer.call_remote_method(BareValueMod, {:add}) == 10
+      GenServer.stop(pid)
+    end
+
+    test "a 3-tuple business return passes through unchanged, unicast and :all" do
+      pid = start_fake(ThreeTupleMod, :work, 0, 0, {:ok, :a, :b})
+
+      # unicast: returned exactly as-is
+      assert APIServer.call_remote_method(ThreeTupleMod, {:work}) == {:ok, :a, :b}
+
+      # :all: paired with the node, value untouched (no re-wrap, no asymmetry)
+      assert [{_node, {:ok, :a, :b}}] =
+               APIServer.call_remote_method(
+                 ThreeTupleMod,
+                 {:work},
+                 multicast: true,
+                 strategy: :all,
+                 timeout: 500
+               )
+
+      GenServer.stop(pid)
+    end
+  end
+
+  describe "success/failure predicate for :first/:quorum (B)" do
+    test ":first treats any replied worker as success by default" do
+      pid = start_fake(PredDefaultMod, :work, 0, 0, {:error, :nope})
+
+      assert {_node, {:error, :nope}} =
+               APIServer.call_remote_method(
+                 PredDefaultMod,
+                 {:work},
+                 multicast: true,
+                 strategy: :first,
+                 timeout: 500
+               )
+
+      GenServer.stop(pid)
+    end
+
+    test ":first with success: skips a business error (no success → list of responses)" do
+      pid = start_fake(PredSuccessMod, :work, 0, 0, {:error, :nope})
+
+      result =
+        APIServer.call_remote_method(
+          PredSuccessMod,
+          {:work},
+          multicast: true,
+          strategy: :first,
+          timeout: 500,
+          success: &match?({:ok, _}, &1)
+        )
+
+      assert result == [{node(), {:error, :nope}}]
+
+      GenServer.stop(pid)
+    end
+
+    test ":quorum with failure: still reaches quorum on a non-matching reply" do
+      pid = start_fake(PredQuorumMod, :work, 0, 0, {:ok, :good})
+
+      result =
+        APIServer.call_remote_method(
+          PredQuorumMod,
+          {:work},
+          multicast: true,
+          strategy: :quorum,
+          quorum_count: 1,
+          timeout: 500,
+          failure: &match?({:error, _}, &1)
+        )
+
+      assert result == [{node(), {:ok, :good}}]
+
+      GenServer.stop(pid)
     end
   end
 end
