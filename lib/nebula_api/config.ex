@@ -2,7 +2,8 @@ defmodule NebulaAPI.Config do
   @defaults [
     nodes: [],
     default_opts: [],
-    nodes_info_refresh_interval: 5_000
+    nodes_info_refresh_interval: 5_000,
+    default_timeout: 5_000
   ]
 
   def config() do
@@ -21,6 +22,12 @@ defmodule NebulaAPI.Config do
   # How often (ms) NodesInfoCache refreshes the cluster node-info snapshot.
   def nodes_info_refresh_interval() do
     config()[:nodes_info_refresh_interval]
+  end
+
+  # Global default timeout (ms) for remote calls, overridable per module
+  # (`use NebulaAPI, default_timeout: ...`) and per call (`timeout:` option).
+  def default_timeout() do
+    config()[:default_timeout]
   end
 
   def validate_with_nodes(config, nodes) do
