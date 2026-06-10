@@ -45,7 +45,7 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
 
     for _ <- 1..2 do
       spawn(fn ->
-        send(parent, {:done, GenServer.call(worker, {:nebula_call, {:slow}, 5_000}, 5_000)})
+        send(parent, {:done, GenServer.call(worker, {:nebula_call, {:slow}}, 5_000)})
       end)
     end
 
@@ -58,17 +58,30 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
     GenServer.stop(worker)
   end
 
-  test "a queued call whose caller timed out is dropped, not executed" do
+  test "a queued call whose caller timed out is purged, not executed" do
     {:ok, worker} = Worker.start_link(SerialMod)
+    parent = self()
 
     # Occupy the single slot for 200ms.
-    spawn(fn -> GenServer.call(worker, {:nebula_call, {:slow}, 5_000}, 5_000) end)
+    spawn(fn -> GenServer.call(worker, {:nebula_call, {:slow}}, 5_000) end)
     Process.sleep(30)
 
-    # Queues behind :slow and times out before a slot frees up.
-    assert catch_exit(GenServer.call(worker, {:nebula_call, {:ping, self()}, 50}, 50))
+    # Mimic how the library actually calls workers: through a throwaway process
+    # (confined_call / multicast task) that dies right after its timeout. Its
+    # death is the purge signal — the worker monitors queued callers.
+    proxy =
+      spawn(fn ->
+        try do
+          GenServer.call(worker, {:nebula_call, {:ping, parent}}, 50)
+        catch
+          :exit, _ -> :ok
+        end
+      end)
 
-    # Once the slot frees, the expired entry must be dropped: no side effect.
+    ref = Process.monitor(proxy)
+    assert_receive {:DOWN, ^ref, :process, ^proxy, _}, 1_000
+
+    # Once the slot frees, the purged entry must never execute.
     refute_receive :executed, 500
 
     GenServer.stop(worker)
@@ -78,34 +91,34 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
     {:ok, worker} = Worker.start_link(SerialMod)
 
     # :nope is unknown -> replies {:nebula_error, _} but must release the slot.
-    assert {:nebula_error, _} = GenServer.call(worker, {:nebula_call, {:nope}, 1_000}, 1_000)
-    assert GenServer.call(worker, {:nebula_call, {:ping, self()}, 1_000}, 1_000) == :pong
+    assert {:nebula_error, _} = GenServer.call(worker, {:nebula_call, {:nope}}, 1_000)
+    assert GenServer.call(worker, {:nebula_call, {:ping, self()}}, 1_000) == :pong
     assert_receive :executed
 
     GenServer.stop(worker)
   end
 
-  test "timeout: :infinity queues without crashing the worker and never expires" do
+  test "a queued call whose caller dies is purged, not executed" do
     {:ok, worker} = Worker.start_link(SerialMod)
     parent = self()
 
-    # Occupy the single slot for 200ms, then queue an :infinity-budget call behind
-    # it — the deadline arithmetic must not choke on the atom, and the entry must
-    # be executed (an :infinity deadline never expires).
-    spawn(fn -> GenServer.call(worker, {:nebula_call, {:slow}, 5_000}, 5_000) end)
+    # Occupy the single slot for 200ms.
+    spawn(fn -> GenServer.call(worker, {:nebula_call, {:slow}}, 5_000) end)
     Process.sleep(30)
 
-    spawn(fn ->
-      send(
-        parent,
-        {:pong_done,
-         GenServer.call(worker, {:nebula_call, {:ping, parent}, :infinity}, :infinity)}
-      )
-    end)
+    # Queue a call behind it, then kill its caller while it waits in line. In real
+    # usage the caller is the throwaway confined_call / multicast task, whose death
+    # is exactly how loss of interest manifests (timeout, early :first resolution).
+    victim =
+      spawn(fn ->
+        GenServer.call(worker, {:nebula_call, {:ping, parent}}, 5_000)
+      end)
 
-    assert_receive {:pong_done, :pong}, 2_000
-    assert_receive :executed
-    assert Process.alive?(worker)
+    Process.sleep(30)
+    Process.exit(victim, :kill)
+
+    # Once the slot frees, the dead caller's entry must never execute.
+    refute_receive :executed, 500
 
     GenServer.stop(worker)
   end

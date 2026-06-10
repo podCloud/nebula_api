@@ -507,11 +507,11 @@ defmodule NebulaAPI.APIServer do
   # `{:replied, term}` = the worker replied (term may be a business-level error).
   # `{:exit, :timeout}` / `{:exit, reason}` = the call exited without a reply.
   #
-  # The call ships the caller's timeout BUDGET (a duration, never a deadline —
-  # monotonic clocks are not comparable across nodes) so the worker can compute a
-  # local deadline for queued calls.
+  # This always runs inside a throwaway process (confined_call, the multicast
+  # fan-out tasks) whose death marks the end of interest in the result — the
+  # worker monitors it to purge queued entries (see Worker.handle_call/3).
   defp safe_call(worker, fn_call, timeout) do
-    {:replied, GenServer.call(worker, {:nebula_call, fn_call, timeout}, timeout)}
+    {:replied, GenServer.call(worker, {:nebula_call, fn_call}, timeout)}
   catch
     :exit, {:timeout, _} -> {:exit, :timeout}
     :exit, reason -> {:exit, reason}

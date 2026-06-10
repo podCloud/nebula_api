@@ -524,10 +524,12 @@ use NebulaAPI, max_concurrent_calls: 10
 ```
 
 The module's worker then executes at most 10 calls at a time; excess calls wait
-in line (each caller keeps its own `timeout:`), and a queued call whose caller
-already timed out is dropped without executing. The limit is per module **per
-node** — a module served on 3 nodes runs up to 30 concurrent calls cluster-wide.
-`max_concurrent_calls: 1` gives strict serialization.
+in line (each caller keeps its own `timeout:`). Each queued entry is monitored
+through its caller: the moment nobody awaits the result anymore — the call timed
+out, a `:first` multicast already got its winner, the caller crashed or its node
+disconnected — the entry is purged without executing. The limit is per module
+**per node** — a module served on 3 nodes runs up to 30 concurrent calls
+cluster-wide. `max_concurrent_calls: 1` gives strict serialization.
 
 ### Timeouts
 
@@ -540,6 +542,11 @@ Every call resolves its timeout in this order:
 
 Both options can also be set globally for every module via
 `config :nebula_api, default_opts: [max_concurrent_calls: 50, default_timeout: 15_000]`.
+
+A timeout means the outcome is **unknown**, not failed: the body may still be
+running on the callee and complete after your `{:nebula_error, :timeout}` came
+back. That ambiguity is inherent to any RPC — if callers retry on timeout, make
+the bodies idempotent.
 
 ## Worked example: a 3-role cluster
 

@@ -24,9 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Node-info is now refreshed by a per-node background `NebulaAPI.NodesInfoCache` on a fixed
   interval instead of being rebuilt lazily on every read — this removes the refresh stampede
   under concurrency. Readers always serve the latest snapshot.
-- Internal worker wire format: calls now ship as `{:nebula_call, fn_call, timeout_ms}`
-  so the worker can deadline queued calls (durations, not deadlines — monotonic clocks
-  are not comparable across nodes).
+- Internal worker wire format: calls now ship as `{:nebula_call, fn_call}`.
 
 ### Added
 - `success:` / `failure:` options on `call_on_nodes` (`:first` / `:quorum`): a predicate
@@ -35,8 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `nodes_info_refresh_interval` config option (ms, default `5000`).
 - `max_concurrent_calls` option on `use NebulaAPI` (default `:infinity`): caps how many
   calls a module's worker executes concurrently, per node. Excess calls queue (callers
-  keep their own timeout) and queued entries whose caller already timed out are dropped
-  unexecuted. `max_concurrent_calls: 1` restores strict serialization, explicitly.
+  keep their own timeout); each queued entry is monitored through its caller and purged
+  unexecuted the moment nobody awaits it anymore (timeout, early `:first` resolution,
+  caller crash, disconnect). `max_concurrent_calls: 1` restores strict serialization,
+  explicitly.
 - Configurable timeouts: per call (`timeout:`) > per module (`use NebulaAPI,
   default_timeout: ...`) > global (`config :nebula_api, default_timeout:`) > 5000 ms.
   Both options are also accepted in `config :nebula_api, default_opts: [...]` as

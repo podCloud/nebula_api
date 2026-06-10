@@ -22,7 +22,8 @@ defmodule NebulaAPI.APIServer.Worker do
        module: module,
        max: max_concurrent_calls(module),
        in_flight: 0,
-       queue: :queue.new()
+       queue: :queue.new(),
+       tasks: MapSet.new()
      }}
   end
 
@@ -34,36 +35,39 @@ defmodule NebulaAPI.APIServer.Worker do
     |> Keyword.get(:max_concurrent_calls, :infinity)
   end
 
-  # A call ships the caller's timeout BUDGET (a duration — monotonic clocks are
-  # not comparable across nodes), from which a LOCAL deadline is computed. If a
-  # slot is free the call runs now; otherwise it waits in line, and an entry whose
-  # deadline passed by dequeue time is dropped unexecuted: its caller already gave
-  # up, running the body would only waste work and fire side effects nobody awaits.
-  def handle_call({:nebula_call, fn_call, timeout_ms}, from, state) do
+  # If a slot is free the call runs now; otherwise it waits in line, MONITORED
+  # through its caller. The library only ever calls workers from throwaway
+  # processes (confined_call, the multicast fan-out tasks), so the caller's death
+  # is exactly how loss of interest manifests — timeout, early :first resolution,
+  # caller crash, network partition. The entry is purged on DOWN: event-driven,
+  # no clocks to compare across nodes.
+  def handle_call({:nebula_call, fn_call}, {caller, _tag} = from, state) do
     if slot_free?(state) do
       start_call(state, {from, fn_call})
     else
-      deadline = compute_deadline(timeout_ms)
-      {:noreply, %{state | queue: :queue.in({from, fn_call, deadline}, state.queue)}}
+      ref = Process.monitor(caller)
+      {:noreply, %{state | queue: :queue.in({from, fn_call, ref}, state.queue)}}
     end
   end
 
-  # Each running call is a monitored task: its DOWN frees the slot whether the
-  # task replied normally or crashed.
-  def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
-    dequeue_next(%{state | in_flight: state.in_flight - 1})
+  # Two monitor families: a ref in state.tasks is a running call (its DOWN frees
+  # a slot, reply or crash); any other ref is a queued caller that died — purge
+  # its entry without executing, nobody awaits it anymore.
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
+    if MapSet.member?(state.tasks, ref) do
+      dequeue_next(%{
+        state
+        | tasks: MapSet.delete(state.tasks, ref),
+          in_flight: state.in_flight - 1
+      })
+    else
+      queue = :queue.filter(fn {_from, _fn_call, r} -> r != ref end, state.queue)
+      {:noreply, %{state | queue: queue}}
+    end
   end
 
   defp slot_free?(%{max: :infinity}), do: true
   defp slot_free?(%{max: max, in_flight: in_flight}), do: in_flight < max
-
-  # timeout: :infinity is a legal budget (GenServer.call accepts it) — such an
-  # entry never expires while queued.
-  defp compute_deadline(:infinity), do: :infinity
-  defp compute_deadline(timeout_ms), do: System.monotonic_time(:millisecond) + timeout_ms
-
-  defp expired?(:infinity), do: false
-  defp expired?(deadline), do: System.monotonic_time(:millisecond) > deadline
 
   defp start_call(state, {from, fn_call}) do
     module = state.module
@@ -73,21 +77,20 @@ defmodule NebulaAPI.APIServer.Worker do
         GenServer.reply(from, execute_local_call(module, fn_call))
       end)
 
-    Process.monitor(pid)
+    ref = Process.monitor(pid)
 
-    {:noreply, %{state | in_flight: state.in_flight + 1}}
+    {:noreply, %{state | tasks: MapSet.put(state.tasks, ref), in_flight: state.in_flight + 1}}
   end
 
   defp dequeue_next(state) do
     case :queue.out(state.queue) do
-      {{:value, {from, fn_call, deadline}}, rest} ->
-        if expired?(deadline) do
-          # Expired while queued: the caller's GenServer.call already exited
-          # with :timeout — drop without executing.
-          dequeue_next(%{state | queue: rest})
-        else
-          start_call(%{state | queue: rest}, {from, fn_call})
-        end
+      {{:value, {from, fn_call, ref}}, rest} ->
+        # :flush — the caller may have died with its DOWN still in our mailbox;
+        # drop it so it cannot be mistaken for a task DOWN later. The residual
+        # race (caller dies in the same instant we start its call) is the
+        # irreducible RPC ambiguity: the reply is a no-op, the body just runs.
+        Process.demonitor(ref, [:flush])
+        start_call(%{state | queue: rest}, {from, fn_call})
 
       {:empty, _} ->
         {:noreply, state}
