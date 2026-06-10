@@ -217,7 +217,7 @@ defmodule NebulaAPI.IntegrationTest.FakeWorker do
 
   def init(state), do: {:ok, state}
 
-  def handle_call(fn_call, _from, state) do
+  def handle_call({:nebula_call, fn_call, _timeout_ms}, _from, state) do
     # Real defapi workers return the body's raw value (no wrapping).
     {:reply, state.response_fn.(fn_call), state}
   end

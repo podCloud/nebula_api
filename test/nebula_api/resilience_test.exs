@@ -27,7 +27,7 @@ defmodule NebulaAPI.ResilienceTest do
     use GenServer
     def init(state), do: {:ok, state}
 
-    def handle_call(fn_call, _from, %{delay: delay, reply: reply} = state) do
+    def handle_call({:nebula_call, fn_call, _timeout_ms}, _from, %{delay: delay, reply: reply} = state) do
       if delay > 0, do: Process.sleep(delay)
       _ = fn_call
       {:reply, reply, state}
@@ -212,12 +212,12 @@ defmodule NebulaAPI.ResilienceTest do
       {:ok, worker} = NebulaAPI.APIServer.Worker.start_link(LocalMethodsMod)
       parent = self()
 
-      spawn(fn -> send(parent, {:slow_done, GenServer.call(worker, {:slow}, 5_000)}) end)
+      spawn(fn -> send(parent, {:slow_done, GenServer.call(worker, {:nebula_call, {:slow}, 5_000}, 5_000)}) end)
       # Let the slow call reach the worker.
       Process.sleep(30)
 
       t0 = System.monotonic_time(:millisecond)
-      fast = GenServer.call(worker, {:fast}, 5_000)
+      fast = GenServer.call(worker, {:nebula_call, {:fast}, 5_000}, 5_000)
       elapsed = System.monotonic_time(:millisecond) - t0
 
       assert fast == {:ok, :fast}
@@ -232,11 +232,11 @@ defmodule NebulaAPI.ResilienceTest do
       {:ok, worker} = NebulaAPI.APIServer.Worker.start_link(LocalMethodsMod)
 
       assert {:nebula_error, {:undefined_local_method, LocalMethodsMod, :nope, 0}} =
-               GenServer.call(worker, {:nope}, 1_000)
+               GenServer.call(worker, {:nebula_call, {:nope}, 1_000}, 1_000)
 
       # The worker survives and keeps serving its real methods.
       assert Process.alive?(worker)
-      assert GenServer.call(worker, {:fast}, 1_000) == {:ok, :fast}
+      assert GenServer.call(worker, {:nebula_call, {:fast}, 1_000}, 1_000) == {:ok, :fast}
 
       GenServer.stop(worker)
     end

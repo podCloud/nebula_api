@@ -20,7 +20,7 @@ defmodule NebulaAPI.APIServer.Worker do
     {:ok, [module: module]}
   end
 
-  def handle_call(fn_call, from, state) do
+  def handle_call({:nebula_call, fn_call, _timeout_ms}, from, state) do
     module = state[:module]
 
     Task.Supervisor.start_child(NebulaAPI.TaskSupervisor, fn ->
