@@ -160,17 +160,15 @@ defmodule NebulaAPI.ResilienceTest do
     test "a non-timeout task exit is dropped, not raised" do
       # async_stream yields {:exit, reason} when a task crashes (not just on timeout).
       # Such a result must be treated as a drop, never crash the whole build.
-      assert APIServer.normalize_stream_result({:exit, %ArithmeticError{}}) ==
-               {:timeout, :unknown}
-
-      assert APIServer.normalize_stream_result({:exit, :killed}) == {:timeout, :unknown}
+      assert APIServer.normalize_stream_result({:exit, %ArithmeticError{}}) == :dropped
+      assert APIServer.normalize_stream_result({:exit, :killed}) == :dropped
     end
 
-    test "successful and timed-out results keep their existing behavior" do
+    test "successful results pass through; timed-out tasks are dropped" do
       assert APIServer.normalize_stream_result({:ok, {:ok, %{a: 1}, :n@h}}) ==
                {:ok, %{a: 1}, :n@h}
 
-      assert APIServer.normalize_stream_result({:exit, :timeout}) == {:timeout, :unknown}
+      assert APIServer.normalize_stream_result({:exit, :timeout}) == :dropped
     end
   end
 
