@@ -63,7 +63,6 @@ defmodule NebulaAPI.APIServer do
 
   require Logger
 
-  @default_timeout 5000
   @nodes_cache_table :nebula_nodes_cache
   @nodes_info_cache_key :__nodes_info_snapshot__
 
@@ -116,7 +115,8 @@ defmodule NebulaAPI.APIServer do
   Calls a remote method with optional routing options.
 
   ## Options
-  - `:timeout` - Timeout in milliseconds (default: #{@default_timeout})
+  - `:timeout` - Timeout in milliseconds. Default: the module's `default_timeout`,
+    then `config :nebula_api, default_timeout:`, then 5000.
   - `:node_selector` - Function that takes the nodes_info map and returns node(s) to call
   - `:multicast` - If true, calls multiple nodes and returns a list of results
   - `:strategy` - Multicast strategy: `:all`, `:first`, `:quorum` (default: `:all`)
@@ -139,7 +139,7 @@ defmodule NebulaAPI.APIServer do
     # {:nebula_error, _} like genuine transport failures do.
     validate_predicate_opts!(opts)
 
-    timeout = Keyword.get(opts, :timeout, @default_timeout)
+    timeout = resolve_timeout(module, opts)
     node_selector = Keyword.get(opts, :node_selector)
     multicast = Keyword.get(opts, :multicast, false)
     strategy = Keyword.get(opts, :strategy, :all)
@@ -472,6 +472,24 @@ defmodule NebulaAPI.APIServer do
     all_nodes_info
     |> Enum.filter(fn {node_name, _info} -> node_name in worker_nodes end)
     |> Map.new()
+  end
+
+  # Timeout precedence: the call's timeout: option, then the module's
+  # default_timeout (persisted by `use NebulaAPI`), then the global
+  # config :nebula_api, default_timeout (5000 by default).
+  @doc false
+  def resolve_timeout(module, opts) do
+    opts[:timeout] || module_default_timeout(module) || NebulaAPI.Config.default_timeout()
+  end
+
+  defp module_default_timeout(module) do
+    module.__info__(:attributes)
+    |> Keyword.get(:nebula_api, [])
+    |> Keyword.get(:default_timeout)
+  rescue
+    # Bare atoms used as module names in tests (or unloaded modules) have no
+    # __info__/1 — treat them as carrying no module-level default.
+    _ -> nil
   end
 
   # Private functions
