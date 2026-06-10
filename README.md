@@ -529,7 +529,10 @@ through its caller: the moment nobody awaits the result anymore — the call tim
 out, a `:first` multicast already got its winner, the caller crashed or its node
 disconnected — the entry is purged without executing. The limit is per module
 **per node** — a module served on 3 nodes runs up to 30 concurrent calls
-cluster-wide. `max_concurrent_calls: 1` gives strict serialization.
+cluster-wide. Likewise, `max_concurrent_calls: 1` gives strict serialization
+**on each node**, not across the cluster: with 3 nodes serving the module, up
+to 3 calls still run at the same time, one per node. For cluster-wide mutual
+exclusion you need your own coordination (e.g. `:global.trans`).
 
 ### Timeouts
 

@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keep their own timeout); each queued entry is monitored through its caller and purged
   unexecuted the moment nobody awaits it anymore (timeout, early `:first` resolution,
   caller crash, disconnect). `max_concurrent_calls: 1` restores strict serialization,
-  explicitly.
+  explicitly — per node, like the limit itself.
 - Configurable timeouts: per call (`timeout:`) > per module (`use NebulaAPI,
   default_timeout: ...`) > global (`config :nebula_api, default_timeout:`) > 5000 ms.
   Both options are also accepted in `config :nebula_api, default_opts: [...]` as
