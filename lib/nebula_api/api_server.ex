@@ -664,7 +664,7 @@ defmodule NebulaAPI.APIServer do
     tasks =
       target_workers
       |> Enum.map(fn {target_node, worker} ->
-        Task.async(fn ->
+        Task.Supervisor.async_nolink(NebulaAPI.TaskSupervisor, fn ->
           remaining = max(deadline - System.monotonic_time(:millisecond), 100)
           send(parent, {ref, tagged_call(worker, fn_call, remaining, target_node)})
         end)
@@ -715,7 +715,7 @@ defmodule NebulaAPI.APIServer do
     tasks =
       target_workers
       |> Enum.map(fn {target_node, worker} ->
-        Task.async(fn ->
+        Task.Supervisor.async_nolink(NebulaAPI.TaskSupervisor, fn ->
           remaining = max(deadline - System.monotonic_time(:millisecond), 100)
           send(parent, {ref, tagged_call(worker, fn_call, remaining, target_node)})
         end)
@@ -771,7 +771,7 @@ defmodule NebulaAPI.APIServer do
     tasks =
       target_workers
       |> Enum.map(fn {target_node, worker} ->
-        Task.async(fn ->
+        Task.Supervisor.async_nolink(NebulaAPI.TaskSupervisor, fn ->
           remaining = max(deadline - System.monotonic_time(:millisecond), 100)
           send(parent, {ref, tagged_call(worker, fn_call, remaining, target_node)})
         end)
