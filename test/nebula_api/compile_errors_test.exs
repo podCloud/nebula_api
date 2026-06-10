@@ -121,4 +121,68 @@ defmodule NebulaAPI.CompileErrorsTest do
       assert {_, _} = Code.eval_string(code)
     end
   end
+
+  describe "success: + failure: in call_on_* macros (R4)" do
+    # The macros only accept literal keyword lists, so the conflicting keys are
+    # statically visible — the error belongs at compile time, not at first call.
+    # Function selectors keep these tests independent from the :nodes config.
+    test "passing both to call_on_nodes raises a clear CompileError" do
+      code = """
+      defmodule NebulaAPI.CompileErrorsTest.BothPredicates do
+        use NebulaAPI.AST
+
+        def go do
+          call_on_nodes fn nodes_info -> Map.keys(nodes_info) end,
+            strategy: :first,
+            success: fn value -> value == :ok end,
+            failure: fn value -> value != :ok end do
+            :ok
+          end
+        end
+      end
+      """
+
+      assert_raise CompileError, ~r/mutually exclusive/, fn ->
+        Code.eval_string(code)
+      end
+    end
+
+    test "passing both to call_on_node raises a clear CompileError" do
+      code = """
+      defmodule NebulaAPI.CompileErrorsTest.BothPredicatesUni do
+        use NebulaAPI.AST
+
+        def go do
+          call_on_node fn nodes_info -> List.first(Map.keys(nodes_info)) end,
+            success: fn value -> value == :ok end,
+            failure: fn value -> value != :ok end do
+            :ok
+          end
+        end
+      end
+      """
+
+      assert_raise CompileError, ~r/mutually exclusive/, fn ->
+        Code.eval_string(code)
+      end
+    end
+
+    test "one predicate alone still compiles" do
+      code = """
+      defmodule NebulaAPI.CompileErrorsTest.OnePredicate do
+        use NebulaAPI.AST
+
+        def go do
+          call_on_nodes fn nodes_info -> Map.keys(nodes_info) end,
+            strategy: :first,
+            success: fn value -> value == :ok end do
+            :ok
+          end
+        end
+      end
+      """
+
+      assert {_, _} = Code.eval_string(code)
+    end
+  end
 end

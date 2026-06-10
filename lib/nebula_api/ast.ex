@@ -195,6 +195,7 @@ defmodule NebulaAPI.AST do
   end
 
   defp do_call_on_node(selector_or_nebula_ast, opts, block, caller) do
+    validate_static_predicate_opts!(opts, caller)
     selector = build_selector(selector_or_nebula_ast, :unicast, caller)
 
     quote do
@@ -268,6 +269,7 @@ defmodule NebulaAPI.AST do
   end
 
   defp do_call_on_nodes(selector_or_nebula_ast, opts, block, caller) do
+    validate_static_predicate_opts!(opts, caller)
     selector = build_selector(selector_or_nebula_ast, :multicast, caller)
 
     quote do
@@ -330,6 +332,23 @@ defmodule NebulaAPI.AST do
 
     quote do
       call_on_nodes(fn nodes_info -> Map.keys(nodes_info) end, unquote(opts), do: unquote(block))
+    end
+  end
+
+  # The call_on_* macros only accept literal keyword lists, so conflicting
+  # predicate keys are statically visible: fail at compile time, at the call
+  # site, instead of at the first runtime call. Only key PRESENCE is checked —
+  # values stay unevaluated AST. The runtime validation in
+  # APIServer.validate_predicate_opts!/1 remains the backstop for dynamic opts
+  # (generated functions' trailing routing opts, context merges).
+  defp validate_static_predicate_opts!(opts, caller) do
+    if Keyword.keyword?(opts) and Keyword.has_key?(opts, :success) and
+         Keyword.has_key?(opts, :failure) do
+      raise CompileError,
+        line: caller.line,
+        file: caller.file,
+        description:
+          "success: and failure: are mutually exclusive — pass one or the other, not both"
     end
   end
 
