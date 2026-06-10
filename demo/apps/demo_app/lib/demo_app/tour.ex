@@ -54,14 +54,16 @@ defmodule DemoApp.Tour do
   end
 
   # Dogfood the lib: multicast a ready? probe until all 3 workers + @db answer.
+  # Multicast results are {node, value}; a transport failure for a node shows up
+  # as {node, {:nebula_error, reason}}. Unicast returns the body's value verbatim.
   defp wait_for_cluster(retries \\ 60) do
     workers_up =
       (call_on_nodes &worker, strategy: :all, timeout: 500 do
          Worker.Job.ready?()
        end)
-      |> Enum.count(&match?({:ok, _, _}, &1))
+      |> Enum.count(&match?({_node, true}, &1))
 
-    db_up? = match?({:ok, _}, (call_on_node @db, timeout: 500 do Db.Store.ready?() end))
+    db_up? = (call_on_node @db, timeout: 500 do Db.Store.ready?() end) == true
 
     cond do
       workers_up >= 3 and db_up? -> :ready

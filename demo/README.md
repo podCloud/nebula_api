@@ -31,7 +31,7 @@ Code.ensure_loaded?(Cachex) # false on a worker, true on db — same Db.Store wo
 ## What it demonstrates
 
 - **Transparent routing** — call `Db.Store.get` / `Worker.Job.run_task` from any node; it runs on the right one, and the target node's logs show it.
-- **Multicast strategies** — `:all`, `:first`, `:quorum`. `worker3` always fails (via `on_nebula_nodes @worker3`), so `quorum_count: 2` succeeds (fault-tolerant) while `quorum_count: 3` returns `{:error, :quorum_not_reached, ...}`.
+- **Multicast strategies** — `:all`, `:first`, `:quorum`. `worker3` always fails (via `on_nebula_nodes @:"worker@worker3.test"`), so `quorum_count: 2` succeeds (fault-tolerant) while `quorum_count: 3` returns `{:nebula_error, :quorum_not_reached, ...}`.
 - **Wrap a third-party lib cluster-wide** — `Db.Store` wraps [Cachex](https://hex.pm/packages/cachex); the cache lives only on `@db`.
 - **Conditional deps & compilation** — Cachex is pulled, compiled and started only on `@db`. `Code.ensure_loaded?(Cachex)` is `false` on every other node, yet `Db.Store` works everywhere (smaller binaries, no unnecessary deps).
 
@@ -41,6 +41,6 @@ The nebula dev approach: the source is mounted and each container compiles at
 startup with its own `--name $RELEASE_NODE` (`X@X.test` — `.test` is a reserved
 TLD, fully-qualified so Erlang long-name distribution is happy). `nebula_api`
 generates different bytecode per node, so each node gets its own `_build`
-(keyed by `RELEASE_NAME`). Dependencies are fetched once (the setup step), shared
+(keyed by `RELEASE_NODE`). Dependencies are fetched once (the setup step), shared
 read-only across nodes. No release needed; `mix release` is optional and not used
 here.
