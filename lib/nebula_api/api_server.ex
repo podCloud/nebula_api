@@ -8,12 +8,20 @@ defmodule NebulaAPI.APIServer do
   - Multicast to multiple nodes
 
   ## Multicast strategies
-  - `:all` - Wait for all responses (or timeout), returns list of results
-  - `:first` - Return as soon as one response is received
-  - `:quorum` - Wait for N responses (configurable), returns tagged result:
-    - `{:ok, results}` when quorum is reached
-    - `{:error, :quorum_not_reached, results}` when not enough successful responses
-    - `{:error, :quorum_timeout, results}` when timeout occurs before quorum
+
+  Every per-node response is a `{node, value}` pair, where `value` is the body's
+  return value, verbatim. A node whose call failed at the transport level yields
+  `{node, {:nebula_error, reason}}`.
+
+  - `:all` - Wait for every targeted node (or the timeout). Returns one `{node, value}`
+    per targeted node — nodes that did not answer in time are reported as
+    `{node, {:nebula_error, :timeout}}`, never silently dropped.
+  - `:first` - Return the first response that counts as a success (see the
+    `:success`/`:failure` options) as a single `{node, value}`. If no response
+    qualifies, returns the list of collected responses.
+  - `:quorum` - Wait for N successes (`:quorum_count`). Reached: the list of
+    `{node, value}` responses. Not reached: `{:nebula_error, :quorum_not_reached, results}`
+    or `{:nebula_error, :quorum_timeout, results}`.
 
   ## Node Info Cache
 
@@ -109,17 +117,21 @@ defmodule NebulaAPI.APIServer do
 
   ## Options
   - `:timeout` - Timeout in milliseconds (default: #{@default_timeout})
-  - `:node_selector` - Function that takes nodes_info map and returns node(s) to call
-  - `:multicast` - If true, calls multiple nodes and returns list of results
+  - `:node_selector` - Function that takes the nodes_info map and returns node(s) to call
+  - `:multicast` - If true, calls multiple nodes and returns a list of results
   - `:strategy` - Multicast strategy: `:all`, `:first`, `:quorum` (default: `:all`)
-  - `:quorum_count` - Number of responses needed for `:quorum` strategy
+  - `:quorum_count` - Number of successes needed for the `:quorum` strategy
+  - `:success` - (`:first`/`:quorum` only) predicate `fn value -> boolean` defining
+    what counts as a business success. Default: any worker that replied counts
+    (a `{:nebula_error, _}` never does). Mutually exclusive with `:failure`.
+  - `:failure` - mirror of `:success`: `fn value -> boolean` returning true for
+    values that must NOT count as successes. Mutually exclusive with `:success`.
 
   ## Returns
-  - For unicast: The result from the remote call
-  - For multicast with `:all` strategy: List of `{:ok, result, node}`, `{:error, reason, node}`, or `{:timeout, node}`
-  - For multicast with `:first` strategy: `{:ok, result, node}` on first success, or list of failures
-  - For multicast with `:quorum` strategy: `{:ok, results}` when quorum reached,
-    `{:error, :quorum_not_reached, results}` or `{:error, :quorum_timeout, results}` otherwise
+  - For unicast: the body's return value, verbatim. A library/transport failure
+    (timeout, no worker available, worker crash) yields `{:nebula_error, reason}`.
+  - For multicast: per-node `{node, value}` pairs — see "Multicast strategies"
+    in the moduledoc for the exact shape per strategy.
   """
   def call_remote_method(module, fn_call, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
