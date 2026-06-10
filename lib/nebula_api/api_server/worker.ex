@@ -17,17 +17,73 @@ defmodule NebulaAPI.APIServer.Worker do
       )
     end)
 
-    {:ok, [module: module]}
+    {:ok,
+     %{
+       module: module,
+       max: max_concurrent_calls(module),
+       in_flight: 0,
+       queue: :queue.new()
+     }}
   end
 
-  def handle_call({:nebula_call, fn_call, _timeout_ms}, from, state) do
-    module = state[:module]
+  # The `use NebulaAPI` opts are persisted in the :nebula_api attribute (see
+  # NebulaAPI.__register__/2). Modules without it (test doubles) get the default.
+  defp max_concurrent_calls(module) do
+    module.__info__(:attributes)
+    |> Keyword.get(:nebula_api, [])
+    |> Keyword.get(:max_concurrent_calls, :infinity)
+  end
 
-    Task.Supervisor.start_child(NebulaAPI.TaskSupervisor, fn ->
-      GenServer.reply(from, execute_local_call(module, fn_call))
-    end)
+  # A call ships the caller's timeout BUDGET (a duration — monotonic clocks are
+  # not comparable across nodes), from which a LOCAL deadline is computed. If a
+  # slot is free the call runs now; otherwise it waits in line, and an entry whose
+  # deadline passed by dequeue time is dropped unexecuted: its caller already gave
+  # up, running the body would only waste work and fire side effects nobody awaits.
+  def handle_call({:nebula_call, fn_call, timeout_ms}, from, state) do
+    if slot_free?(state) do
+      start_call(state, {from, fn_call})
+    else
+      deadline = System.monotonic_time(:millisecond) + timeout_ms
+      {:noreply, %{state | queue: :queue.in({from, fn_call, deadline}, state.queue)}}
+    end
+  end
 
-    {:noreply, state}
+  # Each running call is a monitored task: its DOWN frees the slot whether the
+  # task replied normally or crashed.
+  def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
+    dequeue_next(%{state | in_flight: state.in_flight - 1})
+  end
+
+  defp slot_free?(%{max: :infinity}), do: true
+  defp slot_free?(%{max: max, in_flight: in_flight}), do: in_flight < max
+
+  defp start_call(state, {from, fn_call}) do
+    module = state.module
+
+    {:ok, pid} =
+      Task.Supervisor.start_child(NebulaAPI.TaskSupervisor, fn ->
+        GenServer.reply(from, execute_local_call(module, fn_call))
+      end)
+
+    Process.monitor(pid)
+
+    {:noreply, %{state | in_flight: state.in_flight + 1}}
+  end
+
+  defp dequeue_next(state) do
+    case :queue.out(state.queue) do
+      {{:value, {from, fn_call, deadline}}, rest} ->
+        if System.monotonic_time(:millisecond) > deadline do
+          # Expired while queued: the caller's GenServer.call already exited
+          # with :timeout — drop without executing.
+          dequeue_next(%{state | queue: rest})
+        else
+          start_call(%{state | queue: rest}, {from, fn_call})
+        end
+
+      {:empty, _} ->
+        {:noreply, state}
+    end
   end
 
   # Runs the local call and ALWAYS returns a term (never raises). The body's return
