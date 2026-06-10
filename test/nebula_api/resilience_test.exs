@@ -323,5 +323,23 @@ defmodule NebulaAPI.ResilienceTest do
 
       GenServer.stop(pid)
     end
+
+    test "passing both success: and failure: raises ArgumentError" do
+      pid = start_fake(PredBothMod, :work, 0, 0, {:ok, :good})
+
+      assert_raise ArgumentError, ~r/mutually exclusive/, fn ->
+        APIServer.call_remote_method(
+          PredBothMod,
+          {:work},
+          multicast: true,
+          strategy: :first,
+          timeout: 500,
+          success: &match?({:ok, _}, &1),
+          failure: &match?({:error, _}, &1)
+        )
+      end
+
+      GenServer.stop(pid)
+    end
   end
 end

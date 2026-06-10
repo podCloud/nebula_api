@@ -402,7 +402,7 @@ end
 ```
 
 A transport failure (`{:nebula_error, _}`) is never a success, regardless of the
-predicate.
+predicate. Passing both `success:` and `failure:` raises an `ArgumentError`.
 
 ## Node info and intelligent routing
 

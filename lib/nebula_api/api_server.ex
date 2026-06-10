@@ -163,6 +163,11 @@ defmodule NebulaAPI.APIServer do
         call_first_worker(module, fn_call, timeout)
     end
   rescue
+    err in ArgumentError ->
+      # ArgumentError is a programming error (bad opts, bad arity…) — re-raise so
+      # the caller gets a clear crash rather than a silent {:nebula_error, …}.
+      reraise err, __STACKTRACE__
+
     err ->
       Logger.error("""
       Remote method call failed:
@@ -641,12 +646,28 @@ defmodule NebulaAPI.APIServer do
 
   # Success predicate for :first/:quorum, derived from the call opts. By default any
   # worker that replied (no transport error) is a success. `success: fn value -> bool`
-  # narrows that to a business success; `failure:` is its mirror.
+  # narrows that to a business success; `failure:` is its mirror. Passing both is
+  # ambiguous (which one wins?) and rejected outright.
   defp success_predicate(opts) do
-    cond do
-      f = Keyword.get(opts, :success) -> f
-      f = Keyword.get(opts, :failure) -> fn value -> not f.(value) end
-      true -> fn _value -> true end
+    case {Keyword.get(opts, :success), Keyword.get(opts, :failure)} do
+      {nil, nil} ->
+        fn _value -> true end
+
+      {success, nil} when is_function(success, 1) ->
+        success
+
+      {nil, failure} when is_function(failure, 1) ->
+        fn value -> not failure.(value) end
+
+      {nil, bad} ->
+        raise ArgumentError, "failure: must be a 1-arity function, got: #{inspect(bad)}"
+
+      {bad, nil} ->
+        raise ArgumentError, "success: must be a 1-arity function, got: #{inspect(bad)}"
+
+      {_success, _failure} ->
+        raise ArgumentError,
+              "success: and failure: are mutually exclusive — pass one or the other, not both"
     end
   end
 
