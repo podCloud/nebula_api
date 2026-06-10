@@ -85,9 +85,11 @@ defmodule NebulaAPI.APIServer.Worker do
   defp dequeue_next(state) do
     case :queue.out(state.queue) do
       {{:value, {from, fn_call, ref}}, rest} ->
-        # :flush — the caller may have died with its DOWN still in our mailbox;
-        # drop it so it cannot be mistaken for a task DOWN later. The residual
-        # race (caller dies in the same instant we start its call) is the
+        # Pure hygiene: we no longer care about this caller's fate, so stop
+        # watching it and :flush any DOWN already in our mailbox. A stale caller
+        # DOWN could never be MISTAKEN for anything (monitor refs are unique, so
+        # it would just no-op against the queue) — it would only be useless work.
+        # If the caller dies in the very instant we start its call, that's the
         # irreducible RPC ambiguity: the reply is a no-op, the body just runs.
         Process.demonitor(ref, [:flush])
         start_call(%{state | queue: rest}, {from, fn_call})
