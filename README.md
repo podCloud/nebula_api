@@ -510,6 +510,37 @@ a return value is **business** — it's what your function chose to return.
 didn't complete. You never have to guess whether an `{:error, _}` came from your
 code or from the framework.
 
+### Concurrency
+
+`defapi` bodies run concurrently, like any function — two simultaneous callers
+execute the body twice at the same time. There is no implicit serialization: if a
+body needs mutual exclusion, that is its own concern (a dedicated process,
+`:global.trans`, ...).
+
+To bound that concurrency, cap it on the module:
+
+```elixir
+use NebulaAPI, max_concurrent_calls: 10
+```
+
+The module's worker then executes at most 10 calls at a time; excess calls wait
+in line (each caller keeps its own `timeout:`), and a queued call whose caller
+already timed out is dropped without executing. The limit is per module **per
+node** — a module served on 3 nodes runs up to 30 concurrent calls cluster-wide.
+`max_concurrent_calls: 1` gives strict serialization.
+
+### Timeouts
+
+Every call resolves its timeout in this order:
+
+1. the call's `timeout:` option,
+2. the module's `default_timeout:` (`use NebulaAPI, default_timeout: 15_000`),
+3. `config :nebula_api, default_timeout: ...`,
+4. 5000 ms.
+
+Both options can also be set globally for every module via
+`config :nebula_api, default_opts: [max_concurrent_calls: 50, default_timeout: 15_000]`.
+
 ## Worked example: a 3-role cluster
 
 Three nodes, three roles — an API front, a database node, and a worker:
