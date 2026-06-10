@@ -15,7 +15,9 @@ defmodule NebulaAPI do
       NebulaAPI.Config.default_opts()
       |> Keyword.validate!(
         self_node: node(),
-        allow_unknown_self_node: false
+        allow_unknown_self_node: false,
+        max_concurrent_calls: :infinity,
+        default_timeout: nil
       )
 
     opts =
@@ -55,6 +57,36 @@ defmodule NebulaAPI do
           #{nodes_names |> Enum.map(&"\t- :\"#{&1}\"") |> Enum.join("\n")}
           """
       end
+    end
+
+    max_concurrent_calls = Keyword.fetch!(opts, :max_concurrent_calls)
+
+    unless max_concurrent_calls == :infinity or
+             (is_integer(max_concurrent_calls) and max_concurrent_calls > 0) do
+      raise CompileError,
+        line: env.line,
+        file: env.file,
+        description: """
+        Invalid max_concurrent_calls in `use NebulaAPI` inside #{inspect(env.module)}:
+        #{inspect(max_concurrent_calls)}
+
+        Expected a positive integer or :infinity (the default).
+        `max_concurrent_calls: 1` gives strict serialization.
+        """
+    end
+
+    default_timeout = Keyword.fetch!(opts, :default_timeout)
+
+    unless is_nil(default_timeout) or (is_integer(default_timeout) and default_timeout > 0) do
+      raise CompileError,
+        line: env.line,
+        file: env.file,
+        description: """
+        Invalid default_timeout in `use NebulaAPI` inside #{inspect(env.module)}:
+        #{inspect(default_timeout)}
+
+        Expected a positive integer (milliseconds), e.g. default_timeout: 15_000.
+        """
     end
 
     Module.register_attribute(env.module, :nebula_local_api_methods,

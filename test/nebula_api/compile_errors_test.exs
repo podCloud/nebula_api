@@ -76,4 +76,49 @@ defmodule NebulaAPI.CompileErrorsTest do
       end
     end
   end
+
+  describe "invalid use NebulaAPI options (R3)" do
+    setup do
+      Application.put_env(:nebula_api, :nodes, [{:"test@host", [:db]}])
+      on_exit(fn -> Application.delete_env(:nebula_api, :nodes) end)
+      :ok
+    end
+
+    test "a non-positive max_concurrent_calls raises a clear CompileError" do
+      code = """
+      defmodule NebulaAPI.CompileErrorsTest.BadMax do
+        use NebulaAPI, allow_unknown_self_node: true, max_concurrent_calls: 0
+      end
+      """
+
+      assert_raise CompileError, ~r/max_concurrent_calls/, fn ->
+        Code.eval_string(code)
+      end
+    end
+
+    test "a non-integer default_timeout raises a clear CompileError" do
+      code = """
+      defmodule NebulaAPI.CompileErrorsTest.BadTimeout do
+        use NebulaAPI, allow_unknown_self_node: true, default_timeout: :soon
+      end
+      """
+
+      assert_raise CompileError, ~r/default_timeout/, fn ->
+        Code.eval_string(code)
+      end
+    end
+
+    test "valid values compile" do
+      code = """
+      defmodule NebulaAPI.CompileErrorsTest.GoodOpts do
+        use NebulaAPI,
+          allow_unknown_self_node: true,
+          max_concurrent_calls: 10,
+          default_timeout: 15_000
+      end
+      """
+
+      assert {_, _} = Code.eval_string(code)
+    end
+  end
 end
