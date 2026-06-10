@@ -5,6 +5,56 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-06-10
+
+### Changed
+- **Breaking: transparent return contract.** A `defapi` body's return value is now passed
+  through verbatim — there is no automatic `{:ok, value}` wrapping. `add(3, 7)` returns
+  `10`; `Repo.get/2` returns `%User{}` or `nil`; an `{:ok, _}` / `{:error, _}` you return is
+  preserved as-is and always means a *business* result.
+- **Breaking: dedicated `:nebula_error` status for library/transport failures** (timeout,
+  no worker available, worker/network crash, a body exception, quorum not reached):
+  `{:nebula_error, reason}`. `:ok` / `:error` therefore never collide with library faults.
+- **Breaking: multicast result shape.** Per-node results are now `{node, value}` (a
+  transport failure for a node is `{node, {:nebula_error, reason}}`). `:quorum` returns the
+  list of `{node, value}` when reached, otherwise `{:nebula_error, :quorum_not_reached, results}`
+  or `{:nebula_error, :quorum_timeout, results}`. Migration: expect raw body values instead
+  of `{:ok, _}`; match `{:nebula_error, _}` for transport faults; update multicast matches to
+  `{node, value}`.
+- Node-info is now refreshed by a per-node background `NebulaAPI.NodesInfoCache` on a fixed
+  interval instead of being rebuilt lazily on every read — this removes the refresh stampede
+  under concurrency. Readers always serve the latest snapshot.
+
+### Added
+- `success:` / `failure:` options on `call_on_nodes` (`:first` / `:quorum`): a predicate
+  `fn value -> boolean` defining what counts as a business success. Default: any worker that
+  responded. Example: `success: &match?({:ok, _}, &1)`.
+- `nodes_info_refresh_interval` config option (ms, default `5000`).
+
+### Fixed
+- Unicast calls no longer crash the caller when a worker times out or is dead — the
+  `GenServer.call` exit is caught and returned as `{:nebula_error, reason}`, with the late
+  reply confined to a throwaway task (no stray messages reach the caller).
+- The `:all` multicast strategy no longer exits the caller on timeout; it returns partial
+  results, marking unanswered nodes `{node, {:nebula_error, :timeout}}`.
+- Workers are non-blocking: each call runs in a supervised task and replies asynchronously,
+  so a slow method no longer serializes a module's whole API and a re-entrant call no longer
+  deadlocks.
+- An unknown method, a malformed call, or a raising body returns `{:nebula_error, ...}`
+  instead of crashing the worker.
+- `build_nodes_info` no longer aborts the whole snapshot when one node's health collection
+  crashes (a non-timeout task exit) — the faulty node is simply dropped.
+- Invalid `defapi` selectors and signatures, using `defapi` without `use NebulaAPI`, and
+  malformed node tags now raise clear `CompileError`s instead of internal crashes.
+- `mix docs` (and therefore `mix hex.publish`) no longer fails — the `docs` extras point at
+  files that exist.
+
+### Documentation
+- Rewrote all return-value documentation for the transparent contract. Corrected the
+  local-call overhead figure (~0.00002 ms — a few process-dictionary reads, not zero) and
+  clarified that `call_on_all_nodes` targets the nodes that serve the method, not every
+  configured node.
+
 ## [0.3.0] - 2026-06-08
 
 ### Added

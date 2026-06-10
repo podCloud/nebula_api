@@ -95,7 +95,7 @@ building for.
 ```elixir
 def deps do
   [
-    {:nebula_api, git: "git@github.com:podCloud/NebulaAPI.git", tag: "v0.3.0"}
+    {:nebula_api, git: "git@github.com:podCloud/NebulaAPI.git", tag: "v0.4.0"}
   ]
 end
 ```
