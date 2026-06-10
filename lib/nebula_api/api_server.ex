@@ -134,6 +134,11 @@ defmodule NebulaAPI.APIServer do
     in the moduledoc for the exact shape per strategy.
   """
   def call_remote_method(module, fn_call, opts \\ []) do
+    # Bad call opts are a programming error: validate them up front, OUTSIDE the
+    # transport rescue below, so they crash loud instead of melting into
+    # {:nebula_error, _} like genuine transport failures do.
+    validate_predicate_opts!(opts)
+
     timeout = Keyword.get(opts, :timeout, @default_timeout)
     node_selector = Keyword.get(opts, :node_selector)
     multicast = Keyword.get(opts, :multicast, false)
@@ -145,40 +150,37 @@ defmodule NebulaAPI.APIServer do
       opts: #{inspect(opts)}
     """)
 
-    cond do
-      multicast && node_selector ->
-        # Multicast with selector
-        call_selected_workers(module, fn_call, node_selector, timeout, strategy, opts)
+    try do
+      cond do
+        multicast && node_selector ->
+          # Multicast with selector
+          call_selected_workers(module, fn_call, node_selector, timeout, strategy, opts)
 
-      multicast ->
-        # Multicast to all workers
-        call_all_workers(module, fn_call, timeout, strategy, opts)
+        multicast ->
+          # Multicast to all workers
+          call_all_workers(module, fn_call, timeout, strategy, opts)
 
-      node_selector ->
-        # Unicast with selector
-        call_selected_worker(module, fn_call, node_selector, timeout)
+        node_selector ->
+          # Unicast with selector
+          call_selected_worker(module, fn_call, node_selector, timeout)
 
-      true ->
-        # Default unicast (first available worker)
-        call_first_worker(module, fn_call, timeout)
+        true ->
+          # Default unicast (first available worker)
+          call_first_worker(module, fn_call, timeout)
+      end
+    rescue
+      err ->
+        Logger.error("""
+        Remote method call failed:
+          module: #{inspect(module)}
+          fn_call: #{inspect(fn_call)}
+          opts: #{inspect(opts)}
+          error: #{Exception.message(err)}
+          stacktrace: #{Exception.format_stacktrace(__STACKTRACE__)}
+        """)
+
+        {:nebula_error, err}
     end
-  rescue
-    err in ArgumentError ->
-      # ArgumentError is a programming error (bad opts, bad arity…) — re-raise so
-      # the caller gets a clear crash rather than a silent {:nebula_error, …}.
-      reraise err, __STACKTRACE__
-
-    err ->
-      Logger.error("""
-      Remote method call failed:
-        module: #{inspect(module)}
-        fn_call: #{inspect(fn_call)}
-        opts: #{inspect(opts)}
-        error: #{Exception.message(err)}
-        stacktrace: #{Exception.format_stacktrace(__STACKTRACE__)}
-      """)
-
-      {:nebula_error, err}
   end
 
   @doc """
@@ -644,20 +646,19 @@ defmodule NebulaAPI.APIServer do
     end
   end
 
-  # Success predicate for :first/:quorum, derived from the call opts. By default any
-  # worker that replied (no transport error) is a success. `success: fn value -> bool`
-  # narrows that to a business success; `failure:` is its mirror. Passing both is
-  # ambiguous (which one wins?) and rejected outright.
-  defp success_predicate(opts) do
+  # Bad call opts are a programming error: validate them up front, OUTSIDE the
+  # transport rescue in call_remote_method/3, so they crash loud instead of melting
+  # into {:nebula_error, _} like genuine transport failures do.
+  defp validate_predicate_opts!(opts) do
     case {Keyword.get(opts, :success), Keyword.get(opts, :failure)} do
       {nil, nil} ->
-        fn _value -> true end
+        :ok
 
       {success, nil} when is_function(success, 1) ->
-        success
+        :ok
 
       {nil, failure} when is_function(failure, 1) ->
-        fn value -> not failure.(value) end
+        :ok
 
       {nil, bad} ->
         raise ArgumentError, "failure: must be a 1-arity function, got: #{inspect(bad)}"
@@ -668,6 +669,18 @@ defmodule NebulaAPI.APIServer do
       {_success, _failure} ->
         raise ArgumentError,
               "success: and failure: are mutually exclusive — pass one or the other, not both"
+    end
+  end
+
+  # Success predicate for :first/:quorum, derived from the call opts (validated up
+  # front by validate_predicate_opts!/1). By default any worker that replied (no
+  # transport error) is a success. `success: fn value -> bool` narrows that to a
+  # business success; `failure:` is its mirror.
+  defp success_predicate(opts) do
+    cond do
+      f = Keyword.get(opts, :success) -> f
+      f = Keyword.get(opts, :failure) -> fn value -> not f.(value) end
+      true -> fn _value -> true end
     end
   end
 

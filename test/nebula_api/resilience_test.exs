@@ -342,4 +342,26 @@ defmodule NebulaAPI.ResilienceTest do
       GenServer.stop(pid)
     end
   end
+
+  describe "unicast — node_selector error wrapping (R3)" do
+    test "a node_selector raising ArgumentError is wrapped, not propagated" do
+      pid = start_fake(SelectorRaiseMod, :fast, 0, 0, :value)
+
+      result =
+        APIServer.call_remote_method(
+          SelectorRaiseMod,
+          {:fast},
+          node_selector: fn _nodes_info -> raise ArgumentError, "user selector bug" end,
+          timeout: 500
+        )
+
+      # The selector raises inside safe_call_selector/2 (which catches it) and the
+      # unicast path returns {:nebula_error, {:selector_failed, %ArgumentError{}}}.
+      # Either way the caller must never see the ArgumentError propagate uncaught.
+      assert {:nebula_error, _} = result
+      refute match?(%ArgumentError{}, result)
+
+      GenServer.stop(pid)
+    end
+  end
 end
