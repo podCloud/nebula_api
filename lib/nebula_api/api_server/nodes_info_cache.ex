@@ -38,15 +38,27 @@ defmodule NebulaAPI.APIServer.NodesInfoCache do
 
   @impl true
   def handle_info(:refresh, %{interval: interval} = state) do
-    try do
-      NebulaAPI.APIServer.refresh_nodes_cache()
-    rescue
-      e ->
-        Logger.error("NodesInfoCache refresh failed: #{Exception.format(:error, e, __STACKTRACE__)}")
-    end
+    protected_refresh(&NebulaAPI.APIServer.refresh_nodes_cache/0)
 
     Process.send_after(self(), :refresh, interval)
 
     {:noreply, state}
+  end
+
+  # Runs one refresh, containing ANY failure (exception, throw, exit): a failing
+  # refresh must never kill the cache — a crash loop here would exhaust the
+  # APIServer supervisor's restart intensity and take the whole app down with it.
+  @doc false
+  def protected_refresh(fun) do
+    fun.()
+    :ok
+  rescue
+    e ->
+      Logger.error("NodesInfoCache refresh failed: #{Exception.format(:error, e, __STACKTRACE__)}")
+      :error
+  catch
+    kind, reason ->
+      Logger.error("NodesInfoCache refresh failed: #{inspect(kind)} #{inspect(reason)}")
+      :error
   end
 end

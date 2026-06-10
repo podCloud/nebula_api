@@ -343,6 +343,34 @@ defmodule NebulaAPI.ResilienceTest do
     end
   end
 
+  describe "node-info cache — refresh fault containment (R6)" do
+    import ExUnit.CaptureLog
+
+    alias NebulaAPI.APIServer.NodesInfoCache
+
+    test "a raising refresh returns :error instead of crashing" do
+      capture_log(fn ->
+        assert NodesInfoCache.protected_refresh(fn -> raise "boom" end) == :error
+      end)
+    end
+
+    test "a throwing refresh returns :error instead of crashing" do
+      capture_log(fn ->
+        assert NodesInfoCache.protected_refresh(fn -> throw(:boom) end) == :error
+      end)
+    end
+
+    test "an exiting refresh returns :error instead of crashing" do
+      capture_log(fn ->
+        assert NodesInfoCache.protected_refresh(fn -> exit(:boom) end) == :error
+      end)
+    end
+
+    test "a successful refresh returns :ok" do
+      assert NodesInfoCache.protected_refresh(fn -> :whatever end) == :ok
+    end
+  end
+
   describe "unicast — node_selector error wrapping (R4)" do
     test "a node_selector raising ArgumentError is wrapped, not propagated" do
       pid = start_fake(SelectorRaiseMod, :fast, 0, 0, :value)
