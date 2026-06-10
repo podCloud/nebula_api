@@ -343,7 +343,7 @@ defmodule NebulaAPI.ResilienceTest do
     end
   end
 
-  describe "unicast — node_selector error wrapping (R3)" do
+  describe "unicast — node_selector error wrapping (R4)" do
     test "a node_selector raising ArgumentError is wrapped, not propagated" do
       pid = start_fake(SelectorRaiseMod, :fast, 0, 0, :value)
 
@@ -355,11 +355,11 @@ defmodule NebulaAPI.ResilienceTest do
           timeout: 500
         )
 
-      # The selector raises inside safe_call_selector/2 (which catches it) and the
-      # unicast path returns {:nebula_error, {:selector_failed, %ArgumentError{}}}.
-      # Either way the caller must never see the ArgumentError propagate uncaught.
+      # What this proves: selector errors are converted to {:nebula_error, _} by
+      # safe_call_selector/2 before they ever leave call_selected_worker — a user
+      # exception in routing code is a transport failure, never an uncaught raise.
+      # (Bad call OPTS, by contrast, raise up front — see the predicate tests.)
       assert {:nebula_error, _} = result
-      refute match?(%ArgumentError{}, result)
 
       GenServer.stop(pid)
     end
