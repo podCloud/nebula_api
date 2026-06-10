@@ -10,6 +10,12 @@ defmodule NebulaAPI.APIServer.NodesInfoCache do
   This is what kills the thundering herd: refreshing is a single, periodic,
   per-node job rather than something each concurrent caller does on cache miss.
 
+  The flip side is a fixed background cost: every node refreshes on every interval,
+  whether or not anything reads the snapshot — i.e. one RPC fan-out per node per
+  interval, cluster-wide. With the 5s default this is negligible for the small
+  clusters NebulaAPI targets; raise `nodes_info_refresh_interval` if your cluster
+  is large or node selectors can tolerate staler info.
+
   The interval is `config :nebula_api, nodes_info_refresh_interval: <ms>`
   (default 5000), overridable per-instance with the `:interval` option (used in
   tests).
