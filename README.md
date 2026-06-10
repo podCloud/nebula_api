@@ -494,8 +494,11 @@ failure of the library or the transport — never a business outcome:
 - a quorum wasn't reached.
 
 ```elixir
-# No &db node is up to answer
-find(1)   #=> {:nebula_error, :no_worker}
+# No worker serves the method anywhere
+find(1)   #=> {:nebula_error, {:no_worker, {:find, 1}}}
+
+# The selector picked a node with no worker for it
+find(1)   #=> {:nebula_error, {:no_worker_on_node, :"db@db.test"}}
 
 # The body raised
 find(1)   #=> {:nebula_error, %RuntimeError{...}}
