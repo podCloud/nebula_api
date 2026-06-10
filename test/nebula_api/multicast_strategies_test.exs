@@ -43,7 +43,7 @@ defmodule NebulaAPI.MulticastStrategiesTest do
 
   describe "unicast with selector" do
     test "returns error when no worker on selected node" do
-      selector = fn _nodes_info -> :"nonexistent@localhost" end
+      selector = fn _nodes_info -> :nonexistent@localhost end
       opts = [node_selector: selector, timeout: 100]
 
       result = APIServer.call_remote_method(NonExistentModule, {:test_fn}, opts)

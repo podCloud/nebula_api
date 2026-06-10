@@ -38,9 +38,10 @@ defmodule NebulaAPI.IntegrationTest do
 
   describe "unicast with fake worker" do
     test "calls the worker and returns the result" do
-      pid = start_fake_worker(TestModule, :greet, 1, fn {:greet, name} ->
-        "Hello #{name}"
-      end)
+      pid =
+        start_fake_worker(TestModule, :greet, 1, fn {:greet, name} ->
+          "Hello #{name}"
+        end)
 
       result = APIServer.call_remote_method(TestModule, {:greet, "world"})
       assert result == "Hello world"
@@ -59,19 +60,24 @@ defmodule NebulaAPI.IntegrationTest do
       # Both workers are on the same test node, so call_all_workers deduplicates
       # to a single worker. This is correct behavior: in a real cluster, each
       # node has one worker, and multicast sends to each node once.
-      pid1 = start_fake_worker(MultiTestModule, :compute, 1, fn {:compute, n} ->
-        n * 2
-      end)
+      pid1 =
+        start_fake_worker(MultiTestModule, :compute, 1, fn {:compute, n} ->
+          n * 2
+        end)
 
-      pid2 = start_fake_worker(MultiTestModule, :compute, 1, fn {:compute, n} ->
-        n * 3
-      end)
+      pid2 =
+        start_fake_worker(MultiTestModule, :compute, 1, fn {:compute, n} ->
+          n * 3
+        end)
 
-      results = APIServer.call_remote_method(
-        MultiTestModule,
-        {:compute, 5},
-        multicast: true, strategy: :all, timeout: 2000
-      )
+      results =
+        APIServer.call_remote_method(
+          MultiTestModule,
+          {:compute, 5},
+          multicast: true,
+          strategy: :all,
+          timeout: 2000
+        )
 
       assert is_list(results)
       # Single node = single result after dedup
@@ -84,11 +90,14 @@ defmodule NebulaAPI.IntegrationTest do
     end
 
     test "returns empty list when no workers" do
-      results = APIServer.call_remote_method(
-        NoWorkersModule,
-        {:noop},
-        multicast: true, strategy: :all, timeout: 100
-      )
+      results =
+        APIServer.call_remote_method(
+          NoWorkersModule,
+          {:noop},
+          multicast: true,
+          strategy: :all,
+          timeout: 100
+        )
 
       assert results == []
     end
@@ -97,20 +106,25 @@ defmodule NebulaAPI.IntegrationTest do
   describe "multicast :first strategy with fake workers" do
     test "returns first successful result" do
       # One fast worker, one slow worker
-      pid1 = start_fake_worker(FirstTestModule, :fast, 0, fn {:fast} ->
-        :fast_result
-      end)
+      pid1 =
+        start_fake_worker(FirstTestModule, :fast, 0, fn {:fast} ->
+          :fast_result
+        end)
 
-      pid2 = start_fake_worker(FirstTestModule, :fast, 0, fn {:fast} ->
-        Process.sleep(500)
-        :slow_result
-      end)
+      pid2 =
+        start_fake_worker(FirstTestModule, :fast, 0, fn {:fast} ->
+          Process.sleep(500)
+          :slow_result
+        end)
 
-      result = APIServer.call_remote_method(
-        FirstTestModule,
-        {:fast},
-        multicast: true, strategy: :first, timeout: 2000
-      )
+      result =
+        APIServer.call_remote_method(
+          FirstTestModule,
+          {:fast},
+          multicast: true,
+          strategy: :first,
+          timeout: 2000
+        )
 
       # Single node → workers dedup to one; :first returns that one responder.
       assert {_node, res} = result
@@ -125,17 +139,22 @@ defmodule NebulaAPI.IntegrationTest do
     test "reaches quorum with single-node workers" do
       # On a single node, all workers are deduped to one. With quorum_count: 1,
       # the quorum can be reached with a single successful response.
-      pids = for i <- 1..3 do
-        start_fake_worker(QuorumTestModule, :vote, 0, fn {:vote} ->
-          {:voted, i}
-        end)
-      end
+      pids =
+        for i <- 1..3 do
+          start_fake_worker(QuorumTestModule, :vote, 0, fn {:vote} ->
+            {:voted, i}
+          end)
+        end
 
-      result = APIServer.call_remote_method(
-        QuorumTestModule,
-        {:vote},
-        multicast: true, strategy: :quorum, quorum_count: 1, timeout: 2000
-      )
+      result =
+        APIServer.call_remote_method(
+          QuorumTestModule,
+          {:vote},
+          multicast: true,
+          strategy: :quorum,
+          quorum_count: 1,
+          timeout: 2000
+        )
 
       assert is_list(result)
       assert length(result) >= 1
@@ -148,12 +167,13 @@ defmodule NebulaAPI.IntegrationTest do
     test "returns error when selector returns nil" do
       _pid = start_fake_worker(SelectorTestModule, :work, 0, fn {:work} -> :done end)
 
-      result = APIServer.call_remote_method(
-        SelectorTestModule,
-        {:work},
-        node_selector: fn _nodes_info -> nil end,
-        timeout: 1000
-      )
+      result =
+        APIServer.call_remote_method(
+          SelectorTestModule,
+          {:work},
+          node_selector: fn _nodes_info -> nil end,
+          timeout: 1000
+        )
 
       assert {:nebula_error, _} = result
     end
@@ -162,17 +182,21 @@ defmodule NebulaAPI.IntegrationTest do
   describe "deadline-based timeout" do
     test "workers respect remaining time from deadline" do
       # Worker that takes 200ms
-      pid = start_fake_worker(TimeoutTestModule, :slow, 0, fn {:slow} ->
-        Process.sleep(200)
-        :done
-      end)
+      pid =
+        start_fake_worker(TimeoutTestModule, :slow, 0, fn {:slow} ->
+          Process.sleep(200)
+          :done
+        end)
 
       # Should succeed with 1000ms timeout
-      result = APIServer.call_remote_method(
-        TimeoutTestModule,
-        {:slow},
-        multicast: true, strategy: :all, timeout: 1000
-      )
+      result =
+        APIServer.call_remote_method(
+          TimeoutTestModule,
+          {:slow},
+          multicast: true,
+          strategy: :all,
+          timeout: 1000
+        )
 
       assert [{_node, :done}] = result
 

@@ -40,7 +40,7 @@ defmodule NebulaAPI.CompileErrorsTest do
     @parsed %{tags: [:db], not_tags: [], nodes: [], not_nodes: []}
 
     test "tags that are neither an atom nor a list raise a clear CompileError" do
-      nodes = [{:"test@host", "not-a-list-or-atom"}]
+      nodes = [{:test@host, "not-a-list-or-atom"}]
 
       assert_raise CompileError, ~r/tags.*test@host/i, fn ->
         Config.validate_with_nodes(@parsed, nodes)
@@ -48,14 +48,14 @@ defmodule NebulaAPI.CompileErrorsTest do
     end
 
     test "an atom or a list of atoms stays valid" do
-      assert Config.validate_with_nodes(@parsed, [{:"test@host", :db}]) == :ok
-      assert Config.validate_with_nodes(@parsed, [{:"test@host", [:db, :api]}]) == :ok
+      assert Config.validate_with_nodes(@parsed, [{:test@host, :db}]) == :ok
+      assert Config.validate_with_nodes(@parsed, [{:test@host, [:db, :api]}]) == :ok
     end
   end
 
   describe "defapi without `use NebulaAPI` (L1)" do
     setup do
-      Application.put_env(:nebula_api, :nodes, [{:"test@host", [:db]}])
+      Application.put_env(:nebula_api, :nodes, [{:test@host, [:db]}])
       on_exit(fn -> Application.delete_env(:nebula_api, :nodes) end)
       :ok
     end
@@ -79,7 +79,7 @@ defmodule NebulaAPI.CompileErrorsTest do
 
   describe "invalid use NebulaAPI options (R3)" do
     setup do
-      Application.put_env(:nebula_api, :nodes, [{:"test@host", [:db]}])
+      Application.put_env(:nebula_api, :nodes, [{:test@host, [:db]}])
       on_exit(fn -> Application.delete_env(:nebula_api, :nodes) end)
       :ok
     end

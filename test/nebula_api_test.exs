@@ -79,7 +79,7 @@ defmodule NebulaAPITest do
     end
 
     test "cache_node_info/2 stores data in ETS" do
-      node_name = :"test_node@localhost"
+      node_name = :test_node@localhost
       info = %{short_name: :test_node, host: "localhost", tags: [:test]}
 
       APIServer.cache_node_info(node_name, info)
@@ -98,7 +98,7 @@ defmodule NebulaAPITest do
     end
 
     test "cache_node_info/2 overwrites existing data" do
-      node_name = :"overwrite_test@localhost"
+      node_name = :overwrite_test@localhost
       info1 = %{version: 1}
       info2 = %{version: 2}
 

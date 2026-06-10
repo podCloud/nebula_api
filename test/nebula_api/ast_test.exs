@@ -16,7 +16,7 @@ defmodule NebulaAPI.ASTTest do
       try do
         Process.put(:nebula_node_selector, fn _ -> :test_node end)
         Process.put(:nebula_call_mode, :unicast)
-        Process.put(:nebula_call_opts, [timeout: 5000])
+        Process.put(:nebula_call_opts, timeout: 5000)
 
         # Verify they are set
         assert Process.get(:nebula_node_selector) != nil
@@ -52,7 +52,7 @@ defmodule NebulaAPI.ASTTest do
       # Set up outer call state
       Process.put(:nebula_node_selector, fn _ -> :outer_node end)
       Process.put(:nebula_call_mode, :multicast)
-      Process.put(:nebula_call_opts, [timeout: 10_000])
+      Process.put(:nebula_call_opts, timeout: 10_000)
 
       # Simulate inner call
       old_selector = Process.get(:nebula_node_selector)
@@ -62,7 +62,7 @@ defmodule NebulaAPI.ASTTest do
       try do
         Process.put(:nebula_node_selector, fn _ -> :inner_node end)
         Process.put(:nebula_call_mode, :unicast)
-        Process.put(:nebula_call_opts, [timeout: 5000])
+        Process.put(:nebula_call_opts, timeout: 5000)
 
         # Inner call sees inner values
         assert Process.get(:nebula_call_mode) == :unicast
@@ -96,5 +96,4 @@ defmodule NebulaAPI.ASTTest do
       Process.delete(:nebula_call_opts)
     end
   end
-
 end

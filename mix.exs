@@ -16,7 +16,8 @@ defmodule NebulaAPI.MixProject do
       docs: docs(),
       package: package(),
       name: "NebulaAPI",
-      description: "Compile-time selective compilation and transparent distributed execution for Erlang/Elixir clusters",
+      description:
+        "Compile-time selective compilation and transparent distributed execution for Erlang/Elixir clusters",
       source_url: @source_url
     ]
   end

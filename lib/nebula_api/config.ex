@@ -136,7 +136,7 @@ defmodule NebulaAPI.Config do
     |> Enum.filter(fn
       {_node_name, node_tags} when is_list(node_tags) ->
         # keep node if NONE of the excluded tags are present
-        (tags -- node_tags) == tags
+        tags -- node_tags == tags
 
       {_node_name, node_tag} when is_atom(node_tag) ->
         not Enum.member?(tags, node_tag)
