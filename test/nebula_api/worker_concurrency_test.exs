@@ -84,4 +84,28 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
 
     GenServer.stop(worker)
   end
+
+  test "timeout: :infinity queues without crashing the worker and never expires" do
+    {:ok, worker} = Worker.start_link(SerialMod)
+    parent = self()
+
+    # Occupy the single slot for 200ms, then queue an :infinity-budget call behind
+    # it — the deadline arithmetic must not choke on the atom, and the entry must
+    # be executed (an :infinity deadline never expires).
+    spawn(fn -> GenServer.call(worker, {:nebula_call, {:slow}, 5_000}, 5_000) end)
+    Process.sleep(30)
+
+    spawn(fn ->
+      send(
+        parent,
+        {:pong_done, GenServer.call(worker, {:nebula_call, {:ping, parent}, :infinity}, :infinity)}
+      )
+    end)
+
+    assert_receive {:pong_done, :pong}, 2_000
+    assert_receive :executed
+    assert Process.alive?(worker)
+
+    GenServer.stop(worker)
+  end
 end

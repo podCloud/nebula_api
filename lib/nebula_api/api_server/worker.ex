@@ -43,7 +43,7 @@ defmodule NebulaAPI.APIServer.Worker do
     if slot_free?(state) do
       start_call(state, {from, fn_call})
     else
-      deadline = System.monotonic_time(:millisecond) + timeout_ms
+      deadline = compute_deadline(timeout_ms)
       {:noreply, %{state | queue: :queue.in({from, fn_call, deadline}, state.queue)}}
     end
   end
@@ -56,6 +56,14 @@ defmodule NebulaAPI.APIServer.Worker do
 
   defp slot_free?(%{max: :infinity}), do: true
   defp slot_free?(%{max: max, in_flight: in_flight}), do: in_flight < max
+
+  # timeout: :infinity is a legal budget (GenServer.call accepts it) — such an
+  # entry never expires while queued.
+  defp compute_deadline(:infinity), do: :infinity
+  defp compute_deadline(timeout_ms), do: System.monotonic_time(:millisecond) + timeout_ms
+
+  defp expired?(:infinity), do: false
+  defp expired?(deadline), do: System.monotonic_time(:millisecond) > deadline
 
   defp start_call(state, {from, fn_call}) do
     module = state.module
@@ -73,7 +81,7 @@ defmodule NebulaAPI.APIServer.Worker do
   defp dequeue_next(state) do
     case :queue.out(state.queue) do
       {{:value, {from, fn_call, deadline}}, rest} ->
-        if System.monotonic_time(:millisecond) > deadline do
+        if expired?(deadline) do
           # Expired while queued: the caller's GenServer.call already exited
           # with :timeout — drop without executing.
           dequeue_next(%{state | queue: rest})
