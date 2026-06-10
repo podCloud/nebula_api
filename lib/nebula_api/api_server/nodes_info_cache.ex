@@ -60,7 +60,10 @@ defmodule NebulaAPI.APIServer.NodesInfoCache do
     :ok
   rescue
     e ->
-      Logger.error("NodesInfoCache refresh failed: #{Exception.format(:error, e, __STACKTRACE__)}")
+      Logger.error(
+        "NodesInfoCache refresh failed: #{Exception.format(:error, e, __STACKTRACE__)}"
+      )
+
       :error
   catch
     kind, reason ->

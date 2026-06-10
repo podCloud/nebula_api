@@ -27,7 +27,11 @@ defmodule NebulaAPI.ResilienceTest do
     use GenServer
     def init(state), do: {:ok, state}
 
-    def handle_call({:nebula_call, fn_call, _timeout_ms}, _from, %{delay: delay, reply: reply} = state) do
+    def handle_call(
+          {:nebula_call, fn_call, _timeout_ms},
+          _from,
+          %{delay: delay, reply: reply} = state
+        ) do
       if delay > 0, do: Process.sleep(delay)
       _ = fn_call
       {:reply, reply, state}
@@ -190,7 +194,7 @@ defmodule NebulaAPI.ResilienceTest do
     end
 
     test "get_nodes_info serves an existing snapshot without rebuilding it" do
-      marker = %{:"marker@host" => %{long_name: :"marker@host", connected: false}}
+      marker = %{:marker@host => %{long_name: :marker@host, connected: false}}
 
       # updated_at deliberately far in the past: under the old TTL logic this would
       # have forced a rebuild; the new behavior serves it regardless of age.
@@ -212,7 +216,10 @@ defmodule NebulaAPI.ResilienceTest do
       {:ok, worker} = NebulaAPI.APIServer.Worker.start_link(LocalMethodsMod)
       parent = self()
 
-      spawn(fn -> send(parent, {:slow_done, GenServer.call(worker, {:nebula_call, {:slow}, 5_000}, 5_000)}) end)
+      spawn(fn ->
+        send(parent, {:slow_done, GenServer.call(worker, {:nebula_call, {:slow}, 5_000}, 5_000)})
+      end)
+
       # Let the slow call reach the worker.
       Process.sleep(30)
 

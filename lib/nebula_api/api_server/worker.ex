@@ -99,8 +99,9 @@ defmodule NebulaAPI.APIServer.Worker do
   # - unknown method -> {:nebula_error, {:undefined_local_method, ...}} (instead of crashing the worker)
   # - exception/exit in the body -> {:nebula_error, reason}
   #
-  # Running this in a supervised Task and replying via GenServer.reply/2 keeps the
-  # worker free to serve other calls (no serialization, no re-entrant deadlock).
+  # Runs inside the supervised task spawned by start_call/2, replying via
+  # GenServer.reply/2 — the worker itself only does slot/queue bookkeeping (see
+  # handle_call), so a slow body never blocks the module's other calls.
   defp execute_local_call(module, fn_call) do
     fn_name = elem(fn_call, 0)
     fn_args = Tuple.delete_at(fn_call, 0)

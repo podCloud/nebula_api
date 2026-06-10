@@ -74,7 +74,7 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
     GenServer.stop(worker)
   end
 
-  test "a crashing call frees its slot (queue keeps draining)" do
+  test "a call that errors frees its slot (queue keeps draining)" do
     {:ok, worker} = Worker.start_link(SerialMod)
 
     # :nope is unknown -> replies {:nebula_error, _} but must release the slot.
@@ -98,7 +98,8 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
     spawn(fn ->
       send(
         parent,
-        {:pong_done, GenServer.call(worker, {:nebula_call, {:ping, parent}, :infinity}, :infinity)}
+        {:pong_done,
+         GenServer.call(worker, {:nebula_call, {:ping, parent}, :infinity}, :infinity)}
       )
     end)
 
