@@ -492,17 +492,18 @@ defmodule NebulaAPI.APIServer do
     :exit, reason -> {:exit, reason}
   end
 
-  # Confined unicast: the GenServer.call runs in a throwaway Task, so that a late
-  # reply {ref, reply} (left behind by a call that timed out) lands in the Task's
-  # mailbox — which dies — and never in the caller's. The Task always returns
-  # quickly (safe_call has an internal timeout), so Task.await/:infinity can neither
-  # block nor exit.
+  # Confined unicast: the GenServer.call runs in a throwaway task, so that a late
+  # reply {ref, reply} (left behind by a call that timed out) lands in the task's
+  # mailbox — which dies — and never in the caller's. async_nolink (monitor only,
+  # no link) so a trap_exit caller never receives an {:EXIT, _, :normal} either.
+  # The task always returns quickly (safe_call has an internal timeout) and cannot
+  # crash (safe_call catches every exit), so Task.await/:infinity is safe.
   #
   # The body's return value is passed through untouched; only a transport failure
   # turns into {:nebula_error, reason}.
   defp confined_call(worker, fn_call, timeout) do
     task =
-      Task.async(fn ->
+      Task.Supervisor.async_nolink(NebulaAPI.TaskSupervisor, fn ->
         case safe_call(worker, fn_call, timeout) do
           {:replied, reply} -> reply
           {:exit, :timeout} -> {:nebula_error, :timeout}

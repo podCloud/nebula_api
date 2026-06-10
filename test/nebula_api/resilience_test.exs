@@ -113,6 +113,27 @@ defmodule NebulaAPI.ResilienceTest do
     end
   end
 
+  describe "unicast — trap_exit callers (R2)" do
+    test "a trap_exit caller gets no EXIT message from a unicast call" do
+      pid = start_fake(TrapExitMod, :fast, 0, 0, :value)
+      parent = self()
+
+      spawn(fn ->
+        Process.flag(:trap_exit, true)
+        result = APIServer.call_remote_method(TrapExitMod, {:fast}, timeout: 500)
+        # Leave time for any {:EXIT, _, :normal} from a linked task to arrive.
+        Process.sleep(100)
+        {:messages, msgs} = Process.info(self(), :messages)
+        send(parent, {:observed, result, msgs})
+      end)
+
+      assert_receive {:observed, :value, msgs}, 2_000
+      refute Enum.any?(msgs, &match?({:EXIT, _, _}, &1))
+
+      GenServer.stop(pid)
+    end
+  end
+
   describe "multicast :all — timeout resilience (H2)" do
     test "a worker slower than the timeout returns a partial list without crashing" do
       pid = start_fake(AllTimeoutMod, :slow, 0, 400, {:ok, :too_late})
