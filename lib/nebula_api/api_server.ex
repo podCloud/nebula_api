@@ -119,7 +119,8 @@ defmodule NebulaAPI.APIServer do
 
   ## Options
   - `:timeout` - Timeout in milliseconds. Default: the module's `default_timeout`,
-    then `config :nebula_api, default_timeout:`, then 5000.
+    then `config :nebula_api, default_timeout:`, then 5000. `nil` means "not set"
+    (the default resolution applies); any other non-integer raises.
   - `:node_selector` - Function that takes the nodes_info map and returns node(s) to call
   - `:multicast` - If true, calls multiple nodes and returns a list of results
   - `:strategy` - Multicast strategy: `:all`, `:first`, `:quorum` (default: `:all`)
@@ -514,9 +515,16 @@ defmodule NebulaAPI.APIServer do
   # hot path), then the global config :nebula_api, default_timeout (5000 by
   # default).
   #
+  # nil means "not set" — a computed `timeout: maybe_timeout` holding nil
+  # falls back to the defaults, exactly as if the option were absent. Any
+  # other non-integer (false included) flows into validate_timeout! and
+  # raises: only nil is the documented "inherit" value.
   @doc false
   def resolve_timeout(module, opts) do
-    opts[:timeout] || module_default_timeout(module) || NebulaAPI.Config.default_timeout()
+    case Keyword.get(opts, :timeout) do
+      nil -> module_default_timeout(module) || NebulaAPI.Config.default_timeout()
+      timeout -> timeout
+    end
   end
 
   defp module_default_timeout(module) do

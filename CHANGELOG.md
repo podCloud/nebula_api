@@ -63,7 +63,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Timeouts are validated up front like every other call option: a non-positive,
   non-integer or `:infinity` timeout raises `ArgumentError` at the call site
   (previously, `:infinity` half-worked: fine on unicast, melted into
-  `{:nebula_error, %ArithmeticError{}}` on multicast).
+  `{:nebula_error, %ArithmeticError{}}` on multicast). `timeout: nil` is the one
+  documented exception: it means "not set" and inherits the default resolution —
+  a computed `timeout: maybe_timeout` holding nil behaves as if the option were
+  absent (`false` does NOT: like any other non-integer, it raises).
 
 ### Fixed
 - `:quorum` strategy no longer silently clamps an impossible `at_least:` requirement to the

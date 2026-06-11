@@ -45,6 +45,14 @@ defmodule NebulaAPI.CallOptionsTest do
     test "a module atom that is not a compiled module falls back safely" do
       assert APIServer.resolve_timeout(NotARealModule, []) == 5_000
     end
+
+    test "timeout: nil means 'not set' — the default resolution applies" do
+      # nil is the one non-integer that does NOT raise: a computed
+      # `timeout: maybe_timeout` holding nil falls back to the module/global
+      # default, exactly as if the option were absent.
+      assert APIServer.resolve_timeout(WithModuleDefault, timeout: nil) == 1234
+      assert APIServer.resolve_timeout(WithoutOpts, timeout: nil) == 5_000
+    end
   end
 
   describe "timeout: validation (I6)" do
@@ -65,7 +73,9 @@ defmodule NebulaAPI.CallOptionsTest do
     end
 
     test "non-positive or non-integer timeouts raise ArgumentError" do
-      for bad <- [0, -5, 1.5, "100", :soon] do
+      # false is NOT nil: it must raise like any other non-integer, not melt
+      # into the default behind the caller's back.
+      for bad <- [0, -5, 1.5, "100", :soon, false] do
         assert_raise ArgumentError, ~r/timeout/, fn ->
           APIServer.call_remote_method(NoSuchMod, {:work}, timeout: bad)
         end

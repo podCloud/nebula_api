@@ -577,6 +577,10 @@ partitions instantly, so the only thing an unbounded wait would buy you is
 hanging forever on a live worker whose body never finishes. If you really mean
 "very long", say it with a number.
 
+`timeout: nil` means "not set": the resolution above applies as if the option
+were absent — handy for a computed `timeout: maybe_timeout`. Only `nil` inherits;
+any other non-integer (`false` included) raises.
+
 ## Worked example: a 3-role cluster
 
 Three nodes, three roles — an API front, a database node, and a worker:
