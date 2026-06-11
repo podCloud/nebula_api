@@ -19,8 +19,9 @@ defmodule NebulaAPI.APIServer do
   - `:first` - Return the first response that counts as a success (see the
     `:success`/`:failure` options) as a single `{node, value}`. If no response
     qualifies: `{:nebula_error, :no_success, results}` (never a bare list).
-  - `:quorum` - Wait for N successes (`:quorum_count` or `:quorum_proportion`). Reached:
-    the list of collected `{node, value}` responses. Not reached:
+  - `:quorum` - Wait for N successes — `at_least:` workers, or a strict majority of the
+    targeted workers by default. Reached: the list of collected `{node, value}` responses.
+    Not reached:
     `{:nebula_error, :quorum_not_reached, results}` or `{:nebula_error, :quorum_timeout, results}`.
     Impossible quorum (required > available workers): `{:nebula_error, :quorum_unreachable,
     %{workers: n, required: m}}` — returned before any call is made.
@@ -122,11 +123,9 @@ defmodule NebulaAPI.APIServer do
   - `:node_selector` - Function that takes the nodes_info map and returns node(s) to call
   - `:multicast` - If true, calls multiple nodes and returns a list of results
   - `:strategy` - Multicast strategy: `:all`, `:first`, `:quorum` (default: `:all`)
-  - `:quorum_count` - Positive integer: number of successes needed for the `:quorum`
-    strategy. Mutually exclusive with `:quorum_proportion`.
-  - `:quorum_proportion` - Number in `(0.5, 1]`: fraction of targeted workers that must
-    succeed — resolved as `ceil(p × workers)`. Mutually exclusive with `:quorum_count`.
-    Default (when neither is given): `div(workers, 2) + 1`.
+  - `:at_least` - Positive integer: number of successes required by the `:quorum`
+    strategy. Default (when absent): a strict majority of the targeted workers,
+    `div(workers, 2) + 1`.
   - `:success` - (`:first`/`:quorum` only) predicate `fn value -> boolean` defining
     what counts as a business success. Default: any worker that replied counts
     (a `{:nebula_error, _}` never does). Mutually exclusive with `:failure`.
@@ -718,13 +717,9 @@ defmodule NebulaAPI.APIServer do
     end
   end
 
-  # quorum_count > quorum_proportion > majority of the targeted workers.
+  # at_least: explicit worker count > majority of the targeted workers.
   defp resolve_quorum_required(opts, worker_count) do
-    cond do
-      count = Keyword.get(opts, :quorum_count) -> count
-      p = Keyword.get(opts, :quorum_proportion) -> max(1, ceil(p * worker_count))
-      true -> div(worker_count, 2) + 1
-    end
+    Keyword.get(opts, :at_least) || div(worker_count, 2) + 1
   end
 
   # Validating the RESOLVED value covers both the per-call timeout: option and
@@ -750,37 +745,24 @@ defmodule NebulaAPI.APIServer do
   # transport rescue in call_remote_method/3, so they crash loud instead of melting
   # into {:nebula_error, _} like genuine transport failures do.
   defp validate_quorum_opts!(opts, multicast, strategy) do
-    count = Keyword.get(opts, :quorum_count)
-    proportion = Keyword.get(opts, :quorum_proportion)
+    at_least = Keyword.get(opts, :at_least)
 
-    if (count || proportion) && not (multicast and strategy == :quorum) do
-      raise ArgumentError,
-            "quorum_count:/quorum_proportion: only apply to the :quorum strategy"
+    if at_least && not (multicast and strategy == :quorum) do
+      raise ArgumentError, "at_least: only applies to the :quorum strategy"
     end
 
-    case {count, proportion} do
-      {nil, nil} ->
+    case at_least do
+      nil ->
         :ok
 
-      {count, nil} when is_integer(count) and count > 0 ->
+      n when is_integer(n) and n > 0 ->
         :ok
 
-      {nil, p} when is_number(p) and p > 0.5 and p <= 1 ->
-        :ok
-
-      {nil, bad_p} ->
+      bad ->
         raise ArgumentError,
-              "quorum_proportion: must be a number in (0.5, 1] — a quorum is majoritarian " <>
-                "by definition — got: #{inspect(bad_p)}"
-
-      {bad_count, nil} ->
-        raise ArgumentError,
-              "quorum_count: must be a positive integer, got: #{inspect(bad_count)}"
-
-      {_count, _proportion} ->
-        raise ArgumentError,
-              "quorum_count: and quorum_proportion: are mutually exclusive — " <>
-                "pass one or the other, not both"
+              "at_least: must be a positive integer (a number of workers), " <>
+                "got: #{inspect(bad)} — without it, the default is a strict majority " <>
+                "of the targeted workers"
     end
   end
 

@@ -352,8 +352,8 @@ call_on_nodes &worker, strategy: :first do
   MyApp.Jobs.transcode(file, opts)
 end
 
-# Quorum: majority must succeed
-call_on_nodes &db, strategy: :quorum, quorum_count: 2 do
+# Quorum: at least 2 nodes must succeed (majority by default)
+call_on_nodes &db, strategy: :quorum, at_least: 2 do
   MyApp.Users.write_replica(user)
 end
 ```
@@ -381,10 +381,11 @@ transport level yields `{node, {:nebula_error, reason}}`.
 | `:first` | Returns the first `{node, value}` that counts as a success. If none qualify: `{:nebula_error, :no_success, results}` — never a bare list. |
 | `:quorum` | Reached: the list of collected `{node, value}` responses. Not reached: `{:nebula_error, :quorum_not_reached, results}` or `{:nebula_error, :quorum_timeout, results}`. Impossible quorum (required > available workers): `{:nebula_error, :quorum_unreachable, %{workers: n, required: m}}` — returned before any call is made. |
 
-`quorum_count:` (positive integer) sets the number of successes required. Alternatively,
-`quorum_proportion:` (a number in `(0.5, 1]`) expresses it as a fraction of the targeted
-workers — `required = ceil(p × workers)`. The two options are mutually exclusive; the default
-is `div(workers, 2) + 1` (strict majority).
+`at_least:` (positive integer) sets the number of successes required — an absolute
+durability floor: "at least 2 nodes hold this write" is legitimate even when 2 is a
+minority of the targeted workers. Without it, the default is a strict majority,
+`div(workers, 2) + 1`. The value is an ordinary runtime expression — a variable or a
+computed count works.
 
 #### Defining "success" — `success:` / `failure:`
 
@@ -394,7 +395,7 @@ returned value instead, pass a predicate:
 
 ```elixir
 # Only count a node when it returned {:ok, _}
-call_on_nodes &db, strategy: :quorum, quorum_count: 2,
+call_on_nodes &db, strategy: :quorum, at_least: 2,
   success: &match?({:ok, _}, &1) do
   MyApp.Users.write_replica(user)
 end

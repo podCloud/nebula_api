@@ -38,10 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   responded. Example: `success: &match?({:ok, _}, &1)`. Passing either option outside
   `:first`/`:quorum` (unicast, `strategy: :all`) raises an `ArgumentError` up front;
   `call_on_node` also rejects them at compile time.
-- `quorum_proportion:` option on `call_on_nodes` (`:quorum`): a number in `(0.5, 1]` that
-  expresses the required quorum as a fraction of targeted workers — `required = ceil(p ×
-  workers)`. The strict lower bound enforces a majoritarian quorum. Mutually exclusive with
-  `quorum_count:`. Both options raise `ArgumentError` when malformed, up front.
+- `at_least:` option on `call_on_nodes` (`:quorum`): the number of successes required,
+  as a positive integer — an absolute durability floor ("at least 2 nodes hold this
+  write"), legitimately below majority. Without it the quorum defaults to a strict
+  majority of the targeted workers. Malformed values raise `ArgumentError` up front.
 - `nodes_info_refresh_interval` config option (ms, default `5000`).
 - `max_concurrent_calls` option on `use NebulaAPI` (default `:infinity`): caps how many
   calls a module's worker executes concurrently, per node. Excess calls queue (callers
@@ -59,8 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{:nebula_error, %ArithmeticError{}}` on multicast).
 
 ### Fixed
-- `:quorum` strategy no longer silently clamps an impossible `quorum_count` to the available
-  worker count — asking for 3 confirmations and "reaching quorum" with 2 would lower the
+- `:quorum` strategy no longer silently clamps an impossible `at_least:` requirement to the
+  available worker count — asking for 3 confirmations and "reaching quorum" with 2 would lower the
   caller's durability guarantee behind their back. An impossible quorum now returns
   `{:nebula_error, :quorum_unreachable, %{workers: n, required: m}}` before making any
   call — for a write quorum, no partial non-quorate write is even attempted.

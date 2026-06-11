@@ -137,7 +137,7 @@ defmodule NebulaAPI.IntegrationTest do
 
   describe "multicast :quorum strategy with fake workers" do
     test "reaches quorum with single-node workers" do
-      # On a single node, all workers are deduped to one. With quorum_count: 1,
+      # On a single node, all workers are deduped to one. With `at_least: 1`,
       # the quorum can be reached with a single successful response.
       pids =
         for i <- 1..3 do
@@ -152,7 +152,7 @@ defmodule NebulaAPI.IntegrationTest do
           {:vote},
           multicast: true,
           strategy: :quorum,
-          quorum_count: 1,
+          at_least: 1,
           timeout: 2000
         )
 

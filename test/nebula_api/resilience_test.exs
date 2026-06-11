@@ -362,7 +362,7 @@ defmodule NebulaAPI.ResilienceTest do
           {:work},
           multicast: true,
           strategy: :quorum,
-          quorum_count: 1,
+          at_least: 1,
           timeout: 500,
           failure: &match?({:error, _}, &1)
         )
@@ -426,7 +426,7 @@ defmodule NebulaAPI.ResilienceTest do
           {:work},
           multicast: true,
           strategy: :quorum,
-          quorum_count: 1,
+          at_least: 1,
           timeout: 500,
           success: fn _value -> raise "predicate bug" end
         )
@@ -528,7 +528,7 @@ defmodule NebulaAPI.ResilienceTest do
     end
   end
 
-  describe "quorum unreachable + quorum_proportion (I3)" do
+  describe "quorum at_least (I3/M14)" do
     test "an impossible quorum fails fast without calling any worker" do
       pid = start_fake(QuorumUnreachableMod, :work, 0, 0, :should_never_run)
 
@@ -539,7 +539,7 @@ defmodule NebulaAPI.ResilienceTest do
           multicast: true,
           strategy: :quorum,
           # single node → 1 worker; ask for 3
-          quorum_count: 3,
+          at_least: 3,
           timeout: 500
         )
 
@@ -555,24 +555,25 @@ defmodule NebulaAPI.ResilienceTest do
           {:noop},
           multicast: true,
           strategy: :quorum,
-          quorum_count: 1,
+          at_least: 1,
           timeout: 100
         )
 
       assert {:nebula_error, :quorum_unreachable, %{workers: 0, required: 1}} = result
     end
 
-    test "quorum_proportion resolves against the worker count" do
-      pid = start_fake(QuorumPropMod, :work, 0, 0, {:ok, :good})
+    test "at_least accepts a runtime-computed value (opts values are runtime)" do
+      pid = start_fake(QuorumRuntimeMod, :work, 0, 0, {:ok, :good})
 
-      # 1 worker, p = 0.6 → required = max(1, ceil(0.6)) = 1 → reachable, succeeds.
+      required = String.to_integer("1")
+
       result =
         APIServer.call_remote_method(
-          QuorumPropMod,
+          QuorumRuntimeMod,
           {:work},
           multicast: true,
           strategy: :quorum,
-          quorum_proportion: 0.6,
+          at_least: required,
           timeout: 500
         )
 
@@ -581,41 +582,28 @@ defmodule NebulaAPI.ResilienceTest do
       GenServer.stop(pid)
     end
 
-    test "quorum_proportion outside (0.5, 1] raises ArgumentError" do
-      for bad <- [0.5, 0.0, 1.1, -1, :half] do
-        assert_raise ArgumentError, ~r/quorum_proportion/, fn ->
+    test "a non-positive or non-integer at_least raises ArgumentError" do
+      for bad <- [0, -1, 0.6, :majority, "2"] do
+        assert_raise ArgumentError, ~r/at_least/, fn ->
           APIServer.call_remote_method(
             SomeMod,
             {:work},
             multicast: true,
             strategy: :quorum,
-            quorum_proportion: bad
+            at_least: bad
           )
         end
       end
     end
 
-    test "quorum_count and quorum_proportion together raise ArgumentError" do
-      assert_raise ArgumentError, ~r/mutually exclusive/, fn ->
+    test "at_least outside the :quorum strategy raises ArgumentError" do
+      assert_raise ArgumentError, ~r/at_least/, fn ->
         APIServer.call_remote_method(
           SomeMod,
           {:work},
           multicast: true,
-          strategy: :quorum,
-          quorum_count: 2,
-          quorum_proportion: 0.6
-        )
-      end
-    end
-
-    test "a non-positive quorum_count raises ArgumentError" do
-      assert_raise ArgumentError, ~r/quorum_count/, fn ->
-        APIServer.call_remote_method(
-          SomeMod,
-          {:work},
-          multicast: true,
-          strategy: :quorum,
-          quorum_count: 0
+          strategy: :all,
+          at_least: 2
         )
       end
     end

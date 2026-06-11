@@ -29,14 +29,14 @@ defmodule DemoApp.Tour do
       end
     end)
 
-    step("5. :quorum OK (count: 2) — tolerates worker3's failure", fn ->
-      call_on_nodes &worker, strategy: :quorum, quorum_count: 2, timeout: 5_000 do
+    step("5. :quorum OK (at_least: 2) — tolerates worker3's failure", fn ->
+      call_on_nodes &worker, strategy: :quorum, at_least: 2, timeout: 5_000 do
         Worker.Job.run_task_flaky(3)
       end
     end)
 
-    step("6. :quorum KO (count: 3) — worker3 always fails → not reached", fn ->
-      call_on_nodes &worker, strategy: :quorum, quorum_count: 3, timeout: 5_000 do
+    step("6. :quorum KO (at_least: 3) — worker3 always fails → not reached", fn ->
+      call_on_nodes &worker, strategy: :quorum, at_least: 3, timeout: 5_000 do
         Worker.Job.run_task_flaky(3)
       end
     end)

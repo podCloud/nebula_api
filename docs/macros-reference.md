@@ -185,8 +185,7 @@ end
 |--------|------|---------|--|
 | `timeout` | positive integer (ms) — `:infinity` rejected | 5000 | |
 | `strategy` | atom | `:all` | `:all` / `:first` / `:quorum` |
-| `quorum_count` | positive integer | `div(n, 2) + 1` | for `:quorum` — mutually exclusive with `quorum_proportion` |
-| `quorum_proportion` | number `(0.5, 1]` | — | for `:quorum` — resolved as `ceil(p × workers)`; mutually exclusive with `quorum_count` |
+| `at_least` | positive integer | `div(n, 2) + 1` (strict majority) | for `:quorum` — number of successes required; an absolute floor, may be below majority |
 | `success` | `fn value -> boolean` | a worker that *responded* | what counts as a business success for `:first` / `:quorum` — **raises `ArgumentError` with any other strategy** |
 | `failure` | `fn value -> boolean` | — | mirror of `success`: a matching value is treated as a non-success — **raises `ArgumentError` with any other strategy** |
 
