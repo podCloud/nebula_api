@@ -267,22 +267,25 @@ enough — the host part is infrastructure detail.
 
 ### What gets generated
 
-For each `defapi`, three functions are always created:
+For each `defapi`, the macro generates:
 
-1. **`__nbapi_local_<name>/N`** — the real body (matching nodes) or a
-   raising stub (everywhere else)
-2. **`__nbapi_remote_<name>/N`** — RPC dispatch via `APIServer`
+1. **`__nbapi_local_<name>/N`** — the real body, on **matching nodes only**
+   (nothing is generated elsewhere — the router goes remote there)
+2. **`__nbapi_remote_<name>/N`** — RPC dispatch via `APIServer` (every node)
 3. **`<name>/N`** — the public router that delegates to local or remote
 
 The remote function is generated on **every** node, including nodes
 that have the local implementation. This is what makes `call_on_node`
 and `call_on_nodes` work from anywhere — even a `&db` node can call
 other `&db` nodes remotely for quorum writes, load distribution, etc.
+The need is asymmetric: a local node may still call out, but a remote
+node never needs a local implementation — so none is emitted.
 
 The public router decides where to dispatch:
 - Inside a `call_on_node`/`call_on_nodes` block → always remote
 - With explicit `:node_selector` or `:multicast` opts → always remote
-- Default → local if available, remote otherwise
+- Default → local on matching nodes, remote everywhere else (decided at
+  compile time, like everything else)
 
 ## `on_nebula_nodes` — conditional compilation
 
@@ -829,7 +832,7 @@ config :nebula_api,
 │                  Compile time                        │
 │                                                      │
 │  AST.Parser     parses selectors (&tag, @node, !&)   │
-│  AST.Builder    generates 3 functions per defapi      │
+│  AST.Builder    generates the defapi functions        │
 │  Config         resolves nodes, validates topology    │
 │                 → CompileError on unknown tag/node    │
 └─────────────────────┬───────────────────────────────┘

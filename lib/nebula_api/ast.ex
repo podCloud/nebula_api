@@ -105,7 +105,9 @@ defmodule NebulaAPI.AST do
       {fundef.name, fundef.args_count}
     )
 
-    # Generate all 3 functions
+    # Generate the defapi functions: remote + router everywhere, the local
+    # implementation only on matching nodes (build_local_function emits
+    # nothing elsewhere).
     quote do
       unquote(NebulaAPI.AST.Builder.build_local_function(fundef, do_fn, is_current_node))
       unquote(NebulaAPI.AST.Builder.build_remote_function(fundef))

@@ -42,7 +42,7 @@ The AST processing pipeline:
 │         ▼                                                               │
 │  ┌──────────────────────────────────────────────────────────────────┐  │
 │  │  4. AST.Builder                                                  │  │
-│  │     Generates the 3 functions (local / remote / public router)   │  │
+│  │     Generates remote + router (+ local on matching nodes)        │  │
 │  └────────────────────────────────────────────────────────────────────┘  │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘

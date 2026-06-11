@@ -21,7 +21,7 @@ start; these pages go deeper.
 ## Deep dive
 
 - **[AST Deep-Dive](deep-dive/ast-deep-dive.md)** — how selectors are parsed and how the
-  three functions per `defapi` are generated, with worked examples.
+  functions behind each `defapi` are generated, with worked examples.
 
 ## Guides
 
