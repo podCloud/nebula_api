@@ -61,6 +61,10 @@ defmodule NebulaAPI.AST.Builder do
           unquote(routing_opts_var)
         )
       rescue
+        # Programming errors (bad call opts, validated up front by
+        # call_remote_method) must crash loud at the call site — only genuine
+        # runtime failures melt into {:nebula_error, _}.
+        e in ArgumentError -> reraise(e, __STACKTRACE__)
         e -> {:nebula_error, e}
       end
     end
