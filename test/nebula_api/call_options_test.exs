@@ -129,4 +129,45 @@ defmodule NebulaAPI.CallOptionsTest do
       end
     end
   end
+
+  describe "node_selector: validation" do
+    alias NebulaAPI.APIServer
+
+    test "a non-function node_selector raises ArgumentError up front — unicast and multicast" do
+      # Without form validation this melted into
+      # {:nebula_error, {:selector_failed, {:badfun, _}}} at selection time —
+      # the one call opt reported on the transport channel while every other
+      # malformed opt (strategy:, at_least:, timeout:, success:) crashed loud.
+      for bad <- [:not_a_fun, "db", fn -> :wrong_arity end, fn _a, _b -> :wrong_arity end] do
+        assert_raise ArgumentError, ~r/node_selector/, fn ->
+          APIServer.call_remote_method(NoSuchMod, {:work}, node_selector: bad, timeout: 100)
+        end
+
+        assert_raise ArgumentError, ~r/node_selector/, fn ->
+          APIServer.call_remote_method(NoSuchMod, {:work},
+            multicast: true,
+            node_selector: bad,
+            timeout: 100
+          )
+        end
+      end
+    end
+
+    test "node_selector: nil means 'not set' — the call routes as if the option were absent" do
+      # Same convention as timeout: nil; the router's cond already treats a
+      # nil selector as no selector at all.
+      assert {:nebula_error, {:no_worker, _}} =
+               APIServer.call_remote_method(NoSuchMod, {:work}, node_selector: nil, timeout: 100)
+    end
+
+    test "a 1-arity function still passes validation (its bugs stay a runtime concern)" do
+      result =
+        APIServer.call_remote_method(NoSuchMod, {:work},
+          node_selector: fn _nodes_info -> nil end,
+          timeout: 100
+        )
+
+      refute match?({:nebula_error, %ArgumentError{}}, result)
+    end
+  end
 end

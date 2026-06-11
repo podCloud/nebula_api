@@ -121,7 +121,9 @@ defmodule NebulaAPI.APIServer do
   - `:timeout` - Timeout in milliseconds. Default: the module's `default_timeout`,
     then `config :nebula_api, default_timeout:`, then 5000. `nil` means "not set"
     (the default resolution applies); any other non-integer raises.
-  - `:node_selector` - Function that takes the nodes_info map and returns node(s) to call
+  - `:node_selector` - 1-arity function that takes the nodes_info map and returns
+    node(s) to call. Anything else (besides `nil`, "not set") raises `ArgumentError`
+    up front, like every other malformed call opt.
   - `:multicast` - If true, calls multiple nodes and returns a list of results
   - `:strategy` - Multicast strategy: `:all`, `:first`, `:quorum` (default: `:all`)
   - `:at_least` - Positive integer: number of successes required by the `:quorum`
@@ -503,10 +505,32 @@ defmodule NebulaAPI.APIServer do
     validate_strategy_opts!(opts, multicast)
     validate_predicate_opts!(opts, multicast, strategy)
     validate_quorum_opts!(opts, multicast, strategy)
+    validate_selector_opt!(opts)
 
     timeout = resolve_timeout(module, opts)
     validate_timeout!(timeout)
     timeout
+  end
+
+  # Like every other call opt, the selector's FORM is a programming error when
+  # wrong: only a 1-arity function can ever be applied to the nodes_info map,
+  # so anything else raises up front instead of melting into
+  # {:nebula_error, {:selector_failed, {:badfun, _}}} at selection time. What
+  # the function DOES remains a runtime concern — its bugs are contained by
+  # safe_call_selector/2. nil means "not set", same convention as timeout: nil.
+  defp validate_selector_opt!(opts) do
+    case Keyword.get(opts, :node_selector) do
+      nil ->
+        :ok
+
+      selector when is_function(selector, 1) ->
+        :ok
+
+      bad ->
+        raise ArgumentError,
+              "node_selector: must be a 1-arity function taking the nodes_info map, " <>
+                "got: #{inspect(bad)}"
+    end
   end
 
   # Timeout precedence: the call's timeout: option, then the module's

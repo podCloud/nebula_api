@@ -82,6 +82,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An unknown `strategy:` no longer falls into the `:all` catch-all (`strategy: :qourum`
   silently turned a quorum write into a plain broadcast); it raises `ArgumentError` up
   front, as does `strategy:` on a non-multicast call, where it would be silently ignored.
+- A `node_selector:` that is not a 1-arity function raises `ArgumentError` up front,
+  like every other malformed call opt — it used to melt into
+  `{:nebula_error, {:selector_failed, {:badfun, _}}}` at selection time, the one
+  programming error reported on the transport channel. `nil` still means "not set";
+  what the function does remains a contained runtime concern.
 - Fan-out tasks no longer grant a worker a 100 ms grace window past the multicast
   deadline (a reply earned there was always discarded — the worker just ran a body
   nobody collected); a task that starts with no budget left skips the call and reports
