@@ -3,10 +3,22 @@ defmodule NebulaAPI do
    Documentation for `NebulaAPI`.
   """
   defmacro __using__(opts \\ []) do
-    :ok = __register__(__CALLER__, opts)
+    resolved = __register__(__CALLER__, opts)
 
     quote do
       use NebulaAPI.AST
+
+      # Runtime accessor for the `use NebulaAPI` options — a function head on a
+      # literal, so hot paths (APIServer.resolve_timeout/2, on every remote
+      # call) read it without scanning module attributes. The persisted
+      # :nebula_api attribute remains as the discovery marker NebulaAPI.Server
+      # relies on, and as the compile-time source for defapi (self_node).
+      @doc false
+      def __nebula_api__(:default_timeout),
+        do: unquote(Keyword.fetch!(resolved, :default_timeout))
+
+      def __nebula_api__(:max_concurrent_calls),
+        do: unquote(Keyword.fetch!(resolved, :max_concurrent_calls))
     end
   end
 
@@ -104,6 +116,6 @@ defmodule NebulaAPI do
     Module.register_attribute(env.module, :nebula_api, persist: true)
     Module.put_attribute(env.module, :nebula_api, opts)
 
-    :ok
+    opts
   end
 end

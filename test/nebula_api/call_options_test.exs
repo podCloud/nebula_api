@@ -19,10 +19,9 @@ defmodule NebulaAPI.CallOptionsTest do
   describe "APIServer.resolve_timeout/2 (R3)" do
     alias NebulaAPI.APIServer
 
-    # Mirrors what `use NebulaAPI, default_timeout: 1234` persists.
+    # Mirrors the accessor `use NebulaAPI, default_timeout: 1234` generates.
     defmodule WithModuleDefault do
-      Module.register_attribute(__MODULE__, :nebula_api, persist: true)
-      @nebula_api [default_timeout: 1234]
+      def __nebula_api__(:default_timeout), do: 1234
     end
 
     defmodule WithoutOpts do

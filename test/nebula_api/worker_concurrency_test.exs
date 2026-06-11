@@ -3,19 +3,19 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
 
   alias NebulaAPI.APIServer.Worker
 
-  # Mirrors a real `use NebulaAPI, max_concurrent_calls: 1` module: the persisted
-  # :nebula_api opts plus the local-methods markers the worker registers/validates.
+  # Mirrors a real `use NebulaAPI, max_concurrent_calls: 1` module: the generated
+  # __nebula_api__/1 accessor plus the local-methods markers the worker
+  # registers/validates.
   defmodule SerialMod do
     Module.register_attribute(__MODULE__, :nebula_local_api_methods,
       accumulate: true,
       persist: true
     )
 
-    Module.register_attribute(__MODULE__, :nebula_api, persist: true)
-
-    @nebula_api [max_concurrent_calls: 1]
     @nebula_local_api_methods {:gated, 1}
     @nebula_local_api_methods {:ping, 1}
+
+    def __nebula_api__(:max_concurrent_calls), do: 1
 
     # Latch body: announces itself (with its own pid), then blocks until released.
     # Concurrency tests assert on the ORDER of these messages, never on clocks.

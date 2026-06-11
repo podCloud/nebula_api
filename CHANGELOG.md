@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every pg-registered node through synthesized entries). The background tick is the one and
   only builder.
 - Internal worker wire format: calls now ship as `{:nebula_call, fn_call}`.
+- `use NebulaAPI` now generates a `__nebula_api__/1` accessor for its options
+  (`:default_timeout`, `:max_concurrent_calls`): a function head on a literal,
+  so per-call timeout resolution no longer scans the module's attribute list.
+  The persisted `:nebula_api` attribute remains (server discovery, compile-time
+  `self_node`).
 
 ### Added
 - `success:` / `failure:` options on `call_on_nodes` (`:first` / `:quorum`): a predicate
