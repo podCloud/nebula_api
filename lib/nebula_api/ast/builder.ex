@@ -103,6 +103,17 @@ defmodule NebulaAPI.AST.Builder do
     default_call =
       if is_local do
         quote do
+          # A locally-resolved call consumes no routing opts, but it validates
+          # them all the same when some were passed: invalid opts (bad timeout,
+          # strategy/predicates without multicast) raise identically on every
+          # node, instead of being silently ignored wherever the call happens
+          # to resolve local. Valid-but-inapplicable opts (a timeout) stay a
+          # silent no-op — same source compiles on every node. The empty-list
+          # guard keeps the opt-less hot path free of any validation cost.
+          if unquote(routing_opts_var) != [] do
+            NebulaAPI.APIServer.validate_call_opts!(__MODULE__, unquote(routing_opts_var))
+          end
+
           unquote(local_fn_name)(unquote_splicing(fn_arg_vars))
         end
       else

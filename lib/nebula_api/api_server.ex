@@ -139,17 +139,9 @@ defmodule NebulaAPI.APIServer do
     in the moduledoc for the exact shape per strategy.
   """
   def call_remote_method(module, fn_call, opts \\ []) do
-    # Bad call opts are a programming error: validate them up front, OUTSIDE the
-    # transport rescue below, so they crash loud instead of melting into
-    # {:nebula_error, _} like genuine transport failures do.
+    timeout = validate_call_opts!(module, opts)
     multicast = Keyword.get(opts, :multicast, false)
     strategy = Keyword.get(opts, :strategy, :all)
-    validate_strategy_opts!(opts, multicast)
-    validate_predicate_opts!(opts, multicast, strategy)
-    validate_quorum_opts!(opts, multicast, strategy)
-
-    timeout = resolve_timeout(module, opts)
-    validate_timeout!(timeout)
     node_selector = Keyword.get(opts, :node_selector)
 
     Logger.debug("""
@@ -479,6 +471,26 @@ defmodule NebulaAPI.APIServer do
     |> Enum.map(&node/1)
     |> Enum.uniq()
     |> nodes_info_for()
+  end
+
+  # Validates every call opt up front and returns the resolved timeout. Bad
+  # call opts are a programming error: this runs OUTSIDE the transport rescue
+  # of call_remote_method/3, so they crash loud instead of melting into
+  # {:nebula_error, _} like genuine transport failures do. The generated
+  # routers also call this on LOCALLY-resolved calls carrying routing opts:
+  # the opts are validated everywhere, consumed only where the call actually
+  # goes remote — invalid opts raise identically on every node.
+  @doc false
+  def validate_call_opts!(module, opts) do
+    multicast = Keyword.get(opts, :multicast, false)
+    strategy = Keyword.get(opts, :strategy, :all)
+    validate_strategy_opts!(opts, multicast)
+    validate_predicate_opts!(opts, multicast, strategy)
+    validate_quorum_opts!(opts, multicast, strategy)
+
+    timeout = resolve_timeout(module, opts)
+    validate_timeout!(timeout)
+    timeout
   end
 
   # Timeout precedence: the call's timeout: option, then the module's

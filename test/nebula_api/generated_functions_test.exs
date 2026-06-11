@@ -33,6 +33,16 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
     end
     """)
 
+    Code.eval_string("""
+    defmodule NebulaAPI.GeneratedFunctionsTest.LocalOptsMod do
+      use NebulaAPI, allow_unknown_self_node: true, self_node: :"test@host"
+
+      defapi &db, echo(x) do
+        x
+      end
+    end
+    """)
+
     :ok
   end
 
@@ -89,6 +99,39 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
 
       refute stderr =~ "never used"
       refute stderr =~ "warning:"
+    end
+  end
+
+  describe "locally-resolved calls validate routing opts too (M1)" do
+    alias NebulaAPI.GeneratedFunctionsTest.LocalOptsMod
+
+    test "a valid-but-inapplicable opt is a silent no-op and the call stays local" do
+      # No worker is registered for echo/1: if this went remote it would return
+      # {:nebula_error, {:no_worker, _}} — getting the value back IS the proof
+      # that the call resolved locally, opts validated then ignored.
+      assert LocalOptsMod.echo(1, timeout: 100) == 1
+    end
+
+    test "no opts means no validation work, the call just runs" do
+      assert LocalOptsMod.echo(2) == 2
+    end
+
+    test "strategy: without multicast raises locally, exactly like on a remote node" do
+      assert_raise ArgumentError, ~r/multicast/, fn ->
+        LocalOptsMod.echo(1, strategy: :quorum)
+      end
+    end
+
+    test "an invalid timeout raises locally, exactly like on a remote node" do
+      assert_raise ArgumentError, ~r/timeout/, fn ->
+        LocalOptsMod.echo(1, timeout: :infinity)
+      end
+    end
+
+    test "predicates without multicast raise locally, exactly like on a remote node" do
+      assert_raise ArgumentError, ~r/multicast/, fn ->
+        LocalOptsMod.echo(1, success: &match?({:ok, _}, &1))
+      end
     end
   end
 

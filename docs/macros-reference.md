@@ -119,6 +119,12 @@ explicitly (`MyApp.Store.list([], multicast: true)`), or use the `call_on_node` 
 `call_on_nodes` blocks, which carry the routing through the call context and
 avoid the ambiguity entirely.
 
+Routing opts are validated on every node, even when the call resolves locally and
+the transport never runs: an invalid opt (`timeout: :infinity`, `strategy:` or
+`success:`/`failure:` without `multicast:`) raises an `ArgumentError` identically
+wherever the call happens to execute. A valid-but-inapplicable opt — a `timeout:`
+on a locally-resolved call — is a silent no-op.
+
 ---
 
 ## `on_nebula_nodes`

@@ -76,6 +76,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deadline (a reply earned there was always discarded — the worker just ran a body
   nobody collected); a task that starts with no budget left skips the call and reports
   `{node, {:nebula_error, :timeout}}` directly.
+- Routing opts are now validated on locally-resolved calls too: an invalid opt
+  (`timeout: :infinity`, `strategy:`/`success:`/`failure:` without `multicast:`)
+  raises `ArgumentError` identically on every node, instead of being silently
+  ignored wherever the call happened to resolve local. Valid-but-inapplicable opts
+  (a `timeout:` on a local call) stay a silent no-op; calls without opts skip
+  validation entirely.
 - Selectors now see every node with a registered worker, snapshot or not: pg decides WHO
   serves a method, the node-info snapshot only enriches HOW. A node whose worker just
   registered (not in the snapshot yet) gets a synthesized entry — name/host/config

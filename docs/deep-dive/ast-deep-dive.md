@@ -284,11 +284,23 @@ def get(id, nebula_routing_opts \\ []) do
 
     # Default branch, chosen at codegen time:
     true ->
-      __nbapi_local_get(id)                       # on a matching node
+      # On a matching node — routing opts validated (when present), not consumed:
+      if nebula_routing_opts != [] do
+        NebulaAPI.APIServer.validate_call_opts!(__MODULE__, nebula_routing_opts)
+      end
+
+      __nbapi_local_get(id)
       # __nbapi_remote_get(id, nebula_routing_opts)  # everywhere else
   end
 end
 ```
+
+Routing opts are validated on **every** node: a call that resolves locally still
+validates the opts it was given (then ignores them — there is no transport), so an
+invalid opt (`timeout: :infinity`, `strategy:`/`success:` without `multicast:`)
+raises identically wherever the call runs. A valid-but-inapplicable opt, like a
+`timeout:` on a local call, is a silent no-op — the same source compiles on every
+node. The `!= []` guard keeps the opt-less hot path free of validation cost.
 
 ### Function signature building
 
