@@ -66,6 +66,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call — for a write quorum, no partial non-quorate write is even attempted.
 - `:quorum` with zero available workers no longer returns `[]` (an empty-list pseudo-success);
   it returns `{:nebula_error, :quorum_unreachable, %{workers: 0, required: m}}`.
+- A function selector returning duplicate nodes no longer makes a node count twice —
+  toward the `:quorum` requirement especially, where two replies from one physical node
+  passed for two confirmations. Selected nodes are deduplicated before the fan-out.
+- An unknown `strategy:` no longer falls into the `:all` catch-all (`strategy: :qourum`
+  silently turned a quorum write into a plain broadcast); it raises `ArgumentError` up
+  front, as does `strategy:` on a non-multicast call, where it would be silently ignored.
+- Fan-out tasks no longer grant a worker a 100 ms grace window past the multicast
+  deadline (a reply earned there was always discarded — the worker just ran a body
+  nobody collected); a task that starts with no budget left skips the call and reports
+  `{node, {:nebula_error, :timeout}}` directly.
 - Selectors now see every node with a registered worker, snapshot or not: pg decides WHO
   serves a method, the node-info snapshot only enriches HOW. A node whose worker just
   registered (not in the snapshot yet) gets a synthesized entry — name/host/config
