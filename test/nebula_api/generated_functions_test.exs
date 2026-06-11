@@ -18,6 +18,38 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
     :ok
   end
 
+  describe "defapi codegen is warning-free (I4)" do
+    test "compiling local and remote defapi modules emits no compiler warning" do
+      stderr =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          Code.eval_string("""
+          defmodule NebulaAPI.GeneratedFunctionsTest.WarningFreeLocal do
+            use NebulaAPI, allow_unknown_self_node: true, self_node: :"test@host"
+
+            defapi &db, w_add(a, b) do
+              a + b
+            end
+
+            defapi &db, w_list(filters \\\\ []) do
+              filters
+            end
+          end
+
+          defmodule NebulaAPI.GeneratedFunctionsTest.WarningFreeRemote do
+            use NebulaAPI, allow_unknown_self_node: true
+
+            defapi &db, w_get(id) do
+              id
+            end
+          end
+          """)
+        end)
+
+      refute stderr =~ "never used"
+      refute stderr =~ "warning:"
+    end
+  end
+
   describe "programming errors cross the generated stub (I2)" do
     test "an invalid success: raises ArgumentError through a defapi-generated function" do
       assert_raise ArgumentError, ~r/success: must be a 1-arity function/, fn ->

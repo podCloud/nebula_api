@@ -226,11 +226,16 @@ rescue
     {:nebula_error, e}
 end
 
-# is_local? = false
-defp __nbapi_local_get(id) do
+# is_local? = false (argument underscored: the stub never uses it)
+defp __nbapi_local_get(_id) do
   raise "Method get is not available locally on node #{node()}"
 end
 ```
+
+Note that only the public router carries the defaults — the private helpers are
+always called with every argument, so they take plain parameters (a default there
+would trigger an "is never used" compiler warning in every consumer module), and
+the not-available-locally stub underscores its parameters (it only raises).
 
 ### Remote function
 
@@ -240,7 +245,7 @@ straight back to the caller — no re-wrapping, no `is_list` branching. A local 
 becomes `{:nebula_error, exception}`:
 
 ```elixir
-defp __nbapi_remote_get(id, nebula_routing_opts \\ []) do
+defp __nbapi_remote_get(id, nebula_routing_opts) do
   NebulaAPI.APIServer.call_remote_method(__MODULE__, {:get, id}, nebula_routing_opts)
 rescue
   e -> {:nebula_error, e}
@@ -287,12 +292,12 @@ defp build_function_signature(fn_name, fn_args) do
 end
 ```
 
-Handles default arguments:
+Handles default arguments (public router only — see the note above):
 ```elixir
 # Input
 [{:query, %{}}, {:opts, []}]
 
-# Output signature
+# Output signature (public)
 get(query \\ %{}, opts \\ [])
 ```
 
@@ -338,7 +343,7 @@ def get(id, opts \\ [], nebula_routing_opts \\ []) do
   # ...routes to __nbapi_local_get by default
 end
 
-defp __nbapi_local_get(id, opts \\ []) do
+defp __nbapi_local_get(id, opts) do
   Repo.get(User, id, opts)   # body value returned as-is
 rescue
   e -> {:nebula_error, e}
@@ -356,7 +361,7 @@ def get(id, opts \\ [], nebula_routing_opts \\ []) do
   # ...routes to __nbapi_remote_get
 end
 
-defp __nbapi_remote_get(id, opts \\ [], nebula_routing_opts \\ []) do
+defp __nbapi_remote_get(id, opts, nebula_routing_opts) do
   NebulaAPI.APIServer.call_remote_method(MyApp.Users, {:get, id, opts}, nebula_routing_opts)
   # result returned verbatim
 rescue

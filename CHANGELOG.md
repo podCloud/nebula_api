@@ -85,6 +85,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   malformed node tags now raise clear `CompileError`s instead of internal crashes.
 - `mix docs` (and therefore `mix hex.publish`) no longer fails — the `docs` extras point at
   files that exist.
+- `defapi` no longer emits compiler warnings in consumer modules ("default values for
+  the optional arguments ... are never used" on every defapi, "variable is unused" on
+  remote-compiled defapis with arguments) — defaults now live only on the generated
+  public function and the not-available-locally stub underscores its parameters.
+  Consumers building with `warnings_as_errors` compile cleanly.
 
 ### Documentation
 - Rewrote all return-value documentation for the transparent contract. Corrected the

@@ -18,7 +18,7 @@ defmodule NebulaAPI.AST.Builder do
 
     if is_local do
       quote do
-        defp unquote(build_function_signature(local_fn_name, fn_args)) do
+        defp unquote(build_private_function_signature(local_fn_name, fn_args)) do
           # Transparent: the body's return value is passed through as-is (no wrapping).
           # An exception in the body is the only thing the lib turns into a result,
           # surfaced as {:nebula_error, exception} so it never masquerades as a value.
@@ -32,7 +32,7 @@ defmodule NebulaAPI.AST.Builder do
       end
     else
       quote do
-        defp unquote(build_function_signature(local_fn_name, fn_args)) do
+        defp unquote(build_stub_function_signature(local_fn_name, fn_args)) do
           raise "Method #{unquote(fn_name)} is not available locally on node #{node()}"
         end
       end
@@ -48,11 +48,11 @@ defmodule NebulaAPI.AST.Builder do
     # Use a hygienic variable bound to this module's context — cannot clash with any
     # user-defined parameter, even one named `nebula_routing_opts`
     routing_opts_var = Macro.var(:nebula_routing_opts, __MODULE__)
-    routing_opts_param = {:__inline, {:\\, [], [routing_opts_var, []]}}
+    routing_opts_param = {:__inline, routing_opts_var}
     fn_args_with_routing_opts = fn_args ++ [routing_opts_param]
 
     quote do
-      defp unquote(build_function_signature(remote_fn_name, fn_args_with_routing_opts)) do
+      defp unquote(build_private_function_signature(remote_fn_name, fn_args_with_routing_opts)) do
         # Pass the result through untouched: the worker already returned the body's
         # raw value (unicast) or the transport layer tagged it (multicast / errors).
         NebulaAPI.APIServer.call_remote_method(
@@ -131,6 +131,39 @@ defmodule NebulaAPI.AST.Builder do
 
   defp build_function_signature(fn_name, fn_args) do
     Macro.var(fn_name, nil) |> put_elem(2, fn_args_to_defaulted_vars(fn_args))
+  end
+
+  # Private helpers (__nbapi_local_* / __nbapi_remote_*) are only ever called by
+  # the public router, which always passes every argument. A default on a defp
+  # would never be exercised — and the compiler warns about it in every consumer
+  # module ("default values for the optional arguments ... are never used"),
+  # breaking builds that use warnings_as_errors. Defaults live on the public
+  # function only.
+  defp build_private_function_signature(fn_name, fn_args) do
+    Macro.var(fn_name, nil) |> put_elem(2, fn_args_to_vars(fn_args))
+  end
+
+  # The not-available-locally stub never touches its arguments (it only raises),
+  # so they must be underscored or the compiler warns "variable is unused" in
+  # every consumer module with a remote-compiled defapi that has arguments.
+  defp build_stub_function_signature(fn_name, fn_args) do
+    Macro.var(fn_name, nil) |> put_elem(2, fn_args_to_ignored_vars(fn_args))
+  end
+
+  defp fn_args_to_ignored_vars(fn_args) do
+    fn_args
+    |> Enum.map(fn
+      {:__inline, arg} ->
+        quote do
+          unquote(arg)
+        end
+
+      {arg, _default} ->
+        Macro.var(:"_#{arg}", nil)
+
+      arg ->
+        Macro.var(:"_#{arg}", nil)
+    end)
   end
 
   defp fn_args_to_defaulted_vars(fn_args) do
