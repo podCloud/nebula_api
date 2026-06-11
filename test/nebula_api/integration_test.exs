@@ -204,11 +204,11 @@ defmodule NebulaAPI.IntegrationTest do
     end
   end
 
-  describe "cache TTL for nodes_info" do
-    test "get_nodes_info returns cached data within TTL" do
-      # First call populates cache
+  describe "nodes_info snapshot reads" do
+    test "get_nodes_info is a pure read: two consecutive reads are identical" do
+      # Reading never builds anything — both calls serve the same snapshot
+      # (or %{} if the background cache has not written one yet).
       info1 = APIServer.get_nodes_info()
-      # Second call should return cached (same reference)
       info2 = APIServer.get_nodes_info()
 
       assert info1 == info2

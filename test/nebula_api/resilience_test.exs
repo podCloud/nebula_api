@@ -209,6 +209,36 @@ defmodule NebulaAPI.ResilienceTest do
       # background); get_nodes_info no longer rebuilds on read.
       assert APIServer.get_nodes_info() == marker
     end
+
+    test "get_nodes_info on a cold cache returns %{} immediately — no build, no RPC" do
+      :ets.delete(:nebula_nodes_cache, :__nodes_info_snapshot__)
+
+      t0 = System.monotonic_time(:millisecond)
+      assert APIServer.get_nodes_info() == %{}
+      # A pure ETS read: orders of magnitude under any RPC fan-out.
+      assert System.monotonic_time(:millisecond) - t0 < 50
+
+      # And it did NOT write a snapshot behind our back (read = read).
+      assert :ets.lookup(:nebula_nodes_cache, :__nodes_info_snapshot__) == []
+    end
+
+    test "a selector-routed call works on a cold cache (synthesized entries)" do
+      :ets.delete(:nebula_nodes_cache, :__nodes_info_snapshot__)
+
+      pid = start_fake(ColdCacheMod, :work, 0, 0, :reached)
+
+      result =
+        APIServer.call_remote_method(
+          ColdCacheMod,
+          {:work},
+          node_selector: fn nodes_info -> List.first(Map.keys(nodes_info)) end,
+          timeout: 500
+        )
+
+      assert result == :reached
+
+      GenServer.stop(pid)
+    end
   end
 
   describe "worker — non-blocking execution (H3)" do

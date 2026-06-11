@@ -335,23 +335,23 @@ defmodule NebulaAPI.APIServer do
   end
 
   @doc """
-  Returns the latest cluster node-info snapshot.
+  Returns the latest cluster node-info snapshot — a pure ETS read.
 
-  Reads the snapshot written by `NebulaAPI.APIServer.NodesInfoCache` (which keeps
-  it fresh in the background) — it does NOT rebuild on read, so concurrent callers
-  never trigger an RPC fan-out. Only on a cold cache (no snapshot yet, before the
-  first refresh) does it build once as a fallback, so it never returns an empty map.
+  The snapshot is written exclusively by `NebulaAPI.APIServer.NodesInfoCache`
+  on its background interval; readers NEVER build it themselves, so there is
+  no fan-out on the read path, ever. Before the first refresh completes (boot
+  window) this returns `%{}` — selectors still see every node with a
+  registered worker through synthesized entries (`runtime: nil`, see
+  `get_available_nodes_info/2`).
   """
   def get_nodes_info do
     case :ets.lookup(@nodes_cache_table, @nodes_info_cache_key) do
-      [{_, %{data: data}}] ->
-        data
-
-      _ ->
-        refresh_nodes_cache()
+      [{_, %{data: data}}] -> data
+      _ -> %{}
     end
   rescue
-    ArgumentError -> build_nodes_info()
+    # Table not created yet (APIServer not booted, bare test contexts).
+    ArgumentError -> %{}
   end
 
   @doc """
