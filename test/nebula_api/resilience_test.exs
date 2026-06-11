@@ -484,4 +484,97 @@ defmodule NebulaAPI.ResilienceTest do
       GenServer.stop(pid)
     end
   end
+
+  describe "quorum unreachable + quorum_proportion (I3)" do
+    test "an impossible quorum fails fast without calling any worker" do
+      pid = start_fake(QuorumUnreachableMod, :work, 0, 0, :should_never_run)
+
+      result =
+        APIServer.call_remote_method(
+          QuorumUnreachableMod,
+          {:work},
+          multicast: true,
+          strategy: :quorum,
+          # single node → 1 worker; ask for 3
+          quorum_count: 3,
+          timeout: 500
+        )
+
+      assert {:nebula_error, :quorum_unreachable, %{workers: 1, required: 3}} = result
+
+      GenServer.stop(pid)
+    end
+
+    test ":quorum with zero workers is unreachable, not an empty success" do
+      result =
+        APIServer.call_remote_method(
+          NoWorkersQuorumMod,
+          {:noop},
+          multicast: true,
+          strategy: :quorum,
+          quorum_count: 1,
+          timeout: 100
+        )
+
+      assert {:nebula_error, :quorum_unreachable, %{workers: 0, required: 1}} = result
+    end
+
+    test "quorum_proportion resolves against the worker count" do
+      pid = start_fake(QuorumPropMod, :work, 0, 0, {:ok, :good})
+
+      # 1 worker, p = 0.6 → required = max(1, ceil(0.6)) = 1 → reachable, succeeds.
+      result =
+        APIServer.call_remote_method(
+          QuorumPropMod,
+          {:work},
+          multicast: true,
+          strategy: :quorum,
+          quorum_proportion: 0.6,
+          timeout: 500
+        )
+
+      assert [{_node, {:ok, :good}}] = result
+
+      GenServer.stop(pid)
+    end
+
+    test "quorum_proportion outside (0.5, 1] raises ArgumentError" do
+      for bad <- [0.5, 0.0, 1.1, -1, :half] do
+        assert_raise ArgumentError, ~r/quorum_proportion/, fn ->
+          APIServer.call_remote_method(
+            SomeMod,
+            {:work},
+            multicast: true,
+            strategy: :quorum,
+            quorum_proportion: bad
+          )
+        end
+      end
+    end
+
+    test "quorum_count and quorum_proportion together raise ArgumentError" do
+      assert_raise ArgumentError, ~r/mutually exclusive/, fn ->
+        APIServer.call_remote_method(
+          SomeMod,
+          {:work},
+          multicast: true,
+          strategy: :quorum,
+          quorum_count: 2,
+          quorum_proportion: 0.6
+        )
+      end
+    end
+
+    test "a non-positive quorum_count raises ArgumentError" do
+      assert_raise ArgumentError, ~r/quorum_count/, fn ->
+        APIServer.call_remote_method(
+          SomeMod,
+          {:work},
+          multicast: true,
+          strategy: :quorum,
+          quorum_count: 0
+        )
+      end
+    end
+  end
 end

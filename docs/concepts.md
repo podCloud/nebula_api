@@ -137,8 +137,9 @@ collection strategy:
 |----------|--------|
 | `:all` | a list of `{node, value}` (or `{node, {:nebula_error, reason}}` for nodes that failed) |
 | `:first` | the first `{node, value}` that counts as a success; if none, the list of replies |
-| `:quorum` (reached) | the list of `{node, value}` that answered |
+| `:quorum` (reached) | the list of collected `{node, value}` responses — the quorum of successes plus any non-success responses received along the way |
 | `:quorum` (not reached) | `{:nebula_error, :quorum_not_reached, results}` or `{:nebula_error, :quorum_timeout, results}` |
+| `:quorum` (unreachable) | `{:nebula_error, :quorum_unreachable, %{workers: n, required: m}}` — returned before any call is made when the required count exceeds the number of available workers |
 
 What counts as a "success" for `:first` and `:quorum` is configurable with a `success:`
 (or `failure:`) option — a predicate `fn value -> boolean`. The default treats any node

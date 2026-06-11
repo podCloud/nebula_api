@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   responded. Example: `success: &match?({:ok, _}, &1)`. Passing either option outside
   `:first`/`:quorum` (unicast, `strategy: :all`) raises an `ArgumentError` up front;
   `call_on_node` also rejects them at compile time.
+- `quorum_proportion:` option on `call_on_nodes` (`:quorum`): a number in `(0.5, 1]` that
+  expresses the required quorum as a fraction of targeted workers — `required = ceil(p ×
+  workers)`. The strict lower bound enforces a majoritarian quorum. Mutually exclusive with
+  `quorum_count:`. Both options raise `ArgumentError` when malformed, up front.
 - `nodes_info_refresh_interval` config option (ms, default `5000`).
 - `max_concurrent_calls` option on `use NebulaAPI` (default `:infinity`): caps how many
   calls a module's worker executes concurrently, per node. Excess calls queue (callers
@@ -45,6 +49,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inherited defaults for every `use NebulaAPI` module.
 
 ### Fixed
+- `:quorum` strategy no longer silently clamps an impossible `quorum_count` to the available
+  worker count — asking for 3 confirmations and "reaching quorum" with 2 would lower the
+  caller's durability guarantee behind their back. An impossible quorum now returns
+  `{:nebula_error, :quorum_unreachable, %{workers: n, required: m}}` before making any
+  call — for a write quorum, no partial non-quorate write is even attempted.
+- `:quorum` with zero available workers no longer returns `[]` (an empty-list pseudo-success);
+  it returns `{:nebula_error, :quorum_unreachable, %{workers: 0, required: m}}`.
 - Unicast calls no longer crash the caller when a worker times out or is dead — the
   `GenServer.call` exit is caught and returned as `{:nebula_error, reason}`, with the late
   reply confined to a throwaway task (no stray messages reach the caller).

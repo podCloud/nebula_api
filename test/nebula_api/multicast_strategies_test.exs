@@ -35,9 +35,11 @@ defmodule NebulaAPI.MulticastStrategiesTest do
     end
 
     test "call_remote_method accepts :quorum strategy" do
+      # With no workers registered, quorum_count: 2 is unreachable (0 workers < 2
+      # required) — the new contract returns :quorum_unreachable instead of [].
       opts = [multicast: true, strategy: :quorum, quorum_count: 2, timeout: 100]
       result = APIServer.call_remote_method(NonExistentModule, {:test_fn}, opts)
-      assert result == []
+      assert {:nebula_error, :quorum_unreachable, %{workers: 0, required: 2}} = result
     end
   end
 

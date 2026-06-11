@@ -19,9 +19,11 @@ defmodule NebulaAPI.APIServer do
   - `:first` - Return the first response that counts as a success (see the
     `:success`/`:failure` options) as a single `{node, value}`. If no response
     qualifies, returns the list of collected responses.
-  - `:quorum` - Wait for N successes (`:quorum_count`). Reached: the list of
-    `{node, value}` responses. Not reached: `{:nebula_error, :quorum_not_reached, results}`
-    or `{:nebula_error, :quorum_timeout, results}`.
+  - `:quorum` - Wait for N successes (`:quorum_count` or `:quorum_proportion`). Reached:
+    the list of collected `{node, value}` responses. Not reached:
+    `{:nebula_error, :quorum_not_reached, results}` or `{:nebula_error, :quorum_timeout, results}`.
+    Impossible quorum (required > available workers): `{:nebula_error, :quorum_unreachable,
+    %{workers: n, required: m}}` — returned before any call is made.
 
   ## Node Info Cache
 
@@ -120,7 +122,11 @@ defmodule NebulaAPI.APIServer do
   - `:node_selector` - Function that takes the nodes_info map and returns node(s) to call
   - `:multicast` - If true, calls multiple nodes and returns a list of results
   - `:strategy` - Multicast strategy: `:all`, `:first`, `:quorum` (default: `:all`)
-  - `:quorum_count` - Number of successes needed for the `:quorum` strategy
+  - `:quorum_count` - Positive integer: number of successes needed for the `:quorum`
+    strategy. Mutually exclusive with `:quorum_proportion`.
+  - `:quorum_proportion` - Number in `(0.5, 1]`: fraction of targeted workers that must
+    succeed — resolved as `ceil(p × workers)`. Mutually exclusive with `:quorum_count`.
+    Default (when neither is given): `div(workers, 2) + 1`.
   - `:success` - (`:first`/`:quorum` only) predicate `fn value -> boolean` defining
     what counts as a business success. Default: any worker that replied counts
     (a `{:nebula_error, _}` never does). Mutually exclusive with `:failure`.
@@ -140,6 +146,7 @@ defmodule NebulaAPI.APIServer do
     multicast = Keyword.get(opts, :multicast, false)
     strategy = Keyword.get(opts, :strategy, :all)
     validate_predicate_opts!(opts, multicast, strategy)
+    validate_quorum_opts!(opts, multicast, strategy)
 
     timeout = resolve_timeout(module, opts)
     node_selector = Keyword.get(opts, :node_selector)
@@ -646,27 +653,79 @@ defmodule NebulaAPI.APIServer do
     do_multicast_call(target_workers, fn_call, timeout, strategy, opts)
   end
 
+  defp do_multicast_call(target_workers, fn_call, timeout, :quorum, opts) do
+    worker_count = length(target_workers)
+    required = resolve_quorum_required(opts, worker_count)
+
+    # Fail fast: an arithmetically impossible quorum makes zero calls — for a
+    # write quorum, no partial non-quorate write is even attempted. No silent
+    # clamping: asking for 3 confirmations and "reaching quorum" with 2 would
+    # be a durability guarantee lowered behind the caller's back.
+    if required > worker_count do
+      {:nebula_error, :quorum_unreachable, %{workers: worker_count, required: required}}
+    else
+      do_multicast_quorum(target_workers, fn_call, timeout, required, opts)
+    end
+  end
+
   defp do_multicast_call([], _fn_call, _timeout, _strategy, _opts) do
     []
   end
 
   defp do_multicast_call(target_workers, fn_call, timeout, strategy, opts) do
     case strategy do
-      :first ->
-        do_multicast_first(target_workers, fn_call, timeout, opts)
+      :first -> do_multicast_first(target_workers, fn_call, timeout, opts)
+      _all -> do_multicast_all(target_workers, fn_call, timeout)
+    end
+  end
 
-      :quorum ->
-        quorum_count = Keyword.get(opts, :quorum_count, div(length(target_workers), 2) + 1)
-        do_multicast_quorum(target_workers, fn_call, timeout, quorum_count, opts)
-
-      _all ->
-        do_multicast_all(target_workers, fn_call, timeout)
+  # quorum_count > quorum_proportion > majority of the targeted workers.
+  defp resolve_quorum_required(opts, worker_count) do
+    cond do
+      count = Keyword.get(opts, :quorum_count) -> count
+      p = Keyword.get(opts, :quorum_proportion) -> max(1, ceil(p * worker_count))
+      true -> div(worker_count, 2) + 1
     end
   end
 
   # Bad call opts are a programming error: validate them up front, OUTSIDE the
   # transport rescue in call_remote_method/3, so they crash loud instead of melting
   # into {:nebula_error, _} like genuine transport failures do.
+  defp validate_quorum_opts!(opts, multicast, strategy) do
+    count = Keyword.get(opts, :quorum_count)
+    proportion = Keyword.get(opts, :quorum_proportion)
+
+    if (count || proportion) && not (multicast and strategy == :quorum) do
+      raise ArgumentError,
+            "quorum_count:/quorum_proportion: only apply to the :quorum strategy"
+    end
+
+    case {count, proportion} do
+      {nil, nil} ->
+        :ok
+
+      {count, nil} when is_integer(count) and count > 0 ->
+        :ok
+
+      {nil, p} when is_number(p) and p > 0.5 and p <= 1 ->
+        :ok
+
+      {nil, bad_p} ->
+        raise ArgumentError,
+              "quorum_proportion: must be a number in (0.5, 1] — a quorum is majoritarian " <>
+                "by definition — got: #{inspect(bad_p)}"
+
+      {bad_count, nil} ->
+        raise ArgumentError,
+              "quorum_count: must be a positive integer, got: #{inspect(bad_count)}"
+
+      {_count, _proportion} ->
+        raise ArgumentError,
+              "quorum_count: and quorum_proportion: are mutually exclusive — " <>
+                "pass one or the other, not both"
+    end
+  end
+
   defp validate_predicate_opts!(opts, multicast, strategy) do
     has_predicate? =
       Keyword.has_key?(opts, :success) or Keyword.has_key?(opts, :failure)
@@ -816,18 +875,8 @@ defmodule NebulaAPI.APIServer do
     end
   end
 
-  defp do_multicast_quorum(target_workers, fn_call, timeout, quorum_count, opts) do
+  defp do_multicast_quorum(target_workers, fn_call, timeout, required, opts) do
     worker_count = length(target_workers)
-
-    if quorum_count > worker_count do
-      Logger.warning(
-        "Quorum count #{quorum_count} is greater than available workers #{worker_count}"
-      )
-    end
-
-    # Ensure quorum_count is at least 1 and at most worker_count
-    effective_quorum = max(1, min(quorum_count, worker_count))
-
     parent = self()
     ref = make_ref()
     deadline = System.monotonic_time(:millisecond) + timeout
@@ -844,7 +893,7 @@ defmodule NebulaAPI.APIServer do
 
     # Same try/after rationale as do_multicast_first.
     try do
-      wait_for_quorum(ref, worker_count, deadline, effective_quorum, predicate, [], [])
+      wait_for_quorum(ref, worker_count, deadline, required, predicate, [], [])
     after
       Enum.each(tasks, fn task -> Task.shutdown(task, :brutal_kill) end)
       flush_ref(ref)
