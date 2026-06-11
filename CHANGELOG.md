@@ -16,11 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no worker available, worker/network crash, a body exception, quorum not reached):
   `{:nebula_error, reason}`. `:ok` / `:error` therefore never collide with library faults.
 - **Breaking: multicast result shape.** Per-node results are now `{node, value}` (a
-  transport failure for a node is `{node, {:nebula_error, reason}}`). `:quorum` returns the
-  list of `{node, value}` when reached, otherwise `{:nebula_error, :quorum_not_reached, results}`
-  or `{:nebula_error, :quorum_timeout, results}`. Migration: expect raw body values instead
-  of `{:ok, _}`; match `{:nebula_error, _}` for transport faults; update multicast matches to
-  `{node, value}`.
+  transport failure for a node is `{node, {:nebula_error, reason}}`). `:first` without a
+  qualifying success returns `{:nebula_error, :no_success, results}` — it never returns a
+  bare list (a bare-list result was the one library failure outside the `:nebula_error`
+  channel, and the same "list" shape meant success for `:quorum` but failure for `:first`).
+  `:quorum` returns the list of `{node, value}` when reached, otherwise
+  `{:nebula_error, :quorum_not_reached, results}` or `{:nebula_error, :quorum_timeout, results}`.
+  Migration: expect raw body values instead of `{:ok, _}`; match `{:nebula_error, _}` for
+  transport faults; update multicast matches to `{node, value}`.
 - Node-info is now refreshed by a per-node background `NebulaAPI.NodesInfoCache` on a fixed
   interval instead of being rebuilt lazily on every read — this removes the refresh stampede
   under concurrency. Readers always serve the latest snapshot.

@@ -29,9 +29,11 @@ defmodule NebulaAPI.MulticastStrategiesTest do
     end
 
     test "call_remote_method accepts :first strategy" do
+      # With no workers registered there is no success to return — :first never
+      # yields a bare list anymore: it fails on the :nebula_error channel.
       opts = [multicast: true, strategy: :first, timeout: 100]
       result = APIServer.call_remote_method(NonExistentModule, {:test_fn}, opts)
-      assert result == []
+      assert result == {:nebula_error, :no_success, []}
     end
 
     test "call_remote_method accepts :quorum strategy" do

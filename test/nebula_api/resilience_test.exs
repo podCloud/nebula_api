@@ -292,7 +292,7 @@ defmodule NebulaAPI.ResilienceTest do
       GenServer.stop(pid)
     end
 
-    test ":first with success: skips a business error (no success → list of responses)" do
+    test ":first with success: skips a business error (no success → :no_success)" do
       pid = start_fake(PredSuccessMod, :work, 0, 0, {:error, :nope})
 
       result =
@@ -305,9 +305,22 @@ defmodule NebulaAPI.ResilienceTest do
           success: &match?({:ok, _}, &1)
         )
 
-      assert result == [{node(), {:error, :nope}}]
+      assert result == {:nebula_error, :no_success, [{node(), {:error, :nope}}]}
 
       GenServer.stop(pid)
+    end
+
+    test ":first with zero workers is :no_success with empty results, not a bare []" do
+      result =
+        APIServer.call_remote_method(
+          NoWorkersFirstMod,
+          {:noop},
+          multicast: true,
+          strategy: :first,
+          timeout: 100
+        )
+
+      assert result == {:nebula_error, :no_success, []}
     end
 
     test ":quorum with failure: still reaches quorum on a non-matching reply" do

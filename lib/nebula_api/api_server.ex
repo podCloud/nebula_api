@@ -18,7 +18,7 @@ defmodule NebulaAPI.APIServer do
     `{node, {:nebula_error, :timeout}}`, never silently dropped.
   - `:first` - Return the first response that counts as a success (see the
     `:success`/`:failure` options) as a single `{node, value}`. If no response
-    qualifies, returns the list of collected responses.
+    qualifies: `{:nebula_error, :no_success, results}` (never a bare list).
   - `:quorum` - Wait for N successes (`:quorum_count` or `:quorum_proportion`). Reached:
     the list of collected `{node, value}` responses. Not reached:
     `{:nebula_error, :quorum_not_reached, results}` or `{:nebula_error, :quorum_timeout, results}`.
@@ -668,6 +668,11 @@ defmodule NebulaAPI.APIServer do
     end
   end
 
+  # :first never returns a bare list: with nobody to ask there is no success.
+  defp do_multicast_call([], _fn_call, _timeout, :first, _opts) do
+    {:nebula_error, :no_success, []}
+  end
+
   defp do_multicast_call([], _fn_call, _timeout, _strategy, _opts) do
     []
   end
@@ -855,8 +860,8 @@ defmodule NebulaAPI.APIServer do
   end
 
   defp wait_for_first(_ref, 0, _deadline, _predicate, results) do
-    # No success: return every response we collected.
-    Enum.reverse(results)
+    # No success among the responses: lib-level failure, on the lib channel.
+    {:nebula_error, :no_success, Enum.reverse(results)}
   end
 
   defp wait_for_first(ref, remaining, deadline, predicate, results) do
@@ -871,7 +876,7 @@ defmodule NebulaAPI.APIServer do
         end
     after
       remaining_ms ->
-        Enum.reverse(results)
+        {:nebula_error, :no_success, Enum.reverse(results)}
     end
   end
 

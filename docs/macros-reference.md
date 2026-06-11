@@ -207,7 +207,7 @@ failures for a given node surface as `{:nebula_error, reason}` in that node's sl
 | Strategy | Returns |
 |----------|---------|
 | `:all` | a list of `{node, value}` — failed nodes appear as `{node, {:nebula_error, reason}}` |
-| `:first` | the first `{node, value}` that counts as a success; if none succeed, the list of all responses |
+| `:first` | the first `{node, value}` that counts as a success; if none succeed: `{:nebula_error, :no_success, results}` — never a bare list |
 | `:quorum` (reached) | the list of collected `{node, value}` responses — the quorum of successes plus any non-success responses received along the way |
 | `:quorum` (not reached) | `{:nebula_error, :quorum_not_reached, results}` |
 | `:quorum` (timed out) | `{:nebula_error, :quorum_timeout, results}` |

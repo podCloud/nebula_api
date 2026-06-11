@@ -378,7 +378,7 @@ transport level yields `{node, {:nebula_error, reason}}`.
 | Strategy | Behavior |
 |---|---|
 | `:all` | Wait for every node (or timeout). Returns a list of `{node, value}` / `{node, {:nebula_error, reason}}`. |
-| `:first` | Returns the first `{node, value}` that counts as a success. If none qualify, returns the full list of responses. |
+| `:first` | Returns the first `{node, value}` that counts as a success. If none qualify: `{:nebula_error, :no_success, results}` — never a bare list. |
 | `:quorum` | Reached: the list of collected `{node, value}` responses. Not reached: `{:nebula_error, :quorum_not_reached, results}` or `{:nebula_error, :quorum_timeout, results}`. Impossible quorum (required > available workers): `{:nebula_error, :quorum_unreachable, %{workers: n, required: m}}` — returned before any call is made. |
 
 `quorum_count:` (positive integer) sets the number of successes required. Alternatively,
