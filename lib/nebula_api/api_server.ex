@@ -796,7 +796,7 @@ defmodule NebulaAPI.APIServer do
   end
 
   # Success predicate for :first/:quorum, derived from the call opts (validated up
-  # front by validate_predicate_opts!/1). By default any worker that replied (no
+  # front by validate_predicate_opts!/3). By default any worker that replied (no
   # transport error) is a success. `success: fn value -> bool` narrows that to a
   # business success; `failure:` is its mirror.
   defp success_predicate(opts) do
