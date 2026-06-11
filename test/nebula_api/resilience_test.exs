@@ -52,12 +52,17 @@ defmodule NebulaAPI.ResilienceTest do
       persist: true
     )
 
-    @nebula_local_api_methods {:slow, 0}
+    @nebula_local_api_methods {:gated, 1}
     @nebula_local_api_methods {:fast, 0}
 
-    def slow do
-      Process.sleep(300)
-      {:ok, :slow}
+    # Latch body: announces itself, then blocks until released — lets tests
+    # prove non-blocking execution by message order instead of elapsed time.
+    def gated(notify) do
+      send(notify, {:gated_started, self()})
+
+      receive do
+        :go -> {:ok, :gated}
+      end
     end
 
     def fast, do: {:ok, :fast}
@@ -184,13 +189,12 @@ defmodule NebulaAPI.ResilienceTest do
       {:ok, pid} = NebulaAPI.APIServer.NodesInfoCache.start_link(name: nil, interval: 50)
       on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
-      # Let it tick a couple of times.
-      Process.sleep(150)
-
-      assert match?(
-               [{_, %{data: _}}],
-               :ets.lookup(:nebula_nodes_cache, :__nodes_info_snapshot__)
-             )
+      wait_until(fn ->
+        match?(
+          [{_, %{data: _}}],
+          :ets.lookup(:nebula_nodes_cache, :__nodes_info_snapshot__)
+        )
+      end)
     end
 
     test "get_nodes_info serves an existing snapshot without rebuilding it" do
@@ -210,15 +214,13 @@ defmodule NebulaAPI.ResilienceTest do
       assert APIServer.get_nodes_info() == marker
     end
 
-    test "get_nodes_info on a cold cache returns %{} immediately — no build, no RPC" do
+    test "get_nodes_info on a cold cache returns %{} — no build, no RPC" do
       :ets.delete(:nebula_nodes_cache, :__nodes_info_snapshot__)
 
-      t0 = System.monotonic_time(:millisecond)
       assert APIServer.get_nodes_info() == %{}
-      # A pure ETS read: orders of magnitude under any RPC fan-out.
-      assert System.monotonic_time(:millisecond) - t0 < 50
 
-      # And it did NOT write a snapshot behind our back (read = read).
+      # It did NOT write a snapshot behind our back (read = read) — the state
+      # assertion is the real proof that no build happened, no clock needed.
       assert :ets.lookup(:nebula_nodes_cache, :__nodes_info_snapshot__) == []
     end
 
@@ -242,25 +244,26 @@ defmodule NebulaAPI.ResilienceTest do
   end
 
   describe "worker — non-blocking execution (H3)" do
-    test "a slow call does not block a concurrent fast call" do
+    test "a blocked call does not block a concurrent fast call" do
       {:ok, worker} = NebulaAPI.APIServer.Worker.start_link(LocalMethodsMod)
       parent = self()
 
       spawn(fn ->
-        send(parent, {:slow_done, GenServer.call(worker, {:nebula_call, {:slow}}, 5_000)})
+        send(
+          parent,
+          {:gated_done, GenServer.call(worker, {:nebula_call, {:gated, parent}}, 5_000)}
+        )
       end)
 
-      # Let the slow call reach the worker.
-      Process.sleep(30)
+      # The gated body is running — and blocked on its latch.
+      assert_receive {:gated_started, gate}, 1_000
 
-      t0 = System.monotonic_time(:millisecond)
-      fast = GenServer.call(worker, {:nebula_call, {:fast}}, 5_000)
-      elapsed = System.monotonic_time(:millisecond) - t0
+      # A second call completes WHILE the first is still blocked: that's the
+      # non-blocking worker, proven causally (no clock involved).
+      assert GenServer.call(worker, {:nebula_call, {:fast}}, 1_000) == {:ok, :fast}
 
-      assert fast == {:ok, :fast}
-      # The fast call must NOT have waited out the slow call's 300ms.
-      assert elapsed < 150
-      assert_receive {:slow_done, {:ok, :slow}}, 1_000
+      send(gate, :go)
+      assert_receive {:gated_done, {:ok, :gated}}, 1_000
 
       GenServer.stop(worker)
     end
@@ -644,6 +647,26 @@ defmodule NebulaAPI.ResilienceTest do
       assert info.last_seen_at == nil
 
       GenServer.stop(pid)
+    end
+  end
+
+  # Bounded poll: turns "sleep and hope" into "wait for the actual condition".
+  defp wait_until(fun, timeout \\ 1_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    do_wait_until(fun, deadline)
+  end
+
+  defp do_wait_until(fun, deadline) do
+    cond do
+      fun.() ->
+        :ok
+
+      System.monotonic_time(:millisecond) > deadline ->
+        flunk("condition not met within the allotted time")
+
+      true ->
+        Process.sleep(10)
+        do_wait_until(fun, deadline)
     end
   end
 end
