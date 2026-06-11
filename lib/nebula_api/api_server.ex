@@ -848,6 +848,21 @@ defmodule NebulaAPI.APIServer do
   defp response_success?({_node, {:nebula_error, _reason}}, _predicate), do: false
   defp response_success?({_node, value}, predicate), do: predicate.(value)
 
+  # One fan-out call, bounded by what remains of the caller's timeout when the
+  # task actually starts. If the deadline is already gone, don't call at all:
+  # the collector (wait_for_*) stops at the deadline, so a reply earned during
+  # any grace window could only be flushed — calling would just make the worker
+  # run a body nobody collects. Report the node as a timeout directly.
+  defp tagged_call_within(worker, fn_call, deadline, target_node) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if remaining > 0 do
+      tagged_call(worker, fn_call, remaining, target_node)
+    else
+      {target_node, {:nebula_error, :timeout}}
+    end
+  end
+
   defp do_multicast_all(target_workers, fn_call, timeout) do
     parent = self()
     ref = make_ref()
@@ -857,8 +872,7 @@ defmodule NebulaAPI.APIServer do
       target_workers
       |> Enum.map(fn {target_node, worker} ->
         Task.Supervisor.async_nolink(NebulaAPI.TaskSupervisor, fn ->
-          remaining = max(deadline - System.monotonic_time(:millisecond), 100)
-          send(parent, {ref, tagged_call(worker, fn_call, remaining, target_node)})
+          send(parent, {ref, tagged_call_within(worker, fn_call, deadline, target_node)})
         end)
       end)
 
@@ -908,8 +922,7 @@ defmodule NebulaAPI.APIServer do
       target_workers
       |> Enum.map(fn {target_node, worker} ->
         Task.Supervisor.async_nolink(NebulaAPI.TaskSupervisor, fn ->
-          remaining = max(deadline - System.monotonic_time(:millisecond), 100)
-          send(parent, {ref, tagged_call(worker, fn_call, remaining, target_node)})
+          send(parent, {ref, tagged_call_within(worker, fn_call, deadline, target_node)})
         end)
       end)
 
@@ -957,8 +970,7 @@ defmodule NebulaAPI.APIServer do
       target_workers
       |> Enum.map(fn {target_node, worker} ->
         Task.Supervisor.async_nolink(NebulaAPI.TaskSupervisor, fn ->
-          remaining = max(deadline - System.monotonic_time(:millisecond), 100)
-          send(parent, {ref, tagged_call(worker, fn_call, remaining, target_node)})
+          send(parent, {ref, tagged_call_within(worker, fn_call, deadline, target_node)})
         end)
       end)
 
