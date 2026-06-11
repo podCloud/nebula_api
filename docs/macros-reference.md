@@ -166,7 +166,7 @@ end
 
 | Option | Type | Default |
 |--------|------|---------|
-| `timeout` | integer (ms) | 5000 |
+| `timeout` | positive integer (ms) — `:infinity` rejected | 5000 |
 
 **Return value.** On success, you get the body's value exactly as-is (no wrapping). If the
 transport fails (timeout, no worker, crash), you get `{:nebula_error, reason}`.
@@ -183,7 +183,7 @@ end
 
 | Option | Type | Default | |
 |--------|------|---------|--|
-| `timeout` | integer (ms) | 5000 | |
+| `timeout` | positive integer (ms) — `:infinity` rejected | 5000 | |
 | `strategy` | atom | `:all` | `:all` / `:first` / `:quorum` |
 | `quorum_count` | positive integer | `div(n, 2) + 1` | for `:quorum` — mutually exclusive with `quorum_proportion` |
 | `quorum_proportion` | number `(0.5, 1]` | — | for `:quorum` — resolved as `ceil(p × workers)`; mutually exclusive with `quorum_count` |

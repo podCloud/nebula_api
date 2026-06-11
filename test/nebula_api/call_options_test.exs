@@ -47,4 +47,39 @@ defmodule NebulaAPI.CallOptionsTest do
       assert APIServer.resolve_timeout(NotARealModule, []) == 5_000
     end
   end
+
+  describe "timeout: validation (I6)" do
+    alias NebulaAPI.APIServer
+
+    test "timeout: :infinity raises ArgumentError up front — unicast and multicast alike" do
+      assert_raise ArgumentError, ~r/timeout/, fn ->
+        APIServer.call_remote_method(NoSuchMod, {:work}, timeout: :infinity)
+      end
+
+      assert_raise ArgumentError, ~r/timeout/, fn ->
+        APIServer.call_remote_method(NoSuchMod, {:work},
+          multicast: true,
+          strategy: :all,
+          timeout: :infinity
+        )
+      end
+    end
+
+    test "non-positive or non-integer timeouts raise ArgumentError" do
+      for bad <- [0, -5, 1.5, "100", :soon] do
+        assert_raise ArgumentError, ~r/timeout/, fn ->
+          APIServer.call_remote_method(NoSuchMod, {:work}, timeout: bad)
+        end
+      end
+    end
+
+    test "a bad global default_timeout is caught at call time too" do
+      Application.put_env(:nebula_api, :default_timeout, :infinity)
+      on_exit(fn -> Application.delete_env(:nebula_api, :default_timeout) end)
+
+      assert_raise ArgumentError, ~r/timeout/, fn ->
+        APIServer.call_remote_method(NoSuchMod, {:work})
+      end
+    end
+  end
 end

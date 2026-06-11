@@ -149,6 +149,7 @@ defmodule NebulaAPI.APIServer do
     validate_quorum_opts!(opts, multicast, strategy)
 
     timeout = resolve_timeout(module, opts)
+    validate_timeout!(timeout)
     node_selector = Keyword.get(opts, :node_selector)
 
     Logger.debug("""
@@ -721,6 +722,25 @@ defmodule NebulaAPI.APIServer do
       count = Keyword.get(opts, :quorum_count) -> count
       p = Keyword.get(opts, :quorum_proportion) -> max(1, ceil(p * worker_count))
       true -> div(worker_count, 2) + 1
+    end
+  end
+
+  # Validating the RESOLVED value covers both the per-call timeout: option and
+  # the global config :nebula_api, default_timeout: (the module-level default is
+  # already validated at compile time by `use NebulaAPI`). :infinity is rejected
+  # on purpose, unicast included: distribution monitors catch dead workers and
+  # partitions, but a live worker whose body never finishes would hang the
+  # caller forever (confined_call awaits with :infinity) — an unbounded wait has
+  # no place in a transport whose whole 0.4.0 contract is "the caller never
+  # crashes, never hangs".
+  defp validate_timeout!(timeout) do
+    unless is_integer(timeout) and timeout > 0 do
+      raise ArgumentError,
+            "timeout: must be a positive integer in milliseconds, got: #{inspect(timeout)}" <>
+              if(timeout == :infinity,
+                do: " — :infinity is not supported; use a large finite budget instead",
+                else: ""
+              )
     end
   end
 

@@ -53,6 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default_timeout: ...`) > global (`config :nebula_api, default_timeout:`) > 5000 ms.
   Both options are also accepted in `config :nebula_api, default_opts: [...]` as
   inherited defaults for every `use NebulaAPI` module.
+  Timeouts are validated up front like every other call option: a non-positive,
+  non-integer or `:infinity` timeout raises `ArgumentError` at the call site
+  (previously, `:infinity` half-worked: fine on unicast, melted into
+  `{:nebula_error, %ArithmeticError{}}` on multicast).
 
 ### Fixed
 - `:quorum` strategy no longer silently clamps an impossible `quorum_count` to the available
