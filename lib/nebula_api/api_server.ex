@@ -773,13 +773,16 @@ defmodule NebulaAPI.APIServer do
         end)
       end)
 
-    # Return the first response that counts as a success (replied + predicate)
-    result = wait_for_first(ref, length(target_workers), deadline, predicate, [])
-
-    Enum.each(tasks, fn task -> Task.shutdown(task, :brutal_kill) end)
-    flush_ref(ref)
-
-    result
+    # Return the first response that counts as a success (replied + predicate).
+    # try/after: the user predicate runs inside wait_for_first — if it raises,
+    # the tasks must still be killed and the {ref, _} replies flushed, or the
+    # stray messages would pollute the caller's mailbox forever.
+    try do
+      wait_for_first(ref, length(target_workers), deadline, predicate, [])
+    after
+      Enum.each(tasks, fn task -> Task.shutdown(task, :brutal_kill) end)
+      flush_ref(ref)
+    end
   end
 
   defp wait_for_first(_ref, 0, _deadline, _predicate, results) do
@@ -829,12 +832,13 @@ defmodule NebulaAPI.APIServer do
         end)
       end)
 
-    result = wait_for_quorum(ref, worker_count, deadline, effective_quorum, predicate, [], [])
-
-    Enum.each(tasks, fn task -> Task.shutdown(task, :brutal_kill) end)
-    flush_ref(ref)
-
-    result
+    # Same try/after rationale as do_multicast_first.
+    try do
+      wait_for_quorum(ref, worker_count, deadline, effective_quorum, predicate, [], [])
+    after
+      Enum.each(tasks, fn task -> Task.shutdown(task, :brutal_kill) end)
+      flush_ref(ref)
+    end
   end
 
   # Quorum reached → the list of {node, value} responses.

@@ -346,6 +346,61 @@ defmodule NebulaAPI.ResilienceTest do
 
       GenServer.stop(pid)
     end
+
+    test "a raising predicate is contained and leaves no stray {ref, _} in the mailbox" do
+      pid = start_fake(PredRaiseMod, :work, 0, 0, {:ok, :good})
+
+      result =
+        APIServer.call_remote_method(
+          PredRaiseMod,
+          {:work},
+          multicast: true,
+          strategy: :first,
+          timeout: 500,
+          success: fn _value -> raise "predicate bug" end
+        )
+
+      assert {:nebula_error, %RuntimeError{message: "predicate bug"}} = result
+
+      # The caller's mailbox must stay clean even on this failure path.
+      Process.sleep(100)
+      {:messages, msgs} = Process.info(self(), :messages)
+
+      refute Enum.any?(msgs, fn
+               {ref, _} when is_reference(ref) -> true
+               _ -> false
+             end)
+
+      GenServer.stop(pid)
+    end
+
+    test "a raising predicate (:quorum) is contained and leaves no stray {ref, _} in the mailbox" do
+      pid = start_fake(PredRaiseQuorumMod, :work, 0, 0, {:ok, :good})
+
+      result =
+        APIServer.call_remote_method(
+          PredRaiseQuorumMod,
+          {:work},
+          multicast: true,
+          strategy: :quorum,
+          quorum_count: 1,
+          timeout: 500,
+          success: fn _value -> raise "predicate bug" end
+        )
+
+      assert {:nebula_error, %RuntimeError{message: "predicate bug"}} = result
+
+      # The caller's mailbox must stay clean even on this failure path.
+      Process.sleep(100)
+      {:messages, msgs} = Process.info(self(), :messages)
+
+      refute Enum.any?(msgs, fn
+               {ref, _} when is_reference(ref) -> true
+               _ -> false
+             end)
+
+      GenServer.stop(pid)
+    end
   end
 
   describe "node-info cache — refresh fault containment (R6)" do
