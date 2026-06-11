@@ -15,7 +15,49 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
     end
     """)
 
+    Code.eval_string("""
+    defmodule NebulaAPI.GeneratedFunctionsTest.LocalKindsMod do
+      use NebulaAPI, allow_unknown_self_node: true, self_node: :"test@host"
+
+      defapi &db, boom_throw() do
+        throw(:ball)
+      end
+
+      defapi &db, boom_exit() do
+        exit(:bye)
+      end
+
+      defapi &db, boom_raise() do
+        raise "kaboom"
+      end
+    end
+    """)
+
     :ok
+  end
+
+  describe "local/remote symmetry for non-exception escapes (M11)" do
+    import ExUnit.CaptureLog
+
+    alias NebulaAPI.GeneratedFunctionsTest.LocalKindsMod
+
+    test "a throwing body returns {:nebula_error, {:throw, value}} locally, like remotely" do
+      capture_log(fn ->
+        assert LocalKindsMod.boom_throw() == {:nebula_error, {:throw, :ball}}
+      end)
+    end
+
+    test "an exiting body returns {:nebula_error, {:exit, reason}} locally, like remotely" do
+      capture_log(fn ->
+        assert LocalKindsMod.boom_exit() == {:nebula_error, {:exit, :bye}}
+      end)
+    end
+
+    test "a raising body still returns {:nebula_error, exception} (unchanged shape)" do
+      capture_log(fn ->
+        assert {:nebula_error, %RuntimeError{message: "kaboom"}} = LocalKindsMod.boom_raise()
+      end)
+    end
   end
 
   describe "defapi codegen is warning-free (I4)" do

@@ -20,14 +20,21 @@ defmodule NebulaAPI.AST.Builder do
       quote do
         defp unquote(build_private_function_signature(local_fn_name, fn_args)) do
           # Transparent: the body's return value is passed through as-is (no wrapping).
-          # An exception in the body is the only thing the lib turns into a result,
-          # surfaced as {:nebula_error, exception} so it never masquerades as a value.
+          # Anything that ESCAPES the body, though, is the lib's to report: an
+          # exception, a throw or an exit all become {:nebula_error, _} — the same
+          # shape the worker produces remotely (execute_local_call), so a body
+          # behaves identically wherever it runs.
           unquote(fn_do)
         rescue
           e ->
             require Logger
             Logger.error(Exception.format(:error, e, __STACKTRACE__))
             {:nebula_error, e}
+        catch
+          kind, reason ->
+            require Logger
+            Logger.error("defapi body #{inspect(kind)}: #{inspect(reason)}")
+            {:nebula_error, {kind, reason}}
         end
       end
     else

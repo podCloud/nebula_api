@@ -87,6 +87,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   registered name.
 - `build_nodes_info` no longer aborts the whole snapshot when one node's health collection
   crashes (a non-timeout task exit) — the faulty node is simply dropped.
+- A body that throws or exits now yields `{:nebula_error, {kind, reason}}` locally
+  too, matching the remote behavior — previously the throw/exit escaped the
+  generated local function and propagated into the caller, so the same call could
+  behave differently depending on where it ran.
 - Invalid `defapi` selectors and signatures, using `defapi` without `use NebulaAPI`, and
   malformed node tags now raise clear `CompileError`s instead of internal crashes.
   The same now holds for `call_on_node` / `call_on_nodes` nebula selectors: a typo'd

@@ -123,6 +123,13 @@ apart from a business `{:error, reason}` your code chose to return.
 An exception raised inside the body becomes `{:nebula_error, exception}` instead of
 crashing the caller.
 
+The same goes for a `throw` or an `exit` escaping the body: it becomes
+`{:nebula_error, {:throw, value}}` / `{:nebula_error, {:exit, reason}}`, whether the
+body ran locally or on a remote node. The `defapi` boundary is an RPC boundary:
+values come out of it; everything that escapes a body is reported on the
+`:nebula_error` channel — identically on every node. Code that relied on a `throw`
+crossing a `defapi` call was already broken the day the topology changed.
+
 ### Unicast
 
 A call routed to a single node either succeeds — returning the body's value verbatim — or

@@ -212,8 +212,10 @@ call the router returns a list of `{node, value}` entries, with a failing node y
 
 When the current node matches the selector, `build_local_function/3` emits the real
 body; otherwise it emits a stub that raises if called directly. The body's value is
-returned **as-is** — there is no wrapping. Only a raised exception is translated, into
-`{:nebula_error, exception}`.
+returned **as-is** — there is no wrapping. Anything that escapes the body is
+translated: a raised exception becomes `{:nebula_error, exception}`, a throw or exit
+becomes `{:nebula_error, {kind, reason}}` — the same shapes the worker produces for a
+remote call.
 
 ```elixir
 # is_local? = true
@@ -224,6 +226,11 @@ rescue
     require Logger
     Logger.error(Exception.format(:error, e, __STACKTRACE__))
     {:nebula_error, e}
+catch
+  kind, reason ->
+    require Logger
+    Logger.error("defapi body #{inspect(kind)}: #{inspect(reason)}")
+    {:nebula_error, {kind, reason}}
 end
 
 # is_local? = false (argument underscored: the stub never uses it)
