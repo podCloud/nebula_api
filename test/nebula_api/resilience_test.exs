@@ -612,6 +612,49 @@ defmodule NebulaAPI.ResilienceTest do
     end
   end
 
+  describe "selector-returned duplicate nodes count once (I1)" do
+    test "a duplicated node cannot reach a quorum on its own" do
+      pid = start_fake(DupQuorumMod, :work, 0, 0, {:ok, :good})
+
+      # One physical worker node, returned twice by a buggy selector: without
+      # dedup, its two replies would count as two confirmations and at_least: 2
+      # would be "reached" by a single node — a durability guarantee silently
+      # lowered. Deduped, the quorum is arithmetically unreachable up front.
+      result =
+        APIServer.call_remote_method(
+          DupQuorumMod,
+          {:work},
+          multicast: true,
+          strategy: :quorum,
+          at_least: 2,
+          timeout: 500,
+          node_selector: fn _nodes_info -> [node(), node()] end
+        )
+
+      assert {:nebula_error, :quorum_unreachable, %{workers: 1, required: 2}} = result
+
+      GenServer.stop(pid)
+    end
+
+    test ":all returns one entry per node even when the selector duplicates it" do
+      pid = start_fake(DupAllMod, :work, 0, 0, :value)
+
+      result =
+        APIServer.call_remote_method(
+          DupAllMod,
+          {:work},
+          multicast: true,
+          strategy: :all,
+          timeout: 500,
+          node_selector: fn _nodes_info -> [node(), node()] end
+        )
+
+      assert [{_node, :value}] = result
+
+      GenServer.stop(pid)
+    end
+  end
+
   describe "selectors see pg-registered nodes not yet in the snapshot (M9)" do
     test "a worker node missing from the snapshot is offered to the selector, runtime: nil" do
       # Snapshot deliberately EMPTY: simulates the window between a node joining

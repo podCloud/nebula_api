@@ -612,9 +612,12 @@ defmodule NebulaAPI.APIServer do
       {:ok, selected_nodes} ->
         selected_nodes = if is_list(selected_nodes), do: selected_nodes, else: [selected_nodes]
 
-        # Filter to only nodes with workers
+        # Filter to only nodes with workers. A selector may return duplicates:
+        # a node must count ONCE — toward the quorum especially, where two
+        # replies from the same node are one confirmation, not two.
         target_workers =
           selected_nodes
+          |> Enum.uniq()
           |> Enum.filter(&Map.has_key?(workers_by_node, &1))
           |> Enum.map(fn node -> {node, workers_by_node[node]} end)
 
