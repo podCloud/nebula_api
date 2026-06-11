@@ -184,5 +184,24 @@ defmodule NebulaAPI.CompileErrorsTest do
 
       assert {_, _} = Code.eval_string(code)
     end
+
+    test "success: on call_on_node raises a clear CompileError (unicast never consumes it)" do
+      code = """
+      defmodule NebulaAPI.CompileErrorsTest.UnicastPredicate do
+        use NebulaAPI.AST
+
+        def go do
+          call_on_node fn nodes_info -> List.first(Map.keys(nodes_info)) end,
+            success: fn value -> value == :ok end do
+            :ok
+          end
+        end
+      end
+      """
+
+      assert_raise CompileError, ~r/only apply to multicast/, fn ->
+        Code.eval_string(code)
+      end
+    end
   end
 end

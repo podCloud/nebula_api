@@ -401,6 +401,38 @@ defmodule NebulaAPI.ResilienceTest do
 
       GenServer.stop(pid)
     end
+
+    test "success: on a unicast call raises ArgumentError (it would be silently ignored)" do
+      pid = start_fake(PredUnicastMod, :work, 0, 0, {:ok, :good})
+
+      assert_raise ArgumentError, ~r/only apply to multicast/, fn ->
+        APIServer.call_remote_method(
+          PredUnicastMod,
+          {:work},
+          timeout: 500,
+          success: &match?({:ok, _}, &1)
+        )
+      end
+
+      GenServer.stop(pid)
+    end
+
+    test "failure: on a multicast :all call raises ArgumentError" do
+      pid = start_fake(PredAllMod, :work, 0, 0, {:ok, :good})
+
+      assert_raise ArgumentError, ~r/only apply to multicast/, fn ->
+        APIServer.call_remote_method(
+          PredAllMod,
+          {:work},
+          multicast: true,
+          strategy: :all,
+          timeout: 500,
+          failure: &match?({:error, _}, &1)
+        )
+      end
+
+      GenServer.stop(pid)
+    end
   end
 
   describe "node-info cache — refresh fault containment (R6)" do

@@ -186,8 +186,8 @@ end
 | `timeout` | integer (ms) | 5000 | |
 | `strategy` | atom | `:all` | `:all` / `:first` / `:quorum` |
 | `quorum_count` | integer | `div(n, 2) + 1` | for `:quorum` |
-| `success` | `fn value -> boolean` | a worker that *responded* | what counts as a business success for `:first` / `:quorum` |
-| `failure` | `fn value -> boolean` | — | mirror of `success`: a matching value is treated as a non-success |
+| `success` | `fn value -> boolean` | a worker that *responded* | what counts as a business success for `:first` / `:quorum` — **raises `ArgumentError` with any other strategy** |
+| `failure` | `fn value -> boolean` | — | mirror of `success`: a matching value is treated as a non-success — **raises `ArgumentError` with any other strategy** |
 
 | Strategy | Behavior |
 |----------|----------|
@@ -237,6 +237,10 @@ end
 a success). Either way, a `{:nebula_error, _}` result is **never** a success regardless of
 the predicate — the predicate only ever runs against the body's own value, so library and
 transport failures can never be mistaken for a healthy reply.
+
+Both options are **only meaningful with `:first` or `:quorum`**. Passing either on a unicast
+call or with `strategy: :all` raises an `ArgumentError` up front — they would otherwise be
+silently ignored. `call_on_node` also rejects them at compile time.
 
 ---
 

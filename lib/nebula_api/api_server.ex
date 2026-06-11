@@ -137,12 +137,12 @@ defmodule NebulaAPI.APIServer do
     # Bad call opts are a programming error: validate them up front, OUTSIDE the
     # transport rescue below, so they crash loud instead of melting into
     # {:nebula_error, _} like genuine transport failures do.
-    validate_predicate_opts!(opts)
+    multicast = Keyword.get(opts, :multicast, false)
+    strategy = Keyword.get(opts, :strategy, :all)
+    validate_predicate_opts!(opts, multicast, strategy)
 
     timeout = resolve_timeout(module, opts)
     node_selector = Keyword.get(opts, :node_selector)
-    multicast = Keyword.get(opts, :multicast, false)
-    strategy = Keyword.get(opts, :strategy, :all)
 
     Logger.debug("""
       Will do remote execution on #{inspect(module)}
@@ -667,7 +667,17 @@ defmodule NebulaAPI.APIServer do
   # Bad call opts are a programming error: validate them up front, OUTSIDE the
   # transport rescue in call_remote_method/3, so they crash loud instead of melting
   # into {:nebula_error, _} like genuine transport failures do.
-  defp validate_predicate_opts!(opts) do
+  defp validate_predicate_opts!(opts, multicast, strategy) do
+    has_predicate? =
+      Keyword.has_key?(opts, :success) or Keyword.has_key?(opts, :failure)
+
+    if has_predicate? and not (multicast and strategy in [:first, :quorum]) do
+      raise ArgumentError,
+            "success:/failure: only apply to multicast strategies :first and :quorum " <>
+              "(got multicast: #{inspect(multicast)}, strategy: #{inspect(strategy)}) — " <>
+              "they would be silently ignored here"
+    end
+
     case {Keyword.get(opts, :success), Keyword.get(opts, :failure)} do
       {nil, nil} ->
         :ok

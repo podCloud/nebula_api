@@ -402,7 +402,9 @@ end
 ```
 
 A transport failure (`{:nebula_error, _}`) is never a success, regardless of the
-predicate. Passing both `success:` and `failure:` raises an `ArgumentError`.
+predicate. Passing both `success:` and `failure:` raises an `ArgumentError`. Passing
+either option outside of a `:first` or `:quorum` multicast also raises an `ArgumentError`
+— on a unicast call or `strategy: :all` they would be silently ignored.
 
 ## Node info and intelligent routing
 

@@ -196,6 +196,17 @@ defmodule NebulaAPI.AST do
 
   defp do_call_on_node(selector_or_nebula_ast, opts, block, caller) do
     validate_static_predicate_opts!(opts, caller)
+
+    if Keyword.keyword?(opts) and
+         (Keyword.has_key?(opts, :success) or Keyword.has_key?(opts, :failure)) do
+      raise CompileError,
+        line: caller.line,
+        file: caller.file,
+        description:
+          "success:/failure: only apply to multicast strategies :first and :quorum — " <>
+            "call_on_node is unicast and would silently ignore them"
+    end
+
     selector = build_selector(selector_or_nebula_ast, :unicast, caller)
 
     quote do

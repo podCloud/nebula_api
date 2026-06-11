@@ -29,7 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `success:` / `failure:` options on `call_on_nodes` (`:first` / `:quorum`): a predicate
   `fn value -> boolean` defining what counts as a business success. Default: any worker that
-  responded. Example: `success: &match?({:ok, _}, &1)`.
+  responded. Example: `success: &match?({:ok, _}, &1)`. Passing either option outside
+  `:first`/`:quorum` (unicast, `strategy: :all`) raises an `ArgumentError` up front;
+  `call_on_node` also rejects them at compile time.
 - `nodes_info_refresh_interval` config option (ms, default `5000`).
 - `max_concurrent_calls` option on `use NebulaAPI` (default `:infinity`): caps how many
   calls a module's worker executes concurrently, per node. Excess calls queue (callers
