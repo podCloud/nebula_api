@@ -82,4 +82,42 @@ defmodule NebulaAPI.CallOptionsTest do
       end
     end
   end
+
+  describe "strategy: validation (I2)" do
+    alias NebulaAPI.APIServer
+
+    test "a typo'd strategy raises instead of silently degrading to :all" do
+      # Without validation, :qourum fell into the :all catch-all: an intended
+      # quorum write became a plain broadcast — and both return lists, so the
+      # caller would never notice the lost guarantee.
+      assert_raise ArgumentError, ~r/strategy/, fn ->
+        APIServer.call_remote_method(NoSuchMod, {:work},
+          multicast: true,
+          strategy: :qourum,
+          timeout: 100
+        )
+      end
+    end
+
+    test "strategy: on a non-multicast call raises (it would be silently ignored)" do
+      assert_raise ArgumentError, ~r/multicast/, fn ->
+        APIServer.call_remote_method(NoSuchMod, {:work}, strategy: :quorum, timeout: 100)
+      end
+    end
+
+    test "valid strategies still pass validation" do
+      for strategy <- [:all, :first, :quorum] do
+        result =
+          APIServer.call_remote_method(NoSuchMod, {:work},
+            multicast: true,
+            strategy: strategy,
+            timeout: 100
+          )
+
+        # No worker registered: each strategy fails on its own contract,
+        # never with an ArgumentError.
+        refute match?({:nebula_error, %ArgumentError{}}, result)
+      end
+    end
+  end
 end

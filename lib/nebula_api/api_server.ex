@@ -144,6 +144,7 @@ defmodule NebulaAPI.APIServer do
     # {:nebula_error, _} like genuine transport failures do.
     multicast = Keyword.get(opts, :multicast, false)
     strategy = Keyword.get(opts, :strategy, :all)
+    validate_strategy_opts!(opts, multicast)
     validate_predicate_opts!(opts, multicast, strategy)
     validate_quorum_opts!(opts, multicast, strategy)
 
@@ -741,6 +742,33 @@ defmodule NebulaAPI.APIServer do
                 do: " — :infinity is not supported; use a large finite budget instead",
                 else: ""
               )
+    end
+  end
+
+  @valid_strategies [:all, :first, :quorum]
+
+  # Same up-front philosophy as the other call opts: a typo'd strategy must not
+  # silently fall into the :all catch-all — a :quorum write degrading into a
+  # plain broadcast is a durability guarantee lost behind the caller's back
+  # (and both return lists, so the caller would never notice).
+  defp validate_strategy_opts!(opts, multicast) do
+    case Keyword.fetch(opts, :strategy) do
+      :error ->
+        :ok
+
+      {:ok, strategy} when strategy not in @valid_strategies ->
+        raise ArgumentError,
+              "strategy: must be one of #{inspect(@valid_strategies)}, " <>
+                "got: #{inspect(strategy)}"
+
+      {:ok, strategy} ->
+        unless multicast do
+          raise ArgumentError,
+                "strategy: #{inspect(strategy)} only applies to multicast calls " <>
+                  "(multicast: true) — it would be silently ignored here"
+        end
+
+        :ok
     end
   end
 
