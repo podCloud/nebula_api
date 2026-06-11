@@ -474,16 +474,11 @@ defmodule NebulaAPI.APIServer do
   """
   def get_available_nodes_info(module, fn_call) do
     workers = get_all_workers(module, fn_call)
-    snapshot = get_nodes_info()
 
-    worker_nodes =
-      workers
-      |> Enum.map(&node/1)
-      |> Enum.uniq()
-
-    Map.new(worker_nodes, fn node_name ->
-      {node_name, Map.get(snapshot, node_name) || synthesize_node_info(node_name)}
-    end)
+    workers
+    |> Enum.map(&node/1)
+    |> Enum.uniq()
+    |> nodes_info_for()
   end
 
   # Timeout precedence: the call's timeout: option, then the module's
@@ -631,13 +626,20 @@ defmodule NebulaAPI.APIServer do
     end
   end
 
-  # pg is the source of truth for WHO serves the method; the snapshot only
-  # enriches HOW they're doing. A node whose worker just registered must be
-  # visible to selectors immediately, not after the next background refresh.
   defp filter_nodes_info_for_workers(workers_by_node) do
+    nodes_info_for(Map.keys(workers_by_node))
+  end
+
+  # One entry per worker node: the background snapshot's entry when present,
+  # a synthesized one otherwise. pg is the source of truth for WHO serves a
+  # method; the snapshot only enriches HOW they're doing — a node whose worker
+  # just registered must be visible to selectors immediately, not after the
+  # next background refresh (see get_available_nodes_info/2 and
+  # filter_nodes_info_for_workers/1, which both delegate here).
+  defp nodes_info_for(worker_nodes) do
     snapshot = get_nodes_info()
 
-    Map.new(Map.keys(workers_by_node), fn node_name ->
+    Map.new(worker_nodes, fn node_name ->
       {node_name, Map.get(snapshot, node_name) || synthesize_node_info(node_name)}
     end)
   end
