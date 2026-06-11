@@ -7,9 +7,9 @@ defmodule NebulaAPI.APIServer.Worker do
   end
 
   def init(module) do
-    module
-    |> NebulaAPI.APIServer.registered_local_methods()
-    |> Enum.each(fn method ->
+    methods = NebulaAPI.APIServer.registered_local_methods(module)
+
+    Enum.each(methods, fn method ->
       NebulaAPI.APIServer.register_local_method_worker(
         module,
         method,
@@ -20,6 +20,9 @@ defmodule NebulaAPI.APIServer.Worker do
     {:ok,
      %{
        module: module,
+       # The module's local methods are fixed at its compilation: snapshot them
+       # once here instead of rescanning __info__(:attributes) on every call.
+       methods: MapSet.new(methods),
        max: max_concurrent_calls(module),
        in_flight: 0,
        queue: :queue.new(),
@@ -99,11 +102,11 @@ defmodule NebulaAPI.APIServer.Worker do
   defp slot_free?(%{max: max, in_flight: in_flight}), do: in_flight < max
 
   defp start_call(state, {from, fn_call}) do
-    module = state.module
+    %{module: module, methods: methods} = state
 
     {:ok, pid} =
       Task.Supervisor.start_child(NebulaAPI.TaskSupervisor, fn ->
-        GenServer.reply(from, execute_local_call(module, fn_call))
+        GenServer.reply(from, execute_local_call(module, methods, fn_call))
       end)
 
     ref = Process.monitor(pid)
@@ -136,17 +139,12 @@ defmodule NebulaAPI.APIServer.Worker do
   # Runs inside the supervised task spawned by start_call/2, replying via
   # GenServer.reply/2 — the worker itself only does slot/queue bookkeeping (see
   # handle_call), so a slow body never blocks the module's other calls.
-  defp execute_local_call(module, fn_call) do
+  defp execute_local_call(module, methods, fn_call) do
     fn_name = elem(fn_call, 0)
     fn_args = Tuple.delete_at(fn_call, 0)
     args_count = tuple_size(fn_args)
 
-    known? =
-      module
-      |> NebulaAPI.APIServer.registered_local_methods()
-      |> Enum.member?({fn_name, args_count})
-
-    if known? do
+    if MapSet.member?(methods, {fn_name, args_count}) do
       Logger.debug(
         "Handling remote call for #{module}.#{fn_name}/#{args_count} " <>
           "with args : #{inspect(fn_args)}"
