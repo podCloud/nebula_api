@@ -99,6 +99,26 @@ So `:ok` and `:error` always come from your code; `:nebula_error` always comes f
 NebulaAPI. A raised exception inside the body is caught and surfaced as
 `{:nebula_error, exception}`.
 
+### Trailing routing options — positional, no magic
+
+Every generated function accepts the routing options as one extra trailing
+argument, after ALL of the business arguments:
+
+```elixir
+defapi &db, list(filters \\ [])
+# generates: def list(filters \\ [], nebula_routing_opts \\ [])
+
+MyApp.Store.list([status: :active], multicast: true, strategy: :quorum, at_least: 2)
+```
+
+The dispatch is purely positional. Watch out when your LAST business argument has
+a default: `MyApp.Store.list(multicast: true)` is a one-argument call, so the
+keyword list binds to `filters` — your routing options are silently served to the
+body as business data and no routing happens. Fill the business arguments
+explicitly (`MyApp.Store.list([], multicast: true)`), or use the `call_on_node` /
+`call_on_nodes` blocks, which carry the routing through the call context and
+avoid the ambiguity entirely.
+
 ---
 
 ## `on_nebula_nodes`

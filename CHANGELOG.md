@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{:nebula_error, :quorum_not_reached, results}` or `{:nebula_error, :quorum_timeout, results}`.
   Migration: expect raw body values instead of `{:ok, _}`; match `{:nebula_error, _}` for
   transport faults; update multicast matches to `{node, value}`.
-- Node-info is now refreshed by a per-node background `NebulaAPI.NodesInfoCache` on a fixed
+- Node-info is now refreshed by a per-node background `NebulaAPI.APIServer.NodesInfoCache` on a fixed
   interval instead of being rebuilt lazily on every read — this removes the refresh stampede
   under concurrency. `get_nodes_info/0` is a pure read: it never builds the snapshot itself,
   not even on a cold cache (during the boot window it returns `%{}`; selectors still see

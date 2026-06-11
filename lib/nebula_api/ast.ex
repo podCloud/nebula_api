@@ -351,7 +351,7 @@ defmodule NebulaAPI.AST do
   # predicate keys are statically visible: fail at compile time, at the call
   # site, instead of at the first runtime call. Only key PRESENCE is checked —
   # values stay unevaluated AST. The runtime validation in
-  # APIServer.validate_predicate_opts!/1 remains the backstop for dynamic opts
+  # APIServer.validate_predicate_opts!/3 remains the backstop for dynamic opts
   # (generated functions' trailing routing opts, context merges).
   defp validate_static_predicate_opts!(opts, caller) do
     if Keyword.keyword?(opts) and Keyword.has_key?(opts, :success) and
