@@ -193,11 +193,11 @@ nodes()
 
 **File:** `lib/nebula_api/ast/builder.ex`
 
-For each `defapi`, the builder generates **three** functions:
+For each `defapi`, the builder generates:
 
-- `__nbapi_local_<name>` — private; the real implementation (matching nodes) or a
-  raising stub (everywhere else)
-- `__nbapi_remote_<name>` — private; dispatches via `NebulaAPI.APIServer`
+- `__nbapi_local_<name>` — private; the real implementation — **matching nodes
+  only** (on the other nodes the router never references it, so nothing is emitted)
+- `__nbapi_remote_<name>` — private; dispatches via `NebulaAPI.APIServer` (every node)
 - `<name>` — the public router that delegates to local or remote based on context
 
 **Return contract.** None of these wrap the body's value. The value of the `defapi`
@@ -211,10 +211,12 @@ call the router returns a list of `{node, value}` entries, with a failing node y
 ### Local function
 
 When the current node matches the selector, `build_local_function/3` emits the real
-body; otherwise it emits a stub that raises if called directly. The body's value is
-returned **as-is** — there is no wrapping. Anything that escapes the body is
-translated: a raised exception becomes `{:nebula_error, exception}`, a throw or exit
-becomes `{:nebula_error, {kind, reason}}` — the same shapes the worker produces for a
+body; on every other node it emits **nothing** — the router's default branch goes
+remote there, so no code references a local implementation (a raising stub would
+only exist to keep a dead reference compilable). The body's value is returned
+**as-is** — there is no wrapping. Anything that escapes the body is translated: a
+raised exception becomes `{:nebula_error, exception}`, a throw or exit becomes
+`{:nebula_error, {kind, reason}}` — the same shapes the worker produces for a
 remote call.
 
 ```elixir
@@ -233,16 +235,12 @@ catch
     {:nebula_error, {kind, reason}}
 end
 
-# is_local? = false (argument underscored: the stub never uses it)
-defp __nbapi_local_get(_id) do
-  raise "Method get is not available locally on node #{node()}"
-end
+# is_local? = false → no __nbapi_local_get at all
 ```
 
 Note that only the public router carries the defaults — the private helpers are
 always called with every argument, so they take plain parameters (a default there
-would trigger an "is never used" compiler warning in every consumer module), and
-the not-available-locally stub underscores its parameters (it only raises).
+would trigger an "is never used" compiler warning in every consumer module).
 
 ### Remote function
 
@@ -262,7 +260,10 @@ end
 ### Public router
 
 `build_public_function/2` is the function callers actually invoke. It reads the call
-context (set by `call_on_node`/`call_on_nodes`) and decides where to go:
+context (set by `call_on_node`/`call_on_nodes`) and decides where to go. `is_local?`
+is known at codegen time, so the default branch is emitted as a direct call — local
+on matching nodes, remote everywhere else — instead of a runtime check whose outcome
+is predetermined:
 
 ```elixir
 def get(id, nebula_routing_opts \\ []) do
@@ -281,12 +282,10 @@ def get(id, nebula_routing_opts \\ []) do
     nebula_routing_opts[:node_selector] || nebula_routing_opts[:multicast] ->
       __nbapi_remote_get(id, nebula_routing_opts)
 
-    # Default: local if compiled local, remote otherwise
-    is_local? ->
-      __nbapi_local_get(id)
-
+    # Default branch, chosen at codegen time:
     true ->
-      __nbapi_remote_get(id, nebula_routing_opts)
+      __nbapi_local_get(id)                       # on a matching node
+      # __nbapi_remote_get(id, nebula_routing_opts)  # everywhere else
   end
 end
 ```
@@ -363,7 +362,7 @@ end
 @nebula_local_api_methods []
 @nebula_remote_api_methods [{:get, 2}]
 
-# public router → remote (local stub raises if called directly)
+# public router → remote (no __nbapi_local_get is generated on this node)
 def get(id, opts \\ [], nebula_routing_opts \\ []) do
   # ...routes to __nbapi_remote_get
 end

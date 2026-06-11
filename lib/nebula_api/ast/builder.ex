@@ -2,16 +2,19 @@ defmodule NebulaAPI.AST.Builder do
   @moduledoc """
   AST builder for NebulaAPI functions.
 
-  For each `defapi`, generates 3 functions:
-  - `__nbapi_local_<name>` - Private function with the actual implementation (or stub if remote)
-  - `__nbapi_remote_<name>` - Private function that calls the remote method
+  For each `defapi`, generates:
+  - `__nbapi_local_<name>` - Private function with the actual implementation —
+    only on nodes where the method is local (no stub on the others: the router
+    never references it there)
+  - `__nbapi_remote_<name>` - Private function that calls the remote method (every node)
   - `<name>` - Public router function that delegates to local or remote based on context
   """
 
   @doc """
   Builds the local implementation function.
-  If `is_local` is true, generates the actual implementation.
-  If `is_local` is false, generates a stub that raises an error.
+  Only generated when `is_local` is true — on remote nodes the router's default
+  branch goes remote (see `build_public_function/2`), nothing references a local
+  implementation, so none is emitted.
   """
   def build_local_function(%{name: fn_name, args: fn_args}, fn_do, is_local) do
     local_fn_name = :"__nbapi_local_#{fn_name}"
@@ -38,10 +41,10 @@ defmodule NebulaAPI.AST.Builder do
         end
       end
     else
+      # Nothing: emitting a raising stub here would only exist to satisfy a
+      # router branch we KNOW is dead at codegen time — the router simply
+      # doesn't emit that branch on remote nodes.
       quote do
-        defp unquote(build_stub_function_signature(local_fn_name, fn_args)) do
-          raise "Method #{unquote(fn_name)} is not available locally on node #{node()}"
-        end
       end
     end
   end
@@ -92,6 +95,22 @@ defmodule NebulaAPI.AST.Builder do
     routing_opts_param = {:__inline, {:\\, [], [routing_opts_var, []]}}
     fn_args_with_routing_opts = fn_args ++ [routing_opts_param]
 
+    # Default behavior (no routing context, no routing opts): local if compiled
+    # local, remote otherwise. is_local is known at codegen time, so the router
+    # emits ONE default branch instead of a `cond` whose outcome is predetermined
+    # — no dead branch, and no raising __nbapi_local_* stub to keep a dead
+    # reference compilable on remote nodes.
+    default_call =
+      if is_local do
+        quote do
+          unquote(local_fn_name)(unquote_splicing(fn_arg_vars))
+        end
+      else
+        quote do
+          unquote(remote_fn_name)(unquote_splicing(fn_arg_vars), unquote(routing_opts_var))
+        end
+      end
+
     quote do
       def unquote(build_function_signature(fn_name, fn_args_with_routing_opts)) do
         # Check for call context from process dictionary (set by call_on_node/call_on_nodes)
@@ -117,12 +136,8 @@ defmodule NebulaAPI.AST.Builder do
           unquote(routing_opts_var)[:node_selector] || unquote(routing_opts_var)[:multicast] ->
             unquote(remote_fn_name)(unquote_splicing(fn_arg_vars), unquote(routing_opts_var))
 
-          # Default behavior: local if compiled local, remote otherwise
-          unquote(is_local) ->
-            unquote(local_fn_name)(unquote_splicing(fn_arg_vars))
-
           true ->
-            unquote(remote_fn_name)(unquote_splicing(fn_arg_vars), unquote(routing_opts_var))
+            unquote(default_call)
         end
       end
     end
@@ -148,29 +163,6 @@ defmodule NebulaAPI.AST.Builder do
   # function only.
   defp build_private_function_signature(fn_name, fn_args) do
     Macro.var(fn_name, nil) |> put_elem(2, fn_args_to_vars(fn_args))
-  end
-
-  # The not-available-locally stub never touches its arguments (it only raises),
-  # so they must be underscored or the compiler warns "variable is unused" in
-  # every consumer module with a remote-compiled defapi that has arguments.
-  defp build_stub_function_signature(fn_name, fn_args) do
-    Macro.var(fn_name, nil) |> put_elem(2, fn_args_to_ignored_vars(fn_args))
-  end
-
-  defp fn_args_to_ignored_vars(fn_args) do
-    fn_args
-    |> Enum.map(fn
-      {:__inline, arg} ->
-        quote do
-          unquote(arg)
-        end
-
-      {arg, _default} ->
-        Macro.var(:"_#{arg}", nil)
-
-      arg ->
-        Macro.var(:"_#{arg}", nil)
-    end)
   end
 
   defp fn_args_to_defaulted_vars(fn_args) do

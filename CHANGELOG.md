@@ -102,8 +102,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `defapi` no longer emits compiler warnings in consumer modules ("default values for
   the optional arguments ... are never used" on every defapi, "variable is unused" on
   remote-compiled defapis with arguments) — defaults now live only on the generated
-  public function and the not-available-locally stub underscores its parameters.
-  Consumers building with `warnings_as_errors` compile cleanly.
+  public function. Consumers building with `warnings_as_errors` compile cleanly.
+- The generated router no longer carries a branch whose outcome is known at codegen
+  time: its default branch is emitted directly as local (matching nodes) or remote
+  (everywhere else), and the raising `__nbapi_local_*` stub — which only existed to
+  keep that dead branch compilable on remote nodes — is not generated at all anymore.
 
 ### Documentation
 - Rewrote all return-value documentation for the transparent contract. Corrected the
