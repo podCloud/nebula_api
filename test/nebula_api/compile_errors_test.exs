@@ -162,7 +162,9 @@ defmodule NebulaAPI.CompileErrorsTest do
       end
       """
 
-      assert_raise CompileError, ~r/mutually exclusive/, fn ->
+      # Unicast rejects ANY predicate key — both keys or one, same refusal,
+      # with the message that explains the actual problem.
+      assert_raise CompileError, ~r/only apply to multicast/, fn ->
         Code.eval_string(code)
       end
     end
@@ -202,6 +204,86 @@ defmodule NebulaAPI.CompileErrorsTest do
       assert_raise CompileError, ~r/only apply to multicast/, fn ->
         Code.eval_string(code)
       end
+    end
+  end
+
+  describe "invalid selectors in call_on_* (M10)" do
+    setup do
+      Application.put_env(:nebula_api, :nodes, [{:test@host, [:db]}])
+      on_exit(fn -> Application.delete_env(:nebula_api, :nodes) end)
+      :ok
+    end
+
+    test "a typo'd node name in call_on_node raises a clear CompileError" do
+      code = """
+      defmodule NebulaAPI.CompileErrorsTest.TypoNode do
+        use NebulaAPI.AST
+
+        def go do
+          call_on_node @nonexistent do
+            :ok
+          end
+        end
+      end
+      """
+
+      assert_raise CompileError, ~r/unknown nodes/i, fn ->
+        Code.eval_string(code)
+      end
+    end
+
+    test "an unknown tag in call_on_nodes raises a clear CompileError" do
+      code = """
+      defmodule NebulaAPI.CompileErrorsTest.TypoTag do
+        use NebulaAPI.AST
+
+        def go do
+          call_on_nodes &nosuchtag do
+            :ok
+          end
+        end
+      end
+      """
+
+      assert_raise CompileError, ~r/unknown tags/i, fn ->
+        Code.eval_string(code)
+      end
+    end
+
+    test "a list of dynamic expressions is rejected at compile time (selectors are compile-time)" do
+      code = """
+      defmodule NebulaAPI.CompileErrorsTest.DynamicList do
+        use NebulaAPI.AST
+
+        def go(some_var) do
+          call_on_nodes [some_var] do
+            :ok
+          end
+        end
+      end
+      """
+
+      # Never worked: it used to fail with a runtime badfun. Node selectors have
+      # always been compile-time; a runtime selection goes through a function.
+      assert_raise CompileError, ~r/invalid nebula selector/i, fn ->
+        Code.eval_string(code)
+      end
+    end
+
+    test "a function selector still compiles and stays a runtime concern" do
+      code = """
+      defmodule NebulaAPI.CompileErrorsTest.FunSelector do
+        use NebulaAPI.AST
+
+        def go do
+          call_on_node fn nodes_info -> List.first(Map.keys(nodes_info)) end do
+            :ok
+          end
+        end
+      end
+      """
+
+      assert {_, _} = Code.eval_string(code)
     end
   end
 end

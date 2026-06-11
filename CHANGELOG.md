@@ -89,6 +89,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   crashes (a non-timeout task exit) — the faulty node is simply dropped.
 - Invalid `defapi` selectors and signatures, using `defapi` without `use NebulaAPI`, and
   malformed node tags now raise clear `CompileError`s instead of internal crashes.
+  The same now holds for `call_on_node` / `call_on_nodes` nebula selectors: a typo'd
+  node or unknown tag fails the build at the call site instead of melting into a
+  runtime `{:nebula_error, {:selector_failed, ...}}`. Node selectors are compile-time
+  by design — runtime selection goes through a function selector.
 - `mix docs` (and therefore `mix hex.publish`) no longer fails — the `docs` extras point at
   files that exist.
 - `defapi` no longer emits compiler warnings in consumer modules ("default values for

@@ -195,8 +195,9 @@ defmodule NebulaAPI.AST do
   end
 
   defp do_call_on_node(selector_or_nebula_ast, opts, block, caller) do
-    validate_static_predicate_opts!(opts, caller)
-
+    # No validate_static_predicate_opts! here: this broader check subsumes it
+    # (ANY predicate key is rejected on unicast), with the message that actually
+    # explains the problem.
     if Keyword.keyword?(opts) and
          (Keyword.has_key?(opts, :success) or Keyword.has_key?(opts, :failure)) do
       raise CompileError,
@@ -363,49 +364,48 @@ defmodule NebulaAPI.AST do
     end
   end
 
-  # Build a selector function from either a Nebula AST expression or a function
-  defp build_selector(selector_or_nebula_ast, mode, _caller) do
-    # Check if it looks like a Nebula AST (starts with @, &, !, or is a list)
+  # Build a selector function from either a Nebula AST expression or a function.
+  # The is_nebula_ast? guard already disambiguates: @/&/!/list/:* shapes are
+  # nebula selectors (a function never has these shapes), so any parse or
+  # validation failure behind it IS an invalid selector — fail at compile time,
+  # at the call site. Node selectors are compile-time by design; runtime
+  # selection goes through a function selector.
+  defp build_selector(selector_or_nebula_ast, mode, caller) do
     if is_nebula_ast?(selector_or_nebula_ast) do
-      # Parse the Nebula AST at compile time to get the target nodes
       target_nodes =
         try do
           get_execution_nodes_from_nebula_ast!(selector_or_nebula_ast)
         rescue
-          _ -> nil
+          e in CompileError ->
+            reraise %{e | line: caller.line, file: caller.file}, __STACKTRACE__
         end
 
-      if target_nodes do
-        target_node_names = Keyword.keys(target_nodes)
+      target_node_names = Keyword.keys(target_nodes)
 
-        case mode do
-          :unicast ->
-            # For unicast, pick the first matching node
-            quote do
-              fn nodes_info ->
-                target_nodes = unquote(target_node_names)
+      case mode do
+        :unicast ->
+          # For unicast, pick the first matching node
+          quote do
+            fn nodes_info ->
+              target_nodes = unquote(target_node_names)
 
-                nodes_info
-                |> Map.keys()
-                |> Enum.find(fn node -> node in target_nodes end)
-              end
+              nodes_info
+              |> Map.keys()
+              |> Enum.find(fn node -> node in target_nodes end)
             end
+          end
 
-          :multicast ->
-            # For multicast, return all matching nodes
-            quote do
-              fn nodes_info ->
-                target_nodes = unquote(target_node_names)
+        :multicast ->
+          # For multicast, return all matching nodes
+          quote do
+            fn nodes_info ->
+              target_nodes = unquote(target_node_names)
 
-                nodes_info
-                |> Map.keys()
-                |> Enum.filter(fn node -> node in target_nodes end)
-              end
+              nodes_info
+              |> Map.keys()
+              |> Enum.filter(fn node -> node in target_nodes end)
             end
-        end
-      else
-        # If parsing fails, treat as a function
-        selector_or_nebula_ast
+          end
       end
     else
       # It's a function, use it directly
