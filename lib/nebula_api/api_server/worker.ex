@@ -74,6 +74,27 @@ defmodule NebulaAPI.APIServer.Worker do
     end
   end
 
+  # Same rationale as the handle_call catch-all above: workers are registered
+  # under the consumer module's name, so stray messages happen. Defining our
+  # own handle_info({:DOWN, ...}) clause REPLACED the permissive default that
+  # `use GenServer` injects — without this catch-all, one stray send means a
+  # FunctionClauseError and the pending queue dies with the worker.
+  def handle_info(other, state) do
+    Logger.warning(
+      "#{inspect(state.module)} worker ignored unexpected message: #{inspect(other)}"
+    )
+
+    {:noreply, state}
+  end
+
+  # No handle_cast was defined at all, so the `use GenServer` default applied —
+  # and that default RAISES. Same blast radius as a stray info message.
+  def handle_cast(other, state) do
+    Logger.warning("#{inspect(state.module)} worker ignored unexpected cast: #{inspect(other)}")
+
+    {:noreply, state}
+  end
+
   defp slot_free?(%{max: :infinity}), do: true
   defp slot_free?(%{max: max, in_flight: in_flight}), do: in_flight < max
 

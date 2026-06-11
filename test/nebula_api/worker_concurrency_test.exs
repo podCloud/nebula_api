@@ -136,4 +136,27 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
 
     GenServer.stop(worker)
   end
+
+  test "a stray info message does not kill the worker" do
+    {:ok, worker} = Worker.start_link(SerialMod)
+
+    send(worker, :garbage_info)
+
+    # The worker (and its queue bookkeeping) survived: real calls still work.
+    assert GenServer.call(worker, {:nebula_call, {:ping, self()}}, 1_000) == :pong
+    assert_receive :executed
+
+    GenServer.stop(worker)
+  end
+
+  test "a stray cast does not kill the worker" do
+    {:ok, worker} = Worker.start_link(SerialMod)
+
+    GenServer.cast(worker, :garbage_cast)
+
+    assert GenServer.call(worker, {:nebula_call, {:ping, self()}}, 1_000) == :pong
+    assert_receive :executed
+
+    GenServer.stop(worker)
+  end
 end

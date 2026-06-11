@@ -78,7 +78,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deadlocks (except under `max_concurrent_calls: 1`, where a re-entrant call into the same
   module waits out its own timeout — the slot is held by its parent).
 - An unknown method, a malformed call, or a raising body returns `{:nebula_error, ...}`
-  instead of crashing the worker.
+  instead of crashing the worker. Stray info messages and casts are likewise logged and
+  ignored — the worker (and its pending queue) survives anything that reaches its
+  registered name.
 - `build_nodes_info` no longer aborts the whole snapshot when one node's health collection
   crashes (a non-timeout task exit) — the faulty node is simply dropped.
 - Invalid `defapi` selectors and signatures, using `defapi` without `use NebulaAPI`, and
