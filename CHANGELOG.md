@@ -75,7 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   results, marking unanswered nodes `{node, {:nebula_error, :timeout}}`.
 - Workers are non-blocking: each call runs in a supervised task and replies asynchronously,
   so a slow method no longer serializes a module's whole API and a re-entrant call no longer
-  deadlocks.
+  deadlocks (except under `max_concurrent_calls: 1`, where a re-entrant call into the same
+  module waits out its own timeout — the slot is held by its parent).
 - An unknown method, a malformed call, or a raising body returns `{:nebula_error, ...}`
   instead of crashing the worker.
 - `build_nodes_info` no longer aborts the whole snapshot when one node's health collection

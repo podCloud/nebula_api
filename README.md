@@ -545,7 +545,10 @@ disconnected — the entry is purged without executing. The limit is per module
 cluster-wide. Likewise, `max_concurrent_calls: 1` gives strict serialization
 **on each node**, not across the cluster: with 3 nodes serving the module, up
 to 3 calls still run at the same time, one per node. For cluster-wide mutual
-exclusion you need your own coordination (e.g. `:global.trans`).
+exclusion you need your own coordination (e.g. `:global.trans`). One caveat:
+under `max_concurrent_calls: 1`, a body that re-enters the same module holds
+the only slot while waiting for itself — the re-entrant call waits in line
+until its own timeout, then fails `{:nebula_error, :timeout}`.
 
 ### Timeouts
 
@@ -799,7 +802,17 @@ config :nebula_api,
 
   # Optional: override node identity for dev/test.
   # In production, compile with: elixir --name node@host -S mix compile
-  default_opts: [self_node: :"api@api.example"]
+  # Also accepts inherited defaults for every `use NebulaAPI` module:
+  # max_concurrent_calls: and default_timeout:.
+  default_opts: [self_node: :"api@api.example"],
+
+  # Optional: global default timeout (ms) for remote calls.
+  # Per call timeout: > per module default_timeout: > this > 5000.
+  default_timeout: 5_000,
+
+  # Optional: how often (ms) each node's background NodesInfoCache rebuilds
+  # the node-info snapshot served to selector functions.
+  nodes_info_refresh_interval: 5_000
 ```
 
 ## Architecture
