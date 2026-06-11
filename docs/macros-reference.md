@@ -267,6 +267,10 @@ a success). Either way, a `{:nebula_error, _}` result is **never** a success reg
 the predicate — the predicate only ever runs against the body's own value, so library and
 transport failures can never be mistaken for a healthy reply.
 
+A buggy predicate is contained like a buggy body: a raise, throw or exit inside it makes
+the whole call return `{:nebula_error, exception}` / `{:nebula_error, {kind, reason}}` —
+it never crashes the caller.
+
 Both options are **only meaningful with `:first` or `:quorum`**. Passing either on a unicast
 call or with `strategy: :all` raises an `ArgumentError` up front — they would otherwise be
 silently ignored. `call_on_node` also rejects them at compile time.

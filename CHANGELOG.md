@@ -42,7 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fn value -> boolean` defining what counts as a business success. Default: any worker that
   responded. Example: `success: &match?({:ok, _}, &1)`. Passing either option outside
   `:first`/`:quorum` (unicast, `strategy: :all`) raises an `ArgumentError` up front;
-  `call_on_node` also rejects them at compile time.
+  `call_on_node` also rejects them at compile time. A predicate that raises, throws or
+  exits is contained like a body would be: the call returns `{:nebula_error, exception}`
+  / `{:nebula_error, {kind, reason}}` — it never crashes the caller.
 - `at_least:` option on `call_on_nodes` (`:quorum`): the number of successes required,
   as a positive integer — an absolute durability floor ("at least 2 nodes hold this
   write"), legitimately below majority. Without it the quorum defaults to a strict

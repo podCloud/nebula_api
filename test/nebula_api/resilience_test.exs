@@ -448,6 +448,64 @@ defmodule NebulaAPI.ResilienceTest do
       GenServer.stop(pid)
     end
 
+    test "a throwing predicate reports {:nebula_error, {:throw, _}}, like a throwing body" do
+      pid = start_fake(PredThrowMod, :work, 0, 0, {:ok, :good})
+
+      result =
+        APIServer.call_remote_method(
+          PredThrowMod,
+          {:work},
+          multicast: true,
+          strategy: :first,
+          timeout: 500,
+          success: fn _value -> throw(:predicate_ball) end
+        )
+
+      # A predicate bug is the lib's to report, whatever its escape kind:
+      # raise, throw and exit all land on the :nebula_error channel — a throw
+      # must not cross call_remote_method as an uncaught nocatch.
+      assert result == {:nebula_error, {:throw, :predicate_ball}}
+
+      # The caller's mailbox must stay clean even on this failure path.
+      Process.sleep(100)
+      {:messages, msgs} = Process.info(self(), :messages)
+
+      refute Enum.any?(msgs, fn
+               {ref, _} when is_reference(ref) -> true
+               _ -> false
+             end)
+
+      GenServer.stop(pid)
+    end
+
+    test "an exiting predicate (:quorum) reports {:nebula_error, {:exit, _}}" do
+      pid = start_fake(PredExitQuorumMod, :work, 0, 0, {:ok, :good})
+
+      result =
+        APIServer.call_remote_method(
+          PredExitQuorumMod,
+          {:work},
+          multicast: true,
+          strategy: :quorum,
+          at_least: 1,
+          timeout: 500,
+          success: fn _value -> exit(:predicate_bye) end
+        )
+
+      assert result == {:nebula_error, {:exit, :predicate_bye}}
+
+      # The caller's mailbox must stay clean even on this failure path.
+      Process.sleep(100)
+      {:messages, msgs} = Process.info(self(), :messages)
+
+      refute Enum.any?(msgs, fn
+               {ref, _} when is_reference(ref) -> true
+               _ -> false
+             end)
+
+      GenServer.stop(pid)
+    end
+
     test "success: on a unicast call raises ArgumentError (it would be silently ignored)" do
       pid = start_fake(PredUnicastMod, :work, 0, 0, {:ok, :good})
 

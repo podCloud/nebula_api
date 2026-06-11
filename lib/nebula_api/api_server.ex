@@ -180,6 +180,21 @@ defmodule NebulaAPI.APIServer do
         """)
 
         {:nebula_error, err}
+    catch
+      # User code on the routing path (a success:/failure: predicate runs in
+      # the calling process) may throw or exit, not just raise — all three
+      # escape kinds land on the :nebula_error channel, the same shapes a
+      # body produces, instead of crashing the caller with a nocatch.
+      kind, reason ->
+        Logger.error("""
+        Remote method call failed:
+          module: #{inspect(module)}
+          fn_call: #{inspect(fn_call)}
+          opts: #{inspect(opts)}
+          #{inspect(kind)}: #{inspect(reason)}
+        """)
+
+        {:nebula_error, {kind, reason}}
     end
   end
 
@@ -498,6 +513,7 @@ defmodule NebulaAPI.APIServer do
   # `use NebulaAPI` — a function head on a literal, no attribute scan on this
   # hot path), then the global config :nebula_api, default_timeout (5000 by
   # default).
+  #
   @doc false
   def resolve_timeout(module, opts) do
     opts[:timeout] || module_default_timeout(module) || NebulaAPI.Config.default_timeout()
