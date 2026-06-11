@@ -122,4 +122,18 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
 
     GenServer.stop(worker)
   end
+
+  test "an unexpected call message gets {:nebula_error, _} and the worker survives" do
+    {:ok, worker} = Worker.start_link(SerialMod)
+
+    assert {:nebula_error, {:unexpected_message, :ping}} =
+             GenServer.call(worker, :ping, 1_000)
+
+    # The worker (and its queue bookkeeping) survived: real calls still work.
+    assert Process.alive?(worker)
+    assert GenServer.call(worker, {:nebula_call, {:ping, self()}}, 1_000) == :pong
+    assert_receive :executed
+
+    GenServer.stop(worker)
+  end
 end

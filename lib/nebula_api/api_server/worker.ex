@@ -50,6 +50,14 @@ defmodule NebulaAPI.APIServer.Worker do
     end
   end
 
+  # Workers are registered under the consumer module's own name: anything can
+  # reach them by accident. An unexpected call must not crash the worker — its
+  # death would take the pending queue down with it, turning one stray message
+  # into a timeout for every queued caller.
+  def handle_call(other, _from, state) do
+    {:reply, {:nebula_error, {:unexpected_message, other}}, state}
+  end
+
   # Two monitor families: a ref in state.tasks is a running call (its DOWN frees
   # a slot, reply or crash); any other ref is a queued caller that died — purge
   # its entry without executing, nobody awaits it anymore.
@@ -133,6 +141,7 @@ defmodule NebulaAPI.APIServer.Worker do
       {:nebula_error, e}
   catch
     kind, reason ->
+      Logger.error("Local call #{inspect(kind)}: #{inspect(reason)}")
       {:nebula_error, {kind, reason}}
   end
 end
