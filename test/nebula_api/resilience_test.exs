@@ -590,4 +590,42 @@ defmodule NebulaAPI.ResilienceTest do
       end
     end
   end
+
+  describe "selectors see pg-registered nodes not yet in the snapshot (M9)" do
+    test "a worker node missing from the snapshot is offered to the selector, runtime: nil" do
+      # Snapshot deliberately EMPTY: simulates the window between a node joining
+      # (pg knows its worker) and the next NodesInfoCache refresh.
+      :ets.insert(
+        :nebula_nodes_cache,
+        {:__nodes_info_snapshot__, %{data: %{}, updated_at: 0}}
+      )
+
+      on_exit(fn -> :ets.delete(:nebula_nodes_cache, :__nodes_info_snapshot__) end)
+
+      pid = start_fake(PgFirstMod, :work, 0, 0, :reached)
+      parent = self()
+
+      result =
+        APIServer.call_remote_method(
+          PgFirstMod,
+          {:work},
+          node_selector: fn nodes_info ->
+            send(parent, {:seen, nodes_info})
+            List.first(Map.keys(nodes_info))
+          end,
+          timeout: 500
+        )
+
+      assert result == :reached
+
+      assert_receive {:seen, nodes_info}
+      this = node()
+      assert %{^this => info} = nodes_info
+      assert info.long_name == this
+      assert info.runtime == nil
+      assert info.last_seen_at == nil
+
+      GenServer.stop(pid)
+    end
+  end
 end

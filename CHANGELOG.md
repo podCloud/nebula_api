@@ -59,6 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call — for a write quorum, no partial non-quorate write is even attempted.
 - `:quorum` with zero available workers no longer returns `[]` (an empty-list pseudo-success);
   it returns `{:nebula_error, :quorum_unreachable, %{workers: 0, required: m}}`.
+- Selectors now see every node with a registered worker, snapshot or not: pg decides WHO
+  serves a method, the node-info snapshot only enriches HOW. A node whose worker just
+  registered (not in the snapshot yet) gets a synthesized entry — name/host/config
+  tags/connected derived locally, `runtime`/`last_seen_at` `nil` until the next refresh.
+  Previously such a node was invisible to selectors (and to `call_on_all_nodes`) for up
+  to `nodes_info_refresh_interval`.
 - Unicast calls no longer crash the caller when a worker times out or is dead — the
   `GenServer.call` exit is caught and returned as `{:nebula_error, reason}`, with the late
   reply confined to a throwaway task (no stray messages reach the caller).

@@ -436,6 +436,12 @@ receive live runtime data about every node:
 }
 ```
 
+Every node with a registered worker is offered to the selector — even one that
+just joined and is not in the background node-info snapshot yet. Such a node
+appears with `runtime: nil` and `last_seen_at: nil` until the next refresh, so
+selectors that read `info.runtime` must filter on it first (as the examples
+below do).
+
 ```elixir
 # Route to the node with the most headroom
 call_on_node fn nodes_info ->

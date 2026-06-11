@@ -197,7 +197,9 @@ end
 | `:quorum` | wait for N **successes**; early-exit if it can no longer be reached |
 
 A selector function receives the live `nodes_info` map (see below) and returns the list of
-target nodes.
+target nodes. Every node with a registered worker is included — a node not yet in the
+background snapshot appears with `runtime: nil` / `last_seen_at: nil` until the next
+refresh, so filter on `info.runtime` before reading through it.
 
 ### Return values
 

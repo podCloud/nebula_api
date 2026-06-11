@@ -392,27 +392,28 @@ defmodule NebulaAPI.APIServer do
           {node_name, "unknown"}
       end
 
-    # Find this node's tags from config
-    tags =
-      NebulaAPI.Config.nodes()
-      |> Enum.find_value(fn {n, t} ->
-        if n == node_name do
-          case t do
-            t when is_list(t) -> t
-            t when is_atom(t) -> [t]
-            _ -> []
-          end
-        end
-      end) || []
-
     %{
       short_name: short_name,
       long_name: node_name,
       host: host,
-      tags: tags,
+      tags: tags_for_node(node_name),
       connected: true,
       runtime: collect_runtime_info()
     }
+  end
+
+  # A node's tags from the static config, normalized to a list.
+  defp tags_for_node(node_name) do
+    NebulaAPI.Config.nodes()
+    |> Enum.find_value(fn {n, t} ->
+      if n == node_name do
+        case t do
+          t when is_list(t) -> t
+          t when is_atom(t) -> [t]
+          _ -> []
+        end
+      end
+    end) || []
   end
 
   @doc """
@@ -464,21 +465,24 @@ defmodule NebulaAPI.APIServer do
   @doc """
   Gets nodes_info for workers that are actually available for a method.
   Only includes nodes that have registered workers.
+
+  pg is the source of truth for WHO serves the method; the snapshot only
+  enriches HOW they're doing. A node whose worker just registered but is not
+  in the background snapshot yet gets a synthesized entry (`runtime: nil`,
+  `last_seen_at: nil` until the next refresh).
   """
   def get_available_nodes_info(module, fn_call) do
     workers = get_all_workers(module, fn_call)
-    all_nodes_info = get_nodes_info()
+    snapshot = get_nodes_info()
 
-    # Get the nodes that have workers
     worker_nodes =
       workers
       |> Enum.map(&node/1)
       |> Enum.uniq()
 
-    # Filter nodes_info to only include nodes with workers
-    all_nodes_info
-    |> Enum.filter(fn {node_name, _info} -> node_name in worker_nodes end)
-    |> Map.new()
+    Map.new(worker_nodes, fn node_name ->
+      {node_name, Map.get(snapshot, node_name) || synthesize_node_info(node_name)}
+    end)
   end
 
   # Timeout precedence: the call's timeout: option, then the module's
@@ -626,12 +630,39 @@ defmodule NebulaAPI.APIServer do
     end
   end
 
+  # pg is the source of truth for WHO serves the method; the snapshot only
+  # enriches HOW they're doing. A node whose worker just registered must be
+  # visible to selectors immediately, not after the next background refresh.
   defp filter_nodes_info_for_workers(workers_by_node) do
-    worker_nodes = Map.keys(workers_by_node)
+    snapshot = get_nodes_info()
 
-    get_nodes_info()
-    |> Enum.filter(fn {node_name, _info} -> node_name in worker_nodes end)
-    |> Map.new()
+    Map.new(Map.keys(workers_by_node), fn node_name ->
+      {node_name, Map.get(snapshot, node_name) || synthesize_node_info(node_name)}
+    end)
+  end
+
+  # Entry for a pg-registered node not (yet) in the snapshot: everything
+  # derivable locally is filled in; only runtime/last_seen_at need the next
+  # background refresh. Selectors must therefore treat info.runtime as nilable
+  # (the documented examples already filter on it).
+  defp synthesize_node_info(node_name) do
+    node_str = to_string(node_name)
+
+    {short_name, host} =
+      case String.split(node_str, "@", parts: 2) do
+        [s, h] -> {String.to_atom(s), h}
+        _ -> {node_name, "unknown"}
+      end
+
+    %{
+      short_name: short_name,
+      long_name: node_name,
+      host: host,
+      tags: tags_for_node(node_name),
+      connected: node_name in [node() | Node.list()],
+      last_seen_at: nil,
+      runtime: nil
+    }
   end
 
   defp safe_call_selector(selector_fn, nodes_info) do
