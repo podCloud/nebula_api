@@ -478,7 +478,7 @@ defmodule NebulaAPI.AST do
   end
 
   defp validate_unknown_keys!(keys, allowed, macro_label, caller) do
-    case keys -- @multicast_block_opts do
+    case keys -- allowed do
       [] ->
         :ok
 
