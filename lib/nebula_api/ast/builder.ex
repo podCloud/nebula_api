@@ -133,13 +133,27 @@ defmodule NebulaAPI.AST.Builder do
         merged_opts = Keyword.merge(context_opts, unquote(routing_opts_var))
 
         cond do
-          # Inside a call_on_node/call_on_nodes block. The MODE is the context
-          # signal, not the selector: a dynamic selector expression may evaluate
-          # to nil at runtime, and that means "no restriction" (unicast: first
-          # available worker; multicast: every node serving the method) — the
-          # block's opts must still apply. Keying on the selector silently
-          # dropped them and degraded a multicast block to default unicast.
-          not is_nil(context_mode) ->
+          # Explicit routing on the call itself: the INNERMOST explicit routing
+          # wins. Like an inner block replaces the outer one, a call carrying
+          # its own truthy node_selector:/multicast: routes itself — even
+          # inside a call_on_* block, whose routing AND opts are ignored for
+          # this call (merging the block's opts into the escape would poison
+          # it: a block strategy: inherited by a now-unicast call would raise).
+          unquote(routing_opts_var)[:node_selector] || unquote(routing_opts_var)[:multicast] ->
+            unquote(remote_fn_name)(unquote_splicing(fn_arg_vars), unquote(routing_opts_var))
+
+          # Inside a call_on_node/call_on_nodes block, and the call carries no
+          # routing key of its own. The MODE is the context signal, not the
+          # selector: a dynamic selector expression may evaluate to nil at
+          # runtime, and that means "no restriction" (unicast: first available
+          # worker; multicast: every node serving the method) — the block's
+          # opts must still apply. A routing key PRESENT but nil/false on the
+          # call is the opposite: it opts this call out of the block, down to
+          # the default branch — inside a block, an explicit nil opts out of
+          # the block's default back to the lib's default.
+          not is_nil(context_mode) and
+            not Keyword.has_key?(unquote(routing_opts_var), :node_selector) and
+              not Keyword.has_key?(unquote(routing_opts_var), :multicast) ->
             unquote(remote_fn_name)(
               unquote_splicing(fn_arg_vars),
               Keyword.merge(merged_opts,
@@ -147,10 +161,6 @@ defmodule NebulaAPI.AST.Builder do
                 multicast: context_mode == :multicast
               )
             )
-
-          # If routing opts explicitly contain node_selector or multicast
-          unquote(routing_opts_var)[:node_selector] || unquote(routing_opts_var)[:multicast] ->
-            unquote(remote_fn_name)(unquote_splicing(fn_arg_vars), unquote(routing_opts_var))
 
           true ->
             unquote(default_call)

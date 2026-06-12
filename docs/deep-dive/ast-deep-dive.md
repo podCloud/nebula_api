@@ -273,14 +273,21 @@ def get(id, nebula_routing_opts \\ []) do
   merged_opts = Keyword.merge(context_opts, nebula_routing_opts)
 
   cond do
-    # Inside a call_on_node / call_on_nodes block → remote
-    not is_nil(context_selector) ->
-      __nbapi_remote_get(id, Keyword.merge(merged_opts,
-        node_selector: context_selector, multicast: context_mode == :multicast))
-
-    # Explicit :node_selector / :multicast opts → remote
+    # Truthy :node_selector / :multicast opts on the call → remote.
+    # The innermost explicit routing wins, even inside a call_on_* block:
+    # the call routes itself, the block's routing and opts are ignored.
     nebula_routing_opts[:node_selector] || nebula_routing_opts[:multicast] ->
       __nbapi_remote_get(id, nebula_routing_opts)
+
+    # Inside a call_on_node / call_on_nodes block (the MODE is the signal —
+    # a selector expression may evaluate to nil, meaning "no restriction"),
+    # and the call carries no routing key of its own. A routing key present
+    # but nil/false opts the call out of the block, down to the default.
+    not is_nil(context_mode) and
+      not Keyword.has_key?(nebula_routing_opts, :node_selector) and
+        not Keyword.has_key?(nebula_routing_opts, :multicast) ->
+      __nbapi_remote_get(id, Keyword.merge(merged_opts,
+        node_selector: context_selector, multicast: context_mode == :multicast))
 
     # Default branch, chosen at codegen time:
     true ->

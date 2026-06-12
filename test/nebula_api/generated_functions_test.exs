@@ -153,6 +153,34 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
           Task.async(fn -> LocalOptsMod.echo(4) end) |> Task.await()
         end
       end
+
+      # Trailing routing opts on a call INSIDE a block: the innermost explicit
+      # routing wins (a truthy node_selector:/multicast: routes the call
+      # itself, block routing AND opts ignored), and a routing key set to nil
+      # opts the call out of the block, back to the default branch.
+      def block_call_overrides do
+        call_on_nodes strategy: :quorum, at_least: 2, timeout: 100 do
+          LocalOptsMod.echo(7, node_selector: fn _nodes_info -> :"phantom@host" end)
+        end
+      end
+
+      def block_call_multicast_escape do
+        call_on_node fn _nodes_info -> node() end, timeout: 100 do
+          LocalOptsMod.echo(10, multicast: true, strategy: :all, timeout: 100)
+        end
+      end
+
+      def block_call_cancels do
+        call_on_node fn _nodes_info -> node() end, timeout: 100 do
+          LocalOptsMod.echo(8, node_selector: nil)
+        end
+      end
+
+      def block_call_multicast_cancel do
+        call_on_nodes strategy: :all, timeout: 100 do
+          LocalOptsMod.echo(12, multicast: false)
+        end
+      end
     end
     """)
 
@@ -393,6 +421,44 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
       # quorum block silently does not apply. Wrap the call_on_* inside the
       # task when that is what you mean.
       assert CtxCaller.spawned_task_escapes_block() == 4
+    end
+  end
+
+  describe "trailing routing opts on a call inside a block (innermost routing wins)" do
+    alias NebulaAPI.GeneratedFunctionsTest.CtxCaller
+    alias NebulaAPI.GeneratedFunctionsTest.LocalOptsMod
+
+    test "an explicit node_selector: on the call wins over the block, full escape" do
+      # Three candidate behaviors, three distinct shapes: the old block-wins
+      # gives {:nebula_error, :quorum_unreachable, _}; an escape that inherited
+      # the block's opts would raise (strategy: :quorum on a unicast call);
+      # the full escape routes through the call's own selector.
+      assert {:nebula_error, {:no_worker_on_node, :phantom@host}} =
+               CtxCaller.block_call_overrides()
+    end
+
+    test "multicast: true on the call escapes a unicast block" do
+      # Block path would give {:no_worker_on_node, node()}; default local
+      # would give 10; the call's own :all multicast with zero serving
+      # workers gives [].
+      assert CtxCaller.block_call_multicast_escape() == []
+    end
+
+    test "node_selector: nil on the call opts out of the block, back to default routing" do
+      # echo/1 is compiled local with no worker: the block's fn selector would
+      # yield {:no_worker_on_node, node()}; getting the value back proves the
+      # call fell through to the DEFAULT branch (local), not to the transport.
+      assert CtxCaller.block_call_cancels() == 8
+    end
+
+    test "multicast: false on the call opts out of a multicast block (plain default call)" do
+      # The block's :all multicast with zero serving workers would give [];
+      # the value back means the call ran as a plain default (local) call.
+      assert CtxCaller.block_call_multicast_cancel() == 12
+    end
+
+    test "outside a block, node_selector: nil still means 'not set' (default local routing)" do
+      assert LocalOptsMod.echo(11, node_selector: nil) == 11
     end
   end
 

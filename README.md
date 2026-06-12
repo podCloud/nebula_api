@@ -281,9 +281,12 @@ other `&db` nodes remotely for quorum writes, load distribution, etc.
 The need is asymmetric: a local node may still call out, but a remote
 node never needs a local implementation — so none is emitted.
 
-The public router decides where to dispatch:
-- Inside a `call_on_node`/`call_on_nodes` block → always remote
-- With explicit `:node_selector` or `:multicast` opts → always remote
+The public router decides where to dispatch — the innermost explicit routing
+wins:
+- Truthy `:node_selector` / `:multicast` opts on the call → always remote,
+  even inside a `call_on_*` block (the call routes itself; a routing key set
+  to `nil`/`false` instead opts the call out of the block, back to the default)
+- Inside a `call_on_node`/`call_on_nodes` block → remote
 - Default → local on matching nodes, remote everywhere else (decided at
   compile time, like everything else)
 

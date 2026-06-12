@@ -173,6 +173,12 @@ defmodule NebulaAPI.AST do
   *function* that returns `nil` means "nothing matched" — the call fails with
   `{:nebula_error, {:no_worker_on_node, nil}}`, it never widens the target.
 
+  Inside the block, the innermost explicit routing wins: a call carrying its
+  own truthy `node_selector:`/`multicast:` trailing opts routes itself (the
+  block's routing and options are ignored for that call), and a routing key
+  explicitly set to `nil` opts the call out of the block, back to default
+  routing.
+
   ## Examples
 
       # With Nebula expression
@@ -279,6 +285,13 @@ defmodule NebulaAPI.AST do
   "nothing matched" — zero calls are made (`:all` returns `[]`, `:first`
   returns `{:nebula_error, :no_success, []}`, `:quorum` fails
   `:quorum_unreachable`); it never widens the target.
+
+  Inside the block, the innermost explicit routing wins: a call carrying its
+  own truthy `node_selector:`/`multicast:` trailing opts routes itself (the
+  block's routing and options are ignored for that call), and a routing key
+  explicitly set to `nil` or `false` opts the call out of the block, back to
+  default routing — `MyMod.f(x, multicast: false)` inside a multicast block
+  is a plain default call.
 
   ## Examples
 

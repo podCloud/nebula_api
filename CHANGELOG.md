@@ -133,6 +133,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   context was silently skipped, dropping `timeout:`/`strategy:`/`at_least:` and degrading
   a multicast block to a default unicast call. A selector **function** returning `nil`
   keeps its meaning: "nothing matched", zero calls — a no-match never widens the target.
+- Inside a `call_on_*` block, the innermost explicit routing now wins: a call carrying
+  its own truthy `node_selector:`/`multicast:` trailing opts routes itself (the block's
+  routing and options are ignored for that call, like an inner block replaces the outer
+  one) instead of being silently overwritten by the block. A routing key explicitly set
+  to `nil` (or `multicast: false`) opts the call out of the block, back to default
+  routing — `MyMod.f(x, multicast: false)` inside a multicast block is a plain default
+  call. General rule inside a block: the block's opts are defaults, the call's own opts
+  override them, an explicit `nil` opts out of the block's default back to the lib's.
 - Routing opts are now validated on locally-resolved calls too: an invalid opt
   (`timeout: :infinity`, `strategy:`/`success:`/`failure:` without `multicast:`)
   raises `ArgumentError` identically on every node, instead of being silently

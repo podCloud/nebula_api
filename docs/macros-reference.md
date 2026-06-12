@@ -356,7 +356,7 @@ end
 
 ## Nesting and process scope
 
-The `call_on_*` blocks set a routing context that the generated functions read. Three
+The `call_on_*` blocks set a routing context that the generated functions read. Four
 rules govern how far it reaches:
 
 **Nested blocks replace, then restore.** An inner `call_on_*` block replaces the whole
@@ -364,6 +364,25 @@ context — selector, mode *and options*. There is no merge: an outer `timeout: 
 does **not** apply inside an inner block that doesn't repeat it. On exit (normal or via
 an exception) the outer block's context takes back over, and after the outermost block
 no context remains.
+
+**A call's own routing opts win over the block.** The innermost explicit routing
+wins: a call inside a block that carries its own truthy `node_selector:`/`multicast:`
+trailing opts routes itself, exactly as it would outside the block — the block's
+routing *and options* are ignored for that call. A routing key explicitly set to
+`nil` (or `multicast: false`) opts the call out of the block, back to **default**
+routing (local on a serving node, remote otherwise):
+
+```elixir
+call_on_nodes &worker, strategy: :all do
+  MyApp.Jobs.broadcast()                      # fans out per the block
+  MyApp.Local.bookkeep(x, multicast: false)   # plain default call — escapes the block
+end
+```
+
+For the other opts the same logic reads as: the block's opts are defaults, the
+call's own trailing opts override them, and an explicit `nil` opts out of the
+block's default back to the lib's own default (a `timeout: nil` on the call
+resolves to the module/global default, not to the block's `timeout:`).
 
 **The context is per process.** It lives in the process dictionary of the process
 running the block, so it does not follow a spawn: a `Task.async`/`spawn` started inside
