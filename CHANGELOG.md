@@ -139,6 +139,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   behave differently depending on where it ran.
 - Invalid `defapi` selectors and signatures, using `defapi` without `use NebulaAPI`, and
   malformed node tags now raise clear `CompileError`s instead of internal crashes.
+  Literal atoms in a `defapi` signature are rejected like every other pattern — they
+  used to slip through and compile into a single-clause router whose misses crashed the
+  caller with a `FunctionClauseError`.
   The same now holds for `call_on_node` / `call_on_nodes` nebula selectors: a typo'd
   node or unknown tag fails the build at the call site instead of melting into a
   runtime `{:nebula_error, {:selector_failed, ...}}`. Node selectors are compile-time

@@ -34,6 +34,16 @@ defmodule NebulaAPI.CompileErrorsTest do
         Parser.parse_fundef_ast(ast("get([h | t])"))
       end
     end
+
+    test "a literal-atom argument raises a clear CompileError too" do
+      # An atom is a pattern match like any other literal: it used to slip
+      # through and compile into `def get(:fixed, opts \\\\ [])` — a router
+      # whose misses crash the caller with a FunctionClauseError, while the
+      # error message claimed patterns were rejected.
+      assert_raise CompileError, ~r/defapi.*argument/i, fn ->
+        Parser.parse_fundef_ast(ast("get(:fixed)"))
+      end
+    end
   end
 
   describe "invalid node tags in config (L5)" do

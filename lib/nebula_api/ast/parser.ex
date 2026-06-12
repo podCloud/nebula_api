@@ -101,15 +101,18 @@ defmodule NebulaAPI.AST.Parser do
         args_count: 0
       },
       fn
-        arg, fundef when is_atom(arg) ->
-          %{fundef | args: fundef.args ++ [{:__inline, arg}], args_count: fundef.args_count + 1}
-
         {arg, _, nil}, fundef ->
           %{fundef | args: fundef.args ++ [arg], args_count: fundef.args_count + 1}
 
         {:\\, _, [{arg, _, nil}, default]}, fundef ->
           %{fundef | args: fundef.args ++ [{arg, default}], args_count: fundef.args_count + 1}
 
+        # Everything else — atoms and other literals included — is a pattern
+        # match, and an argument needs a NAME to travel: the router forwards it
+        # to the helpers and the remote stub ships it in the fn_call tuple. A
+        # literal in the signature would compile into a single-clause pattern
+        # whose misses crash the caller with a FunctionClauseError on the
+        # public router, outside every confinement.
         arg, _fundef ->
           raise CompileError,
             description: """
@@ -117,7 +120,7 @@ defmodule NebulaAPI.AST.Parser do
 
             defapi signatures accept simple variables and defaults only
             (e.g. get(id), list(filters \\\\ [])), not pattern-matched
-            arguments like maps, lists or tuples.
+            arguments like atoms, maps, lists or tuples.
             """
       end
     )
