@@ -756,6 +756,26 @@ defmodule NebulaAPI.ResilienceTest do
     end
   end
 
+  describe "a selector function returning nil never widens the target" do
+    test "a nil-returning selector means 'nothing matched': zero calls, not a broadcast" do
+      # A worker IS available — if nil meant "no restriction" here, :all would
+      # return its reply. nil out of a selector FUNCTION is a no-match
+      # (Enum.find's miss value), the opposite of a nil selector ARGUMENT.
+      pid = start_fake(NilReturnMod, :work, 0, 0, :should_not_run)
+
+      assert APIServer.call_remote_method(
+               NilReturnMod,
+               {:work},
+               multicast: true,
+               strategy: :all,
+               timeout: 200,
+               node_selector: fn _nodes_info -> nil end
+             ) == []
+
+      GenServer.stop(pid)
+    end
+  end
+
   describe "selectors see pg-registered nodes not yet in the snapshot (M9)" do
     test "a worker node missing from the snapshot is offered to the selector, runtime: nil" do
       # Snapshot deliberately EMPTY: simulates the window between a node joining

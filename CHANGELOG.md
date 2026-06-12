@@ -95,6 +95,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deadline (a reply earned there was always discarded — the worker just ran a body
   nobody collected); a task that starts with no budget left skips the call and reports
   `{node, {:nebula_error, :timeout}}` directly.
+- The generated router detects an active `call_on_node`/`call_on_nodes` block through the
+  context MODE, not the selector value: a selector expression that evaluates to `nil` at
+  runtime now means "no restriction" (unicast: first available worker; multicast: every
+  node serving the method) with the block's options still applying — previously the whole
+  context was silently skipped, dropping `timeout:`/`strategy:`/`at_least:` and degrading
+  a multicast block to a default unicast call. A selector **function** returning `nil`
+  keeps its meaning: "nothing matched", zero calls — a no-match never widens the target.
 - Routing opts are now validated on locally-resolved calls too: an invalid opt
   (`timeout: :infinity`, `strategy:`/`success:`/`failure:` without `multicast:`)
   raises `ArgumentError` identically on every node, instead of being silently

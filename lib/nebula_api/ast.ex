@@ -164,6 +164,12 @@ defmodule NebulaAPI.AST do
   - A Nebula AST expression (like `@api`, `&db`)
   - A function that receives nodes_info map and returns a single node atom
 
+  The selector may also be a runtime expression. When it evaluates to `nil`,
+  it means "no restriction": the call routes to the first available worker,
+  with the block's options still applying. Distinct from that, a selector
+  *function* that returns `nil` means "nothing matched" — the call fails with
+  `{:nebula_error, {:no_worker_on_node, nil}}`, it never widens the target.
+
   ## Examples
 
       # With Nebula expression
@@ -250,6 +256,14 @@ defmodule NebulaAPI.AST do
   The selector can be either:
   - A Nebula AST expression (like `@api`, `&db`) - all matching nodes
   - A function that receives nodes_info map and returns a list of node atoms
+
+  The selector may also be a runtime expression. When it evaluates to `nil`,
+  it means "no restriction": the call fans out to every node serving the
+  method (like `call_on_all_nodes`), with the block's options still applying.
+  Distinct from that, a selector *function* that returns `nil` or `[]` means
+  "nothing matched" — zero calls are made (`:all` returns `[]`, `:first`
+  returns `{:nebula_error, :no_success, []}`, `:quorum` fails
+  `:quorum_unreachable`); it never widens the target.
 
   ## Examples
 

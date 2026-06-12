@@ -197,6 +197,12 @@ end
 **Return value.** On success, you get the body's value exactly as-is (no wrapping). If the
 transport fails (timeout, no worker, crash), you get `{:nebula_error, reason}`.
 
+**`nil` selector vs a selector returning `nil`.** The selector argument may be a runtime
+expression; when it evaluates to `nil` it means "no restriction" — the call routes to the
+first available worker, and the block's options (`timeout:`, ...) still apply. A selector
+**function** that returns `nil` means the opposite: "nothing matched" — the call fails with
+`{:nebula_error, {:no_worker_on_node, nil}}`. A no-match never widens the target.
+
 ---
 
 ## `call_on_nodes` — multicast
@@ -225,6 +231,14 @@ A selector function receives the live `nodes_info` map (see below) and returns t
 target nodes. Every node with a registered worker is included — a node not yet in the
 background snapshot appears with `runtime: nil` / `last_seen_at: nil` until the next
 refresh, so filter on `info.runtime` before reading through it.
+
+**`nil` selector vs a selector returning `nil`.** The selector argument may be a runtime
+expression; when it evaluates to `nil` it means "no restriction" — the call fans out to
+every node serving the method (like `call_on_all_nodes`), and the block's options
+(`strategy:`, `at_least:`, `timeout:`, ...) still apply. A selector **function** that
+returns `nil` or `[]` means the opposite: "nothing matched" — zero calls are made (`:all`
+returns `[]`, `:first` returns `{:nebula_error, :no_success, []}`, `:quorum` fails
+`{:nebula_error, :quorum_unreachable, ...}`). A no-match never widens the target.
 
 ### Return values
 

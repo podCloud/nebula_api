@@ -133,8 +133,13 @@ defmodule NebulaAPI.AST.Builder do
         merged_opts = Keyword.merge(context_opts, unquote(routing_opts_var))
 
         cond do
-          # If we have a context selector (from call_on_node or call_on_nodes)
-          not is_nil(context_selector) ->
+          # Inside a call_on_node/call_on_nodes block. The MODE is the context
+          # signal, not the selector: a dynamic selector expression may evaluate
+          # to nil at runtime, and that means "no restriction" (unicast: first
+          # available worker; multicast: every node serving the method) — the
+          # block's opts must still apply. Keying on the selector silently
+          # dropped them and degraded a multicast block to default unicast.
+          not is_nil(context_mode) ->
             unquote(remote_fn_name)(
               unquote_splicing(fn_arg_vars),
               Keyword.merge(merged_opts,

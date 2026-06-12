@@ -43,6 +43,34 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
     end
     """)
 
+    # A LOCALLY-compiled defapi wrapped in call_on_* blocks whose selector is a
+    # runtime expression — the value (nil included) is only known at call time.
+    Code.eval_string("""
+    defmodule NebulaAPI.GeneratedFunctionsTest.CtxCaller do
+      use NebulaAPI.AST
+
+      alias NebulaAPI.GeneratedFunctionsTest.LocalOptsMod
+
+      def unicast(sel) do
+        call_on_node sel, timeout: 100 do
+          LocalOptsMod.echo(41)
+        end
+      end
+
+      def unicast_bad_timeout(sel) do
+        call_on_node sel, timeout: :infinity do
+          LocalOptsMod.echo(41)
+        end
+      end
+
+      def quorum(sel) do
+        call_on_nodes sel, strategy: :quorum, at_least: 2, timeout: 100 do
+          LocalOptsMod.echo(41)
+        end
+      end
+    end
+    """)
+
     :ok
   end
 
@@ -150,6 +178,41 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
       # No worker registered for foo/0: a genuine transport failure.
       assert {:nebula_error, {:no_worker, _}} =
                NebulaAPI.GeneratedFunctionsTest.RemoteMod.foo(timeout: 100)
+    end
+  end
+
+  describe "call_on_* with a selector that evaluates to nil (no restriction)" do
+    alias NebulaAPI.GeneratedFunctionsTest.CtxCaller
+
+    # The defapi inside the blocks is compiled LOCAL and no worker is started:
+    # reaching the transport ({:no_worker, ...}) is the proof that the block's
+    # context was honored. Before keying the router on the context MODE, a nil
+    # selector fell through to the default branch — the call ran locally and
+    # every context opt was silently dropped.
+
+    test "call_on_node nil still routes through the context, opts applied" do
+      assert {:nebula_error, {:no_worker, _}} = CtxCaller.unicast(nil)
+    end
+
+    test "context opts are validated even with a nil selector" do
+      assert_raise ArgumentError, ~r/timeout/, fn ->
+        CtxCaller.unicast_bad_timeout(nil)
+      end
+    end
+
+    test "call_on_nodes nil multicasts to every serving node, opts applied" do
+      # Zero workers serve echo/1, so a REAL multicast quorum is unreachable —
+      # before the fix this returned 41: a quorum write silently degraded to a
+      # local call.
+      assert {:nebula_error, :quorum_unreachable, %{workers: 0, required: 2}} =
+               CtxCaller.quorum(nil)
+    end
+
+    test "a non-nil selector keeps its meaning" do
+      target = node()
+
+      assert {:nebula_error, {:no_worker_on_node, ^target}} =
+               CtxCaller.unicast(fn _nodes_info -> target end)
     end
   end
 end
