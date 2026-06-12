@@ -537,6 +537,22 @@ defmodule NebulaAPI.AST do
       _ ->
         :ok
     end
+
+    # No literal can ever be a 1-arity function, so a non-nil literal
+    # predicate is always wrong; nil keeps meaning "not set". Real predicates
+    # (fn / & captures) are AST, classified :dynamic — the runtime backstop
+    # validates their form.
+    for key <- [:success, :failure] do
+      case static_value(opts, key) do
+        {:literal, v} when not is_nil(v) ->
+          compile_error!(caller, "#{key}: must be a 1-arity function, got: #{inspect(v)}")
+
+        _ ->
+          :ok
+      end
+    end
+
+    :ok
   end
 
   defp validate_static_combos!(opts, caller) do

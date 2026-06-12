@@ -270,9 +270,9 @@ end
 
 Everything statically visible in the options is validated at compile time: an unknown
 key, a malformed literal value (`strategy: :qourum`, `at_least: 0`,
-`timeout: :infinity`) or an impossible combination (`at_least:` when the block
-statically resolves to a non-`:quorum` strategy, a predicate with `strategy: :all`)
-is a `CompileError` at the call site. Dynamic values (a variable `strategy:`, a
+`timeout: :infinity`, `success: :not_a_fun`) or an impossible combination
+(`at_least:` when the block statically resolves to a non-`:quorum` strategy, a
+predicate with `strategy: :all`) is a `CompileError` at the call site. Dynamic values (a variable `strategy:`, a
 whole-opts variable) defer those checks to runtime, where they raise the same
 `ArgumentError`.
 

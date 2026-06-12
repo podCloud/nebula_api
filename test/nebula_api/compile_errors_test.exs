@@ -381,6 +381,22 @@ defmodule NebulaAPI.CompileErrorsTest do
       end
     end
 
+    test "a literal non-function success:/failure: raises at compile time" do
+      # No literal (atom, number, binary) can ever be a 1-arity function —
+      # the runtime backstop kept catching it, but it is statically visible.
+      assert_raise CompileError, ~r/success: must be a 1-arity function/, fn ->
+        eval_block("call_on_nodes strategy: :first, success: :not_a_fun")
+      end
+
+      assert_raise CompileError, ~r/failure: must be a 1-arity function/, fn ->
+        eval_block(~s|call_on_nodes strategy: :quorum, failure: "nope"|)
+      end
+    end
+
+    test "success: nil stays 'not set' — the block compiles" do
+      assert {_, _} = eval_block("call_on_nodes strategy: :first, success: nil")
+    end
+
     test "at_least: without strategy: :quorum raises (the block resolves to :all)" do
       assert_raise CompileError, ~r/at_least.*:quorum/s, fn ->
         eval_block("call_on_nodes at_least: 2")

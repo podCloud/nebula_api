@@ -141,6 +141,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   routing — `MyMod.f(x, multicast: false)` inside a multicast block is a plain default
   call. General rule inside a block: the block's opts are defaults, the call's own opts
   override them, an explicit `nil` opts out of the block's default back to the lib's.
+- Literal `success:`/`failure:` values that can never be a predicate
+  (`success: :not_a_fun`) now fail the build at the call site in the `call_on_*`
+  macros, like every other malformed literal option value — no literal is ever a
+  1-arity function; `nil` keeps meaning "not set", `fn`/`&` predicates stay a
+  runtime concern.
 - Routing opts are now validated on locally-resolved calls too: an invalid opt
   (`timeout: :infinity`, `strategy:`/`success:`/`failure:` without `multicast:`)
   raises `ArgumentError` identically on every node, instead of being silently
