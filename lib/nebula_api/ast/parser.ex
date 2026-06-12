@@ -104,6 +104,10 @@ defmodule NebulaAPI.AST.Parser do
         - @:"node@host"           (full node name as an atom)
         - [..]                    (a list combining the above)
         - :*                      (all nodes)
+
+      Dynamic selection (a variable, or a function receiving nodes_info) only
+      works in call_on_node / call_on_nodes — defapi and on_nebula_nodes are
+      resolved statically at compile time.
       """
   end
 

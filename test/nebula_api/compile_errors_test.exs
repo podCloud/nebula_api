@@ -8,6 +8,22 @@ defmodule NebulaAPI.CompileErrorsTest do
   # carry a nil context, unlike `quote do: @db`).
   defp ast(src), do: Code.string_to_quoted!(src)
 
+  # Compile a lone call_on_* block (with a trailing `do :ok end`) inside a
+  # fresh module, the way a consumer would write it.
+  defp eval_block(call) do
+    Code.eval_string("""
+    defmodule NebulaAPI.CompileErrorsTest.Static#{System.unique_integer([:positive])} do
+      use NebulaAPI.AST
+
+      def go do
+        #{call} do
+          :ok
+        end
+      end
+    end
+    """)
+  end
+
   describe "invalid selectors (M5)" do
     test "a selector that is neither @/&/!/list/:* raises a clear CompileError" do
       assert_raise CompileError, ~r/invalid nebula selector/i, fn ->
@@ -19,6 +35,18 @@ defmodule NebulaAPI.CompileErrorsTest do
       assert_raise CompileError, ~r/invalid nebula selector/i, fn ->
         Parser.parse_nebula_ast(ast(~s|"db"|))
       end
+    end
+
+    test "a function selector points at call_on_* (dynamic selection has no place in defapi)" do
+      # defapi/on_nebula_nodes are resolved statically; a fn lands in the
+      # parser only from them (call_on_* diverts functions before parsing),
+      # so the message can name the macros where dynamic selection DOES work.
+      err =
+        assert_raise CompileError, ~r/invalid nebula selector/i, fn ->
+          Parser.parse_nebula_ast(ast("fn _nodes_info -> :db@host end"))
+        end
+
+      assert err.description =~ "call_on_node"
     end
   end
 
@@ -302,6 +330,100 @@ defmodule NebulaAPI.CompileErrorsTest do
       assert_raise CompileError, ~r/only apply to multicast/, fn ->
         Code.eval_string(code)
       end
+    end
+  end
+
+  describe "statically invalid call_on_* options" do
+    # The macros receive literal keyword lists: any option the mode can never
+    # consume, unknown key, malformed literal value or impossible combination
+    # is visible at the call site — fail the build there. Dynamic values keep
+    # the runtime ArgumentError backstop (see generated_functions_test).
+
+    test "strategy: on call_on_node raises (unicast can never consume it)" do
+      assert_raise CompileError, ~r/only apply to multicast/, fn ->
+        eval_block("call_on_node strategy: :all, timeout: 100")
+      end
+    end
+
+    test "at_least: on call_on_node raises" do
+      assert_raise CompileError, ~r/only apply to multicast/, fn ->
+        eval_block("call_on_node at_least: 2")
+      end
+    end
+
+    test "an unknown key on call_on_node raises" do
+      assert_raise CompileError, ~r/unknown option/, fn ->
+        eval_block("call_on_node timout: 100")
+      end
+    end
+
+    test "an unknown key on call_on_nodes raises" do
+      assert_raise CompileError, ~r/unknown option/, fn ->
+        eval_block("call_on_nodes quorum_count: 2, strategy: :quorum")
+      end
+    end
+
+    test "a literal timeout: :infinity raises at compile time" do
+      assert_raise CompileError, ~r/timeout/, fn ->
+        eval_block("call_on_node timeout: :infinity")
+      end
+    end
+
+    test "a literal typo'd strategy raises at compile time" do
+      assert_raise CompileError, ~r/strategy/, fn ->
+        eval_block("call_on_nodes strategy: :qourum")
+      end
+    end
+
+    test "a literal non-positive at_least raises at compile time" do
+      assert_raise CompileError, ~r/at_least/, fn ->
+        eval_block("call_on_nodes strategy: :quorum, at_least: 0")
+      end
+    end
+
+    test "at_least: without strategy: :quorum raises (the block resolves to :all)" do
+      assert_raise CompileError, ~r/at_least.*:quorum/s, fn ->
+        eval_block("call_on_nodes at_least: 2")
+      end
+
+      assert_raise CompileError, ~r/at_least.*:quorum/s, fn ->
+        eval_block("call_on_nodes strategy: :first, at_least: 2")
+      end
+    end
+
+    test "a predicate with a statically-:all strategy raises" do
+      assert_raise CompileError, ~r/only apply to multicast strategies/, fn ->
+        eval_block("call_on_nodes success: fn v -> v == :ok end")
+      end
+
+      assert_raise CompileError, ~r/only apply to multicast strategies/, fn ->
+        eval_block("call_on_nodes strategy: :all, failure: fn v -> v != :ok end")
+      end
+    end
+
+    test "a dynamic strategy defers the combination checks to runtime" do
+      # maybe_strategy could be :quorum at runtime: the macro must not refuse.
+      code = """
+      defmodule NebulaAPI.CompileErrorsTest.DynamicStrategy do
+        use NebulaAPI.AST
+
+        def go(maybe_strategy) do
+          call_on_nodes strategy: maybe_strategy, at_least: 2, timeout: 100 do
+            :ok
+          end
+        end
+      end
+      """
+
+      assert {_, _} = Code.eval_string(code)
+    end
+
+    test "a valid quorum combination still compiles" do
+      assert {_, _} =
+               eval_block(
+                 "call_on_nodes strategy: :quorum, at_least: 2, " <>
+                   "success: fn v -> v == :ok end, timeout: 100"
+               )
     end
   end
 

@@ -230,19 +230,7 @@ defmodule NebulaAPI.AST do
   end
 
   defp do_call_on_node(selector_or_nebula_ast, opts, block, caller) do
-    # No validate_static_predicate_opts! here: this broader check subsumes it
-    # (ANY predicate key is rejected on unicast), with the message that actually
-    # explains the problem.
-    if Keyword.keyword?(opts) and
-         (Keyword.has_key?(opts, :success) or Keyword.has_key?(opts, :failure)) do
-      raise CompileError,
-        line: caller.line,
-        file: caller.file,
-        description:
-          "success:/failure: only apply to multicast strategies :first and :quorum — " <>
-            "call_on_node is unicast and would silently ignore them"
-    end
-
+    validate_static_opts!(opts, :unicast, caller)
     selector = build_selector(selector_or_nebula_ast, :unicast, caller)
 
     quote do
@@ -344,7 +332,7 @@ defmodule NebulaAPI.AST do
   end
 
   defp do_call_on_nodes(selector_or_nebula_ast, opts, block, caller) do
-    validate_static_predicate_opts!(opts, caller)
+    validate_static_opts!(opts, :multicast, caller)
     selector = build_selector(selector_or_nebula_ast, :multicast, caller)
 
     quote do
@@ -425,21 +413,167 @@ defmodule NebulaAPI.AST do
     ast != [] and Keyword.keyword?(ast)
   end
 
-  # The call_on_* macros only accept literal keyword lists, so conflicting
-  # predicate keys are statically visible: fail at compile time, at the call
-  # site, instead of at the first runtime call. Only key PRESENCE is checked —
-  # values stay unevaluated AST. The runtime validation in
-  # APIServer.validate_predicate_opts!/3 remains the backstop for dynamic opts
-  # (generated functions' trailing routing opts, context merges).
-  defp validate_static_predicate_opts!(opts, caller) do
-    if Keyword.keyword?(opts) and Keyword.has_key?(opts, :success) and
-         Keyword.has_key?(opts, :failure) do
-      raise CompileError,
-        line: caller.line,
-        file: caller.file,
-        description:
-          "success: and failure: are mutually exclusive — pass one or the other, not both"
+  @unicast_block_opts [:timeout]
+  @multicast_only_opts [:strategy, :at_least, :success, :failure]
+  @multicast_block_opts @unicast_block_opts ++ @multicast_only_opts
+  @valid_strategies [:all, :first, :quorum]
+
+  # Compile-time validation of the call_on_* block options. The macros receive
+  # literal keyword lists, so anything statically decidable fails the build at
+  # the call site: a key the mode can never consume, an unknown key, a
+  # malformed literal value, a combination no runtime value could make valid.
+  # Values are still unevaluated AST, though — only plain literals are
+  # decidable here; a variable or computed expression falls through to the
+  # runtime backstop, APIServer.validate_call_opts!/2, where the
+  # nil-means-"not set" convention applies. A whole-opts variable
+  # (`call_on_node sel, my_opts do`) skips this entirely for the same reason.
+  defp validate_static_opts!(opts, mode, caller) do
+    if Keyword.keyword?(opts) do
+      keys = opts |> Keyword.keys() |> Enum.uniq()
+      validate_static_keys!(keys, mode, caller)
+      validate_static_values!(opts, caller)
+      if mode == :multicast, do: validate_static_combos!(opts, caller)
     end
+
+    :ok
+  end
+
+  defp validate_static_keys!(keys, :unicast, caller) do
+    case Enum.filter(keys, &(&1 in @multicast_only_opts)) do
+      [] ->
+        :ok
+
+      invalid ->
+        compile_error!(
+          caller,
+          "#{format_opt_keys(invalid)} only apply to multicast calls " <>
+            "(call_on_nodes / call_on_all_nodes) — call_on_node is unicast and " <>
+            "would silently ignore them"
+        )
+    end
+
+    validate_unknown_keys!(keys, @unicast_block_opts, "call_on_node", caller)
+  end
+
+  defp validate_static_keys!(keys, :multicast, caller) do
+    validate_unknown_keys!(
+      keys,
+      @multicast_block_opts,
+      "call_on_nodes / call_on_all_nodes",
+      caller
+    )
+  end
+
+  defp validate_unknown_keys!(keys, allowed, macro_label, caller) do
+    case keys -- @multicast_block_opts do
+      [] ->
+        :ok
+
+      unknown ->
+        compile_error!(
+          caller,
+          "unknown option(s) for #{macro_label}: #{format_opt_keys(unknown)} — " <>
+            "accepted options are #{format_opt_keys(allowed)}"
+        )
+    end
+  end
+
+  # A literal value is decidable at compile time; nil keeps meaning "not set".
+  defp static_value(opts, key) do
+    case Keyword.fetch(opts, key) do
+      :error -> :absent
+      {:ok, v} when is_atom(v) or is_integer(v) or is_float(v) or is_binary(v) -> {:literal, v}
+      {:ok, _expr} -> :dynamic
+    end
+  end
+
+  defp validate_static_values!(opts, caller) do
+    case static_value(opts, :timeout) do
+      {:literal, t} when not is_nil(t) and not (is_integer(t) and t > 0) ->
+        compile_error!(
+          caller,
+          "timeout: must be a positive integer in milliseconds, got: #{inspect(t)}" <>
+            if(t == :infinity,
+              do: " — :infinity is not supported; use a large finite budget instead",
+              else: ""
+            )
+        )
+
+      _ ->
+        :ok
+    end
+
+    case static_value(opts, :strategy) do
+      {:literal, s} when not is_nil(s) and s not in @valid_strategies ->
+        compile_error!(
+          caller,
+          "strategy: must be one of #{inspect(@valid_strategies)}, got: #{inspect(s)}"
+        )
+
+      _ ->
+        :ok
+    end
+
+    case static_value(opts, :at_least) do
+      {:literal, n} when not is_nil(n) and not (is_integer(n) and n > 0) ->
+        compile_error!(
+          caller,
+          "at_least: must be a positive integer (a number of workers), got: #{inspect(n)}"
+        )
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp validate_static_combos!(opts, caller) do
+    if opt_present?(opts, :success) and opt_present?(opts, :failure) do
+      compile_error!(
+        caller,
+        "success: and failure: are mutually exclusive — pass one or the other, not both"
+      )
+    end
+
+    # The strategy this block resolves to, when statically known: an absent or
+    # nil strategy IS known — it resolves to the :all default. Only a dynamic
+    # value defers the combination checks to runtime.
+    strategy_static =
+      case static_value(opts, :strategy) do
+        :absent -> :all
+        {:literal, nil} -> :all
+        {:literal, s} -> s
+        :dynamic -> :unknown
+      end
+
+    if opt_present?(opts, :at_least) and strategy_static not in [:quorum, :unknown] do
+      compile_error!(
+        caller,
+        "at_least: only applies to the :quorum strategy — this block resolves to " <>
+          "#{inspect(strategy_static)}"
+      )
+    end
+
+    if (opt_present?(opts, :success) or opt_present?(opts, :failure)) and
+         strategy_static not in [:first, :quorum, :unknown] do
+      compile_error!(
+        caller,
+        "success:/failure: only apply to multicast strategies :first and :quorum — " <>
+          "this block resolves to #{inspect(strategy_static)} and would silently " <>
+          "ignore them"
+      )
+    end
+  end
+
+  # Present for combination purposes: the key is there with anything but a
+  # literal nil (nil means "not set", a dynamic value may consume the option).
+  defp opt_present?(opts, key) do
+    static_value(opts, key) not in [:absent, {:literal, nil}]
+  end
+
+  defp format_opt_keys(keys), do: Enum.map_join(keys, ", ", &"#{&1}:")
+
+  defp compile_error!(caller, description) do
+    raise CompileError, line: caller.line, file: caller.file, description: description
   end
 
   # Build a selector function from either a Nebula AST expression or a function.

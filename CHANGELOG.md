@@ -111,6 +111,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   silently select every **configured** node. `[]` selects no node, so nothing could ever
   run: `:*` is the explicit "all nodes", omitting the selector is the explicit "no
   restriction" in `call_on_*`.
+- The `call_on_*` macros validate their literal options at compile time: an option the
+  mode can never consume (`strategy:`/`at_least:`/`success:`/`failure:` on the unicast
+  `call_on_node`), an unknown key, a malformed literal value (`timeout: :infinity`,
+  `strategy: :qourum`, `at_least: 0`) or a statically-impossible combination
+  (`at_least:` when the block resolves to a non-`:quorum` strategy, a predicate with
+  `strategy: :all`) now fails the build at the call site instead of the first runtime
+  call. Dynamic values (a variable `strategy:`, a whole-opts variable) keep the runtime
+  `ArgumentError` backstop, where `nil` still means "not set".
+- The "Invalid nebula selector" compile error now points out that dynamic selection (a
+  variable or a selector function) only works in `call_on_node`/`call_on_nodes` —
+  `defapi` and `on_nebula_nodes` are resolved statically at compile time.
 - Fan-out tasks no longer grant a worker a 100 ms grace window past the multicast
   deadline (a reply earned there was always discarded — the worker just ran a body
   nobody collected); a task that starts with no budget left skips the call and reports

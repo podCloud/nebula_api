@@ -63,8 +63,11 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
         end
       end
 
-      def unicast_bad_timeout(sel) do
-        call_on_node sel, timeout: :infinity do
+      # The bad timeout arrives through a VARIABLE: a literal one is rejected
+      # at compile time (see compile_errors_test), a dynamic one must keep
+      # raising through the runtime backstop.
+      def unicast_bad_timeout(sel, t) do
+        call_on_node sel, timeout: t do
           LocalOptsMod.echo(41)
         end
       end
@@ -82,8 +85,9 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
         end
       end
 
-      def unicast_opts_only_bad_timeout do
-        call_on_node timeout: :infinity do
+      # Same variable trick as unicast_bad_timeout/2, options-only form.
+      def unicast_opts_only_bad_timeout(t) do
+        call_on_node timeout: t do
           LocalOptsMod.echo(41)
         end
       end
@@ -106,8 +110,10 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
         end
       end
 
-      def unicast_unknown_opt do
-        call_on_node bogus: 1 do
+      # A whole-opts variable is invisible to the static validation: the
+      # runtime backstop must still reject what it carries.
+      def unicast_dynamic_opts(opts) do
+        call_on_node nil, opts do
           LocalOptsMod.echo(41)
         end
       end
@@ -245,7 +251,7 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
 
     test "context opts are validated even with a nil selector" do
       assert_raise ArgumentError, ~r/timeout/, fn ->
-        CtxCaller.unicast_bad_timeout(nil)
+        CtxCaller.unicast_bad_timeout(nil, :infinity)
       end
     end
 
@@ -289,16 +295,16 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
 
     test "options-only opts are validated like any call opts" do
       assert_raise ArgumentError, ~r/timeout/, fn ->
-        CtxCaller.unicast_opts_only_bad_timeout()
+        CtxCaller.unicast_opts_only_bad_timeout(:infinity)
       end
     end
 
-    test "an unknown opt key in a call_on_* block raises at the first call" do
-      # A literal kwlist in selector position is the options-only form, so a
-      # typo'd key lands here — the closed-set check refuses it instead of
-      # silently fanning out with defaults.
+    test "a dynamic opts list still hits the runtime backstop (unknown key)" do
+      # A whole-opts variable is invisible to the macro's static validation —
+      # the closed-set runtime check refuses it instead of silently routing
+      # with defaults.
       assert_raise ArgumentError, ~r/unknown call option/, fn ->
-        CtxCaller.unicast_unknown_opt()
+        CtxCaller.unicast_dynamic_opts(bogus: 1)
       end
     end
 

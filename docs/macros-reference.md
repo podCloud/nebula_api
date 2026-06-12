@@ -214,6 +214,12 @@ end
 |--------|------|---------|
 | `timeout` | positive integer (ms) — `:infinity` rejected | 5000 |
 
+`timeout:` is the **only** option `call_on_node` accepts: passing `strategy:`,
+`at_least:` or `success:`/`failure:` (multicast-only), an unknown key, or a malformed
+literal value (`timeout: :infinity`) is a `CompileError` at the call site. Dynamic
+values (`timeout: my_var`, a whole-opts variable) are checked at runtime instead, with
+the same `ArgumentError`.
+
 **Return value.** On success, you get the body's value exactly as-is (no wrapping). If the
 transport fails (timeout, no worker, crash), you get `{:nebula_error, reason}`.
 
@@ -252,6 +258,14 @@ end
 | `:all` | wait for every node (or timeout); returns a list of all results |
 | `:first` | return the first **success**; remaining tasks cancelled |
 | `:quorum` | wait for N **successes**; early-exit if it can no longer be reached |
+
+Everything statically visible in the options is validated at compile time: an unknown
+key, a malformed literal value (`strategy: :qourum`, `at_least: 0`,
+`timeout: :infinity`) or an impossible combination (`at_least:` when the block
+statically resolves to a non-`:quorum` strategy, a predicate with `strategy: :all`)
+is a `CompileError` at the call site. Dynamic values (a variable `strategy:`, a
+whole-opts variable) defer those checks to runtime, where they raise the same
+`ArgumentError`.
 
 A selector function receives the live `nodes_info` map (see below) and returns the list of
 target nodes. Every node with a registered worker is included — a node not yet in the
