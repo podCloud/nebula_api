@@ -196,6 +196,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   local-call overhead figure (~0.00002 ms — a few process-dictionary reads, not zero) and
   clarified that `call_on_all_nodes` targets the nodes that serve the method, not every
   configured node.
+- Documented nesting and process scope of the `call_on_*` blocks: an inner block
+  replaces the whole context (no option merge) and the outer one is restored on exit,
+  exceptions included; the context is per process — it follows neither a spawned
+  process nor the RPC boundary (a block governs one hop, the calls written directly in
+  it). Also documented that a `defapi` inside `on_nebula_nodes` disappears entirely
+  (router included) on non-matching nodes — no transparent RPC from there.
 
 ## [0.3.0] - 2026-06-08
 

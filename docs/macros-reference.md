@@ -160,6 +160,15 @@ end
 
 A module that uses only `on_nebula_nodes` (no `defapi`, no server) can `use NebulaAPI.AST`.
 
+`on_nebula_nodes` blocks nest like compile-time `if`s: an inner block is kept only when
+both selectors match, with no state involved.
+
+**A `defapi` inside `on_nebula_nodes` disappears entirely on non-matching nodes** —
+router included. That means *no transparent RPC from the other nodes*: calling it there
+is an `UndefinedFunctionError`, not a remote call. It spells "this API only exists on
+those nodes"; if you want "implemented here, callable from everywhere", that's a plain
+`defapi` — its selector already does exactly that.
+
 ---
 
 ## `nebula_api_server/0`
@@ -345,6 +354,49 @@ end
 
 ---
 
+## Nesting and process scope
+
+The `call_on_*` blocks set a routing context that the generated functions read. Three
+rules govern how far it reaches:
+
+**Nested blocks replace, then restore.** An inner `call_on_*` block replaces the whole
+context — selector, mode *and options*. There is no merge: an outer `timeout: 30_000`
+does **not** apply inside an inner block that doesn't repeat it. On exit (normal or via
+an exception) the outer block's context takes back over, and after the outermost block
+no context remains.
+
+**The context is per process.** It lives in the process dictionary of the process
+running the block, so it does not follow a spawn: a `Task.async`/`spawn` started inside
+a block runs with **no** context — its `defapi` calls route by default, the surrounding
+block silently does not apply. Put the `call_on_*` block *inside* the task when that is
+what you mean:
+
+```elixir
+# The block does NOT reach the task's call:
+call_on_node @db do
+  Task.async(fn -> MyApp.Users.get(42) end) |> Task.await()   # routes by default!
+end
+
+# It does when the task owns the block:
+Task.async(fn ->
+  call_on_node @db do
+    MyApp.Users.get(42)
+  end
+end)
+|> Task.await()
+```
+
+**A block applies to one hop.** It never crosses the RPC boundary: a `defapi` body
+executes on the target node in a fresh process, so calls *inside the body* route by
+their own defaults — the caller's block doesn't leak into them (a caller's
+`strategy: :quorum` applying to a body's internal calls is exactly what you don't
+want). A block governs the `defapi` calls written directly in it, nothing further.
+
+Also note that only `defapi`-generated functions read the context: wrapping a plain
+function call in a `call_on_*` block does nothing to it.
+
+---
+
 ## The `nodes_info` map
 
 Selector functions for `call_on_node`/`call_on_nodes` receive live runtime data per node:
@@ -365,8 +417,10 @@ Selector functions for `call_on_node`/`call_on_nodes` receive live runtime data 
 ```
 
 `last_seen_at` lets you avoid nodes that look connected but have gone quiet. This info is
-cached in ETS with a short TTL; refresh manually with
-`NebulaAPI.APIServer.refresh_nodes_cache/0`.
+an ETS snapshot rebuilt in the background by `NebulaAPI.APIServer.NodesInfoCache` every
+`nodes_info_refresh_interval` ms (default 5000) — reads never trigger a rebuild. A node
+whose worker just registered and isn't in the snapshot yet is still offered to selectors,
+with `runtime: nil` / `last_seen_at: nil` until the next refresh.
 
 ## See Also
 

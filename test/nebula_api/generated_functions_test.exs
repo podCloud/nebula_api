@@ -117,6 +117,42 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
           LocalOptsMod.echo(41)
         end
       end
+
+      # Nested blocks: the inner one REPLACES the whole context (selector,
+      # mode, opts — no merge); the outer one takes back over on exit.
+      def nested_blocks do
+        call_on_nodes strategy: :quorum, at_least: 2, timeout: 100 do
+          inner =
+            call_on_node timeout: 50 do
+              LocalOptsMod.echo(1)
+            end
+
+          {inner, LocalOptsMod.echo(2)}
+        end
+      end
+
+      # The outer context must survive an exception inside the inner block.
+      def nested_blocks_inner_raise do
+        call_on_nodes strategy: :quorum, at_least: 2, timeout: 100 do
+          try do
+            call_on_node timeout: 50 do
+              raise "boom"
+            end
+          rescue
+            _ -> :ok
+          end
+
+          LocalOptsMod.echo(3)
+        end
+      end
+
+      # The context lives in the process dictionary: a process spawned inside
+      # the block does NOT inherit it — its defapi calls route by default.
+      def spawned_task_escapes_block do
+        call_on_nodes strategy: :quorum, at_least: 2, timeout: 100 do
+          Task.async(fn -> LocalOptsMod.echo(4) end) |> Task.await()
+        end
+      end
     end
     """)
 
@@ -322,6 +358,75 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
       assert [{^this, 41}] = CtxCaller.all_nodes_alias()
 
       GenServer.stop(pid)
+    end
+  end
+
+  describe "nested call_on_* blocks" do
+    alias NebulaAPI.GeneratedFunctionsTest.CtxCaller
+
+    # echo/1 is compiled LOCAL and no worker is registered, so each routing
+    # mode has a distinct, unfakeable signature: default → local → the value;
+    # inner unicast → {:nebula_error, {:no_worker, _}}; outer quorum →
+    # {:nebula_error, :quorum_unreachable, _}.
+
+    test "the inner block replaces the context; the outer one takes back over on exit" do
+      assert {{:nebula_error, {:no_worker, _}},
+              {:nebula_error, :quorum_unreachable, %{workers: 0, required: 2}}} =
+               CtxCaller.nested_blocks()
+
+      # No context survives the outermost block (try/after restoration).
+      assert Process.get(:nebula_call_mode) == nil
+      assert Process.get(:nebula_call_opts) == nil
+      assert Process.get(:nebula_node_selector) == nil
+    end
+
+    test "the outer context survives a raise inside the inner block" do
+      assert {:nebula_error, :quorum_unreachable, %{workers: 0, required: 2}} =
+               CtxCaller.nested_blocks_inner_raise()
+
+      assert Process.get(:nebula_call_mode) == nil
+    end
+
+    test "a process spawned inside a block does not inherit the context" do
+      # The context lives in the spawning process's dictionary: the Task's
+      # defapi call routes by DEFAULT (local here), proving the surrounding
+      # quorum block silently does not apply. Wrap the call_on_* inside the
+      # task when that is what you mean.
+      assert CtxCaller.spawned_task_escapes_block() == 4
+    end
+  end
+
+  describe "defapi inside on_nebula_nodes" do
+    test "the whole defapi (router included) only exists on matching nodes" do
+      # Conditional compilation composes: on a non-matching node nothing is
+      # generated AT ALL — no transparent RPC, calling it is an
+      # UndefinedFunctionError. 'This API only exists on those nodes' is the
+      # semantics; expecting transparency here is the documented footgun.
+      Application.put_env(:nebula_api, :nodes, [{:test@host, [:db]}, {:other@host, [:db]}])
+      on_exit(fn -> Application.put_env(:nebula_api, :nodes, [{:test@host, [:db]}]) end)
+
+      Code.eval_string("""
+      defmodule NebulaAPI.GeneratedFunctionsTest.CondApi do
+        use NebulaAPI, allow_unknown_self_node: true, self_node: :"test@host"
+
+        on_nebula_nodes @:"test@host" do
+          defapi &db, present_here() do
+            :ok
+          end
+        end
+
+        on_nebula_nodes @:"other@host" do
+          defapi &db, absent_here() do
+            :ok
+          end
+        end
+      end
+      """)
+
+      alias NebulaAPI.GeneratedFunctionsTest.CondApi
+
+      assert function_exported?(CondApi, :present_here, 1)
+      refute function_exported?(CondApi, :absent_here, 1)
     end
   end
 end
