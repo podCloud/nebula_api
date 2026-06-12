@@ -62,13 +62,18 @@ A single selector doesn't need brackets — `defapi &db, ...`. Combine with a li
 
 ### Signatures and return values
 
-Standard signatures, including defaults and inline atoms:
+Signatures take simple variables and defaults only:
 
 ```elixir
 defapi &db, get(id), do: Repo.get(User, id)
 defapi &db, list(filters \\ []), do: Repo.all(query(filters))
 defapi :*, health(), do: %{node: node()}
 ```
+
+Pattern-matched arguments — atoms, maps, lists, tuples — are rejected with a
+`CompileError`: a `defapi` is an RPC boundary, every argument needs a *name* to
+travel through the generated router and the remote call. Dispatch on values
+inside the body instead.
 
 Return values are passed through verbatim — **no wrapping**. The body's value is
 returned exactly as-is to the caller:
