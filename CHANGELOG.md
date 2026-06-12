@@ -23,7 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:quorum` returns the list of `{node, value}` when reached, otherwise
   `{:nebula_error, :quorum_not_reached, results}` or `{:nebula_error, :quorum_timeout, results}`.
   Migration: expect raw body values instead of `{:ok, _}`; match `{:nebula_error, _}` for
-  transport faults; update multicast matches to `{node, value}`.
+  transport faults; update multicast matches to `{node, value}`; replace `quorum_count:`
+  with `at_least:`.
 - Node-info is now refreshed by a per-node background `NebulaAPI.APIServer.NodesInfoCache` on a fixed
   interval instead of being rebuilt lazily on every read — this removes the refresh stampede
   under concurrency. `get_nodes_info/0` is a pure read: it never builds the snapshot itself,
@@ -98,6 +99,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{:nebula_error, {:selector_failed, {:badfun, _}}}` at selection time, the one
   programming error reported on the transport channel. `nil` still means "not set";
   what the function does remains a contained runtime concern.
+- Unknown call option keys raise `ArgumentError` up front — the option set is closed
+  (`timeout:`, `node_selector:`, `multicast:`, `strategy:`, `at_least:`, `success:`,
+  `failure:`), so a typo'd key (`timout:`) or a stale one (`quorum_count:`, replaced by
+  `at_least:`) was silently dropped and the call ran with defaults the caller never
+  chose — for a quorum, a durability requirement quietly replaced by the majority
+  default.
 - Fan-out tasks no longer grant a worker a 100 ms grace window past the multicast
   deadline (a reply earned there was always discarded — the worker just ran a body
   nobody collected); a task that starts with no budget left skips the call and reports

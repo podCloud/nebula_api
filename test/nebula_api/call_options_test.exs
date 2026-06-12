@@ -219,4 +219,42 @@ defmodule NebulaAPI.CallOptionsTest do
       refute match?({:nebula_error, %ArgumentError{}}, result)
     end
   end
+
+  describe "unknown call option keys" do
+    alias NebulaAPI.APIServer
+
+    test "a typo'd key raises ArgumentError up front instead of being silently dropped" do
+      assert_raise ArgumentError, ~r/unknown call option/, fn ->
+        APIServer.call_remote_method(NoSuchMod, {:work}, timout: 100)
+      end
+    end
+
+    test "a stale key (quorum_count:, removed in 0.4.0) raises instead of degrading the quorum" do
+      # Silently dropping it would leave the quorum at the majority default —
+      # a durability requirement quietly replaced behind the caller's back.
+      assert_raise ArgumentError, ~r/unknown call option/, fn ->
+        APIServer.call_remote_method(NoSuchMod, {:work},
+          multicast: true,
+          strategy: :quorum,
+          quorum_count: 2,
+          timeout: 100
+        )
+      end
+    end
+
+    test "every documented key still passes the closed-set check" do
+      # Every valid key at once (minus failure:, exclusive with success:): the
+      # only failure left is the quorum's own contract (no worker serves the
+      # method), never an unknown-key refusal.
+      assert {:nebula_error, :quorum_unreachable, _} =
+               APIServer.call_remote_method(NoSuchMod, {:work},
+                 multicast: true,
+                 strategy: :quorum,
+                 at_least: 1,
+                 success: &match?({:ok, _}, &1),
+                 node_selector: fn _nodes_info -> [] end,
+                 timeout: 100
+               )
+    end
+  end
 end

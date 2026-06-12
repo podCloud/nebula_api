@@ -121,7 +121,9 @@ defmodule NebulaAPI.APIServer do
 
   For every option, `nil` means "not set": the call behaves as if the option
   were absent (a computed `strategy: maybe_strategy` holding `nil` resolves to
-  the default). Any other malformed value raises `ArgumentError` up front.
+  the default). Any other malformed value raises `ArgumentError` up front, and
+  so does any unknown option key — the option set below is closed, a typo'd
+  key must not be silently dropped.
   - `:timeout` - Timeout in milliseconds. Default: the module's `default_timeout`,
     then `config :nebula_api, default_timeout:`, then 5000. `nil` means "not set"
     (the default resolution applies); any other non-integer raises.
@@ -507,6 +509,7 @@ defmodule NebulaAPI.APIServer do
   # resolves to the default instead of raising or half-applying.
   @doc false
   def validate_call_opts!(module, opts) do
+    validate_known_opts!(opts)
     multicast = Keyword.get(opts, :multicast) || false
     strategy = Keyword.get(opts, :strategy) || :all
     validate_strategy_opts!(opts, multicast)
@@ -517,6 +520,33 @@ defmodule NebulaAPI.APIServer do
     timeout = resolve_timeout(module, opts)
     validate_timeout!(timeout)
     timeout
+  end
+
+  @valid_call_opts [
+    :timeout,
+    :node_selector,
+    :multicast,
+    :strategy,
+    :at_least,
+    :success,
+    :failure
+  ]
+
+  # The set of call opts is closed, so an unknown KEY is as much a programming
+  # error as a malformed value: a typo'd key (timout:) or a stale one
+  # (quorum_count:, removed in 0.4.0) would otherwise be silently dropped and
+  # the call would run with defaults the caller never chose — for a quorum,
+  # that's a durability requirement quietly replaced by the majority default.
+  defp validate_known_opts!(opts) do
+    case Keyword.keys(opts) |> Enum.uniq() |> Kernel.--(@valid_call_opts) do
+      [] ->
+        :ok
+
+      unknown ->
+        raise ArgumentError,
+              "unknown call option(s): #{inspect(unknown)} — " <>
+                "valid options are #{inspect(@valid_call_opts)}"
+    end
   end
 
   # Like every other call opt, the selector's FORM is a programming error when

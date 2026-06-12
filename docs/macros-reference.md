@@ -128,8 +128,10 @@ end
 Routing opts are validated on every node, even when the call resolves locally and
 the transport never runs: an invalid opt (`timeout: :infinity`, `strategy:` or
 `success:`/`failure:` without `multicast:`) raises an `ArgumentError` identically
-wherever the call happens to execute. A valid-but-inapplicable opt — a `timeout:`
-on a locally-resolved call — is a silent no-op.
+wherever the call happens to execute, and so does an unknown option key — the
+option set is closed, a typo'd `timout:` must not be silently dropped. A
+valid-but-inapplicable opt — a `timeout:` on a locally-resolved call — is a
+silent no-op.
 
 ---
 

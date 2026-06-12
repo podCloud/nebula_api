@@ -105,6 +105,12 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
           LocalOptsMod.echo_served(41)
         end
       end
+
+      def unicast_unknown_opt do
+        call_on_node bogus: 1 do
+          LocalOptsMod.echo(41)
+        end
+      end
     end
     """)
 
@@ -198,6 +204,12 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
         LocalOptsMod.echo(1, success: &match?({:ok, _}, &1))
       end
     end
+
+    test "an unknown opt key raises locally, exactly like on a remote node" do
+      assert_raise ArgumentError, ~r/unknown call option/, fn ->
+        LocalOptsMod.echo(1, timout: 100)
+      end
+    end
   end
 
   describe "programming errors cross the generated stub (I2)" do
@@ -278,6 +290,15 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
     test "options-only opts are validated like any call opts" do
       assert_raise ArgumentError, ~r/timeout/, fn ->
         CtxCaller.unicast_opts_only_bad_timeout()
+      end
+    end
+
+    test "an unknown opt key in a call_on_* block raises at the first call" do
+      # A literal kwlist in selector position is the options-only form, so a
+      # typo'd key lands here — the closed-set check refuses it instead of
+      # silently fanning out with defaults.
+      assert_raise ArgumentError, ~r/unknown call option/, fn ->
+        CtxCaller.unicast_unknown_opt()
       end
     end
 
