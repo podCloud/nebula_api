@@ -375,6 +375,28 @@ defmodule NebulaAPI.ResilienceTest do
       GenServer.stop(pid)
     end
 
+    test "failure: accepts any truthy/falsy return, like success: does" do
+      pid = start_fake(PredTruthyMod, :work, 0, 0, {:error, :nope})
+
+      # success: feeds `if`, so a truthy non-boolean has always worked there.
+      # The mirror must accept the same range: a failure: returning a truthy
+      # non-boolean marks the reply a failure — it must not detonate as
+      # {:nebula_error, %ArgumentError{}} only because it was spelled failure:.
+      result =
+        APIServer.call_remote_method(
+          PredTruthyMod,
+          {:work},
+          multicast: true,
+          strategy: :first,
+          timeout: 500,
+          failure: fn {:error, _} -> 1 end
+        )
+
+      assert result == {:nebula_error, :no_success, [{node(), {:error, :nope}}]}
+
+      GenServer.stop(pid)
+    end
+
     test "passing both success: and failure: raises ArgumentError" do
       pid = start_fake(PredBothMod, :work, 0, 0, {:ok, :good})
 

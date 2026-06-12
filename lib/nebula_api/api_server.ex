@@ -912,7 +912,10 @@ defmodule NebulaAPI.APIServer do
   defp success_predicate(opts) do
     cond do
       f = Keyword.get(opts, :success) -> f
-      f = Keyword.get(opts, :failure) -> fn value -> not f.(value) end
+      # Kernel.! (not `not`): success: predicates are consumed by `if`, which
+      # accepts any truthy/falsy value — the mirror must accept the same range,
+      # not crash on a non-boolean truthy return only when spelled failure:.
+      f = Keyword.get(opts, :failure) -> fn value -> !f.(value) end
       true -> fn _value -> true end
     end
   end
