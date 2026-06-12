@@ -22,6 +22,94 @@ defmodule NebulaAPI.CompileErrorsTest do
     end
   end
 
+  describe "empty selector list ([])" do
+    setup do
+      Application.put_env(:nebula_api, :nodes, [{:test@host, [:db]}])
+      on_exit(fn -> Application.delete_env(:nebula_api, :nodes) end)
+      :ok
+    end
+
+    # [] selects no node, so nothing could ever run — it used to silently
+    # select every CONFIGURED node (the empty parse passed through every
+    # Config filter). Now it fails the build everywhere a selector is
+    # accepted; :* says "all nodes", omitting the selector says "no
+    # restriction" in call_on_*.
+
+    test "the parser rejects [] directly" do
+      assert_raise CompileError, ~r/empty nebula selector/i, fn ->
+        Parser.parse_nebula_ast(ast("[]"))
+      end
+    end
+
+    test "defapi [] raises a clear CompileError" do
+      code = """
+      defmodule NebulaAPI.CompileErrorsTest.EmptyDefapi do
+        use NebulaAPI, allow_unknown_self_node: true
+
+        defapi [], foo() do
+          :ok
+        end
+      end
+      """
+
+      assert_raise CompileError, ~r/empty nebula selector/i, fn ->
+        Code.eval_string(code)
+      end
+    end
+
+    test "on_nebula_nodes [] raises a clear CompileError" do
+      code = """
+      defmodule NebulaAPI.CompileErrorsTest.EmptyOnNodes do
+        use NebulaAPI.AST
+
+        on_nebula_nodes [] do
+          def never, do: :ok
+        end
+      end
+      """
+
+      assert_raise CompileError, ~r/empty nebula selector/i, fn ->
+        Code.eval_string(code)
+      end
+    end
+
+    test "call_on_node [] raises a clear CompileError" do
+      code = """
+      defmodule NebulaAPI.CompileErrorsTest.EmptyCallOnNode do
+        use NebulaAPI.AST
+
+        def go do
+          call_on_node [] do
+            :ok
+          end
+        end
+      end
+      """
+
+      assert_raise CompileError, ~r/empty nebula selector/i, fn ->
+        Code.eval_string(code)
+      end
+    end
+
+    test "call_on_nodes [] raises a clear CompileError (it used to select every configured node)" do
+      code = """
+      defmodule NebulaAPI.CompileErrorsTest.EmptyCallOnNodes do
+        use NebulaAPI.AST
+
+        def go do
+          call_on_nodes [], strategy: :all, timeout: 100 do
+            :ok
+          end
+        end
+      end
+      """
+
+      assert_raise CompileError, ~r/empty nebula selector/i, fn ->
+        Code.eval_string(code)
+      end
+    end
+  end
+
   describe "unsupported defapi signatures (M5)" do
     test "a pattern-matched argument raises a clear CompileError" do
       assert_raise CompileError, ~r/defapi.*argument/i, fn ->

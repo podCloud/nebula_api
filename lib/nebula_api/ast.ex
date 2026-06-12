@@ -419,7 +419,8 @@ defmodule NebulaAPI.AST do
   # A literal keyword list in selector position means the options-only form:
   # nebula selector lists contain @/&/!/atom AST shapes, never {atom, value}
   # pairs, so the two can never collide. [] is excluded on purpose — it stays
-  # an (empty) selector list and fails compilation like it always has.
+  # an (empty) selector, which the parser rejects at compile time: [] selects
+  # no node, "no restriction" is spelled by omitting the selector.
   defp opts_kwlist?(ast) do
     ast != [] and Keyword.keyword?(ast)
   end

@@ -9,6 +9,21 @@ defmodule NebulaAPI.AST.Parser do
     %{tags: [], not_tags: [], nodes: [], not_nodes: [], all_nodes: false, __unparsed: ast}
   end
 
+  # [] selects no node, so nothing could ever run: reject it at compile time
+  # everywhere a selector is accepted (defapi, on_nebula_nodes, call_on_*).
+  # "All nodes" is spelled :*; "no restriction" in call_on_node/call_on_nodes
+  # is spelled by omitting the selector entirely.
+  defp extract_nebula_config(%{__unparsed: []}) do
+    raise CompileError,
+      description: """
+      Empty nebula selector: [] selects no node, so nothing could ever run.
+
+      Use :* to target all nodes, or list at least one @node / &tag. In
+      call_on_node / call_on_nodes, omit the selector entirely to mean
+      "no restriction".
+      """
+  end
+
   defp extract_nebula_config(config = %{__unparsed: asts})
        when is_list(asts) do
     asts

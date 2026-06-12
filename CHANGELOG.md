@@ -56,7 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   positional gotcha. `call_on_nodes strategy: :quorum, at_least: 2 do ... end` fans out
   to every node serving the method; `call_on_all_nodes` is now the named alias of that
   form. Unambiguous by construction: a nebula selector list contains `@`/`&`/`!` AST
-  nodes, never keyword pairs (`[]` stays an empty — invalid — selector).
+  nodes, never keyword pairs (`[]` stays an empty selector, rejected at compile time —
+  see Fixed).
 - `nodes_info_refresh_interval` config option (ms, default `5000`).
 - `max_concurrent_calls` option on `use NebulaAPI` (default `:infinity`): caps how many
   calls a module's worker executes concurrently, per node. Excess calls queue (callers
@@ -105,6 +106,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `at_least:`) was silently dropped and the call ran with defaults the caller never
   chose — for a quorum, a durability requirement quietly replaced by the majority
   default.
+- An empty selector list (`[]`) raises a clear `CompileError` everywhere a selector is
+  accepted (`defapi`, `on_nebula_nodes`, `call_on_node`/`call_on_nodes`) — it used to
+  silently select every **configured** node. `[]` selects no node, so nothing could ever
+  run: `:*` is the explicit "all nodes", omitting the selector is the explicit "no
+  restriction" in `call_on_*`.
 - Fan-out tasks no longer grant a worker a 100 ms grace window past the multicast
   deadline (a reply earned there was always discarded — the worker just ran a body
   nobody collected); a task that starts with no budget left skips the call and reports
