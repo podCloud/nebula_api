@@ -116,6 +116,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of crashing the worker. Stray info messages and casts are likewise logged and
   ignored — the worker (and its pending queue) survives anything that reaches its
   registered name.
+- `NodesInfoCache` gets the same hardening as the worker: a stray info message, cast or
+  call no longer crashes it (its `handle_info(:refresh)` clause had replaced the permissive
+  `use GenServer` default, and the default `handle_call`/`handle_cast` raise) — repeated
+  strays would have exhausted the supervisor's restart intensity.
 - `build_nodes_info` no longer aborts the whole snapshot when one node's health collection
   crashes (a non-timeout task exit) — the faulty node is simply dropped.
 - A body that throws or exits now yields `{:nebula_error, {kind, reason}}` locally

@@ -51,6 +51,29 @@ defmodule NebulaAPI.APIServer.NodesInfoCache do
     {:noreply, state}
   end
 
+  # The cache runs under a public, predictable name: stray messages happen.
+  # Our handle_info(:refresh) clause above REPLACED the permissive default that
+  # `use GenServer` injects, and the default handle_call/handle_cast RAISE —
+  # so any stray message would crash the cache, and a repeated one would chew
+  # through the APIServer supervisor's restart intensity: the exact blast
+  # radius protected_refresh/1 exists to prevent. Same hardening as Worker.
+  @impl true
+  def handle_info(other, state) do
+    Logger.warning("NodesInfoCache ignored unexpected message: #{inspect(other)}")
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_call(other, _from, state) do
+    {:reply, {:nebula_error, {:unexpected_message, other}}, state}
+  end
+
+  @impl true
+  def handle_cast(other, state) do
+    Logger.warning("NodesInfoCache ignored unexpected cast: #{inspect(other)}")
+    {:noreply, state}
+  end
+
   # Runs one refresh, containing ANY failure (exception, throw, exit): a failing
   # refresh must never kill the cache — a crash loop here would exhaust the
   # APIServer supervisor's restart intensity and take the whole app down with it.

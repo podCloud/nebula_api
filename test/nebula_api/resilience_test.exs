@@ -565,6 +565,27 @@ defmodule NebulaAPI.ResilienceTest do
     test "a successful refresh returns :ok" do
       assert NodesInfoCache.protected_refresh(fn -> :whatever end) == :ok
     end
+
+    test "stray info, cast and call messages do not kill the cache" do
+      # The cache runs under a public name: same exposure argument as the
+      # worker's catch-alls. A stray message must be absorbed, not crash a
+      # GenServer whose crash loop would exhaust the supervisor's restart
+      # intensity.
+      {:ok, pid} = NodesInfoCache.start_link(name: nil, interval: 60_000)
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      capture_log(fn ->
+        send(pid, :garbage_info)
+        GenServer.cast(pid, :garbage_cast)
+
+        assert {:nebula_error, {:unexpected_message, :garbage_call}} =
+                 GenServer.call(pid, :garbage_call, 1_000)
+      end)
+
+      # The synchronous call above already proves info/cast were absorbed
+      # (messages are processed in order); the liveness check seals it.
+      assert Process.alive?(pid)
+    end
   end
 
   describe "unicast — node_selector error wrapping (R4)" do
