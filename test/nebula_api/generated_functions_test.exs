@@ -40,6 +40,12 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
       defapi &db, echo(x) do
         x
       end
+
+      # Reserved for the served-worker tests: only those register a worker for
+      # it, so the no-worker assertions on echo/1 stay deterministic.
+      defapi &db, echo_served(x) do
+        x
+      end
     end
     """)
 
@@ -66,6 +72,37 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
       def quorum(sel) do
         call_on_nodes sel, strategy: :quorum, at_least: 2, timeout: 100 do
           LocalOptsMod.echo(41)
+        end
+      end
+
+      # Options-only forms: no selector argument at all.
+      def unicast_opts_only do
+        call_on_node timeout: 100 do
+          LocalOptsMod.echo(41)
+        end
+      end
+
+      def unicast_opts_only_bad_timeout do
+        call_on_node timeout: :infinity do
+          LocalOptsMod.echo(41)
+        end
+      end
+
+      def quorum_opts_only do
+        call_on_nodes strategy: :quorum, at_least: 2, timeout: 100 do
+          LocalOptsMod.echo(41)
+        end
+      end
+
+      def all_opts_only do
+        call_on_nodes strategy: :all, timeout: 500 do
+          LocalOptsMod.echo_served(41)
+        end
+      end
+
+      def all_nodes_alias do
+        call_on_all_nodes timeout: 500 do
+          LocalOptsMod.echo_served(41)
         end
       end
     end
@@ -213,6 +250,51 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
 
       assert {:nebula_error, {:no_worker_on_node, ^target}} =
                CtxCaller.unicast(fn _nodes_info -> target end)
+    end
+  end
+
+  describe "call_on_* options-only form (no selector argument)" do
+    alias NebulaAPI.GeneratedFunctionsTest.CtxCaller
+    alias NebulaAPI.GeneratedFunctionsTest.LocalOptsMod
+
+    defmodule FakeWorker do
+      use GenServer
+      def init(reply), do: {:ok, reply}
+      def handle_call({:nebula_call, _fn_call}, _from, reply), do: {:reply, reply, reply}
+    end
+
+    defp start_fake_for(module, method, arity, reply) do
+      {:ok, pid} = GenServer.start(FakeWorker, reply)
+      :pg.join(:pg_nebula_api, {module, {method, arity}}, pid)
+      pid
+    end
+
+    test "call_on_node with options only is a unicast through the transport" do
+      # The semantic with_options: no restriction, the opts carried by the
+      # context. No worker serves echo/1 → the unicast no-worker shape.
+      assert {:nebula_error, {:no_worker, _}} = CtxCaller.unicast_opts_only()
+    end
+
+    test "options-only opts are validated like any call opts" do
+      assert_raise ArgumentError, ~r/timeout/, fn ->
+        CtxCaller.unicast_opts_only_bad_timeout()
+      end
+    end
+
+    test "call_on_nodes with options only multicasts to every serving node" do
+      assert {:nebula_error, :quorum_unreachable, %{workers: 0, required: 2}} =
+               CtxCaller.quorum_opts_only()
+    end
+
+    test "call_on_nodes options-only collects {node, value} like call_on_all_nodes" do
+      pid = start_fake_for(LocalOptsMod, :echo_served, 1, 41)
+
+      this = node()
+      assert [{^this, 41}] = CtxCaller.all_opts_only()
+      # call_on_all_nodes is the named alias: same target set, same shape.
+      assert [{^this, 41}] = CtxCaller.all_nodes_alias()
+
+      GenServer.stop(pid)
     end
   end
 end

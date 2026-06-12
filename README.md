@@ -359,12 +359,22 @@ end
 call_on_nodes &db, strategy: :quorum, at_least: 2 do
   MyApp.Users.write_replica(user)
 end
+
+# No selector at all: every node serving the method
+call_on_nodes strategy: :quorum, at_least: 2 do
+  MyApp.Users.write_replica(user)
+end
 ```
+
+`call_on_node` has the same options-only form — a semantic with_options:
+`call_on_node timeout: 30_000 do ... end` is a unicast to any available
+worker, with the options applying to every call in the block.
 
 ### `call_on_all_nodes` — broadcast
 
-Calls every node that serves this method (i.e. has a registered worker for it),
-not necessarily every configured node.
+Named alias of the selector-less `call_on_nodes` form: calls every node that
+serves this method (i.e. has a registered worker for it), not necessarily every
+configured node.
 
 ```elixir
 call_on_all_nodes timeout: 5_000 do

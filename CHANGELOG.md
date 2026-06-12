@@ -49,6 +49,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as a positive integer — an absolute durability floor ("at least 2 nodes hold this
   write"), legitimately below majority. Without it the quorum defaults to a strict
   majority of the targeted workers. Malformed values raise `ArgumentError` up front.
+- Options-only form for `call_on_node` / `call_on_nodes`: the selector argument can be
+  omitted entirely. `call_on_node timeout: 30_000 do ... end` is a unicast to any
+  available worker — a semantic with_options, free of the trailing-routing-opts
+  positional gotcha. `call_on_nodes strategy: :quorum, at_least: 2 do ... end` fans out
+  to every node serving the method; `call_on_all_nodes` is now the named alias of that
+  form. Unambiguous by construction: a nebula selector list contains `@`/`&`/`!` AST
+  nodes, never keyword pairs (`[]` stays an empty — invalid — selector).
 - `nodes_info_refresh_interval` config option (ms, default `5000`).
 - `max_concurrent_calls` option on `use NebulaAPI` (default `:infinity`): caps how many
   calls a module's worker executes concurrently, per node. Excess calls queue (callers
@@ -146,6 +153,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   node or unknown tag fails the build at the call site instead of melting into a
   runtime `{:nebula_error, {:selector_failed, ...}}`. Node selectors are compile-time
   by design — runtime selection goes through a function selector.
+- `call_on_all_nodes timeout: 5_000 do ... end` — the block-with-options form the README
+  has always advertised — now actually compiles: it parses as two arguments and no
+  arity-2 head existed to receive it.
 - `mix docs` (and therefore `mix hex.publish`) no longer fails — the `docs` extras point at
   files that exist.
 - `defapi` no longer emits compiler warnings in consumer modules ("default values for

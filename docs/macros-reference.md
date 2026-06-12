@@ -117,7 +117,13 @@ keyword list binds to `filters` — your routing options are silently served to 
 body as business data and no routing happens. Fill the business arguments
 explicitly (`MyApp.Store.list([], multicast: true)`), or use the `call_on_node` /
 `call_on_nodes` blocks, which carry the routing through the call context and
-avoid the ambiguity entirely.
+avoid the ambiguity entirely — their options-only form is the direct antidote:
+
+```elixir
+call_on_node timeout: 30_000 do
+  MyApp.Store.list()
+end
+```
 
 Routing opts are validated on every node, even when the call resolves locally and
 the transport never runs: an invalid opt (`timeout: :infinity`, `strategy:` or
@@ -188,6 +194,13 @@ call_on_node fn nodes_info ->
 end, timeout: 10_000 do
   MyApp.HeavyTask.run()
 end
+
+# Or options only — no selector: any available worker, with these options.
+# The semantic with_options: the calls in the block route through the
+# transport with these opts, without the trailing-opts positional gotcha.
+call_on_node timeout: 30_000 do
+  MyApp.HeavyTask.run()
+end
 ```
 
 | Option | Type | Default |
@@ -210,6 +223,12 @@ first available worker, and the block's options (`timeout:`, ...) still apply. A
 ```elixir
 call_on_nodes &worker, strategy: :all, timeout: 30_000 do
   MyApp.Jobs.health_check()
+end
+
+# Options only — no selector: every node serving the method.
+# `call_on_all_nodes` is the named alias of this form.
+call_on_nodes strategy: :quorum, at_least: 2 do
+  MyApp.Users.write_replica(user)
 end
 ```
 
@@ -293,9 +312,9 @@ silently ignored. `call_on_node` also rejects them at compile time.
 
 ## `call_on_all_nodes` — broadcast
 
-Convenience wrapper for multicast over every node that **serves this method** —
-i.e. every node that has a registered worker for it, not necessarily every
-configured node. Same options as `call_on_nodes`.
+Named alias of the selector-less `call_on_nodes` form: multicast over every node
+that **serves this method** — i.e. every node that has a registered worker for
+it, not necessarily every configured node. Same options as `call_on_nodes`.
 
 ```elixir
 call_on_all_nodes timeout: 5_000 do

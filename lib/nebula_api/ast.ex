@@ -21,11 +21,14 @@ defmodule NebulaAPI.AST do
                  only: [
                    defapi: 3,
                    on_nebula_nodes: 2,
+                   call_on_node: 1,
                    call_on_node: 2,
                    call_on_node: 3,
+                   call_on_nodes: 1,
                    call_on_nodes: 2,
                    call_on_nodes: 3,
-                   call_on_all_nodes: 1
+                   call_on_all_nodes: 1,
+                   call_on_all_nodes: 2
                  ]
                )
              )
@@ -186,11 +189,35 @@ defmodule NebulaAPI.AST do
       end, timeout: 5000 do
         MyModule.api_method()
       end
+
+      # Options only — no selector: any available worker, with these options.
+      # The semantic with_options, free of the trailing-opts positional gotcha.
+      call_on_node timeout: 30_000 do
+        MyModule.api_method()
+      end
   """
+  # Options-only form: `call_on_node timeout: 30_000 do ... end` — no selector
+  # means "no restriction" (first available worker), the options apply through
+  # the call context. The semantic with_options: it routes through the
+  # transport with these opts, without the trailing-routing-opts positional
+  # gotcha.
+  defmacro call_on_node(opts) when is_list(opts) do
+    {block, opts} = Keyword.pop!(opts, :do)
+    do_call_on_node(nil, opts, block, __CALLER__)
+  end
+
   defmacro call_on_node(selector_or_nebula_ast, opts_or_block)
 
-  defmacro call_on_node(selector_or_nebula_ast, do: block) do
-    do_call_on_node(selector_or_nebula_ast, [], block, __CALLER__)
+  # A literal keyword list in selector position is the options-only form too
+  # (`call_on_node timeout: 100 do` parses as two arguments): a nebula selector
+  # list contains @/&/! AST nodes, never {atom, value} pairs — the two shapes
+  # cannot collide. [] stays an (empty, invalid) selector.
+  defmacro call_on_node(selector_or_opts, do: block) do
+    if opts_kwlist?(selector_or_opts) do
+      do_call_on_node(nil, selector_or_opts, block, __CALLER__)
+    else
+      do_call_on_node(selector_or_opts, [], block, __CALLER__)
+    end
   end
 
   defmacro call_on_node(selector_or_nebula_ast, opts) when is_list(opts) do
@@ -280,11 +307,31 @@ defmodule NebulaAPI.AST do
       end, timeout: 5000, strategy: :all do
         MyModule.api_method()
       end
+
+      # Options only — no selector: every node serving the method.
+      # `call_on_all_nodes` is the named alias of this form.
+      call_on_nodes strategy: :quorum, at_least: 2 do
+        MyModule.api_method()
+      end
   """
+  # Options-only form: `call_on_nodes strategy: :quorum, at_least: 2 do ... end`
+  # — no selector means "no restriction": fan out to every node serving the
+  # method. `call_on_all_nodes` is the named alias of this form.
+  defmacro call_on_nodes(opts) when is_list(opts) do
+    {block, opts} = Keyword.pop!(opts, :do)
+    do_call_on_nodes(nil, opts, block, __CALLER__)
+  end
+
   defmacro call_on_nodes(selector_or_nebula_ast, opts_or_block)
 
-  defmacro call_on_nodes(selector_or_nebula_ast, do: block) do
-    do_call_on_nodes(selector_or_nebula_ast, [], block, __CALLER__)
+  # Same disambiguation as call_on_node/2: a literal keyword list in selector
+  # position is the options-only form.
+  defmacro call_on_nodes(selector_or_opts, do: block) do
+    if opts_kwlist?(selector_or_opts) do
+      do_call_on_nodes(nil, selector_or_opts, block, __CALLER__)
+    else
+      do_call_on_nodes(selector_or_opts, [], block, __CALLER__)
+    end
   end
 
   defmacro call_on_nodes(selector_or_nebula_ast, opts) when is_list(opts) do
@@ -335,7 +382,8 @@ defmodule NebulaAPI.AST do
   @doc """
   Multicast call on all available nodes.
 
-  Convenience wrapper around `call_on_nodes` that selects all nodes.
+  Named alias of the selector-less `call_on_nodes` form: it targets every node
+  serving the method (i.e. with a registered worker for it).
 
   ## Examples
 
@@ -349,18 +397,31 @@ defmodule NebulaAPI.AST do
   """
   defmacro call_on_all_nodes(opts_or_block)
 
+  # Named alias of the selector-less call_on_nodes: nil selector = every node
+  # serving the method. (It used to pass an explicit Map.keys/1 selector —
+  # same target set, but a pointless trip through the nodes_info snapshot.)
   defmacro call_on_all_nodes(do: block) do
-    quote do
-      call_on_nodes(fn nodes_info -> Map.keys(nodes_info) end, do: unquote(block))
-    end
+    do_call_on_nodes(nil, [], block, __CALLER__)
   end
 
   defmacro call_on_all_nodes(opts) when is_list(opts) do
     {block, opts} = Keyword.pop!(opts, :do)
+    do_call_on_nodes(nil, opts, block, __CALLER__)
+  end
 
-    quote do
-      call_on_nodes(fn nodes_info -> Map.keys(nodes_info) end, unquote(opts), do: unquote(block))
-    end
+  # `call_on_all_nodes timeout: 5_000 do ... end` parses as TWO arguments
+  # (the opts list, then the block) — the README has always advertised this
+  # form, but no arity-2 head existed to receive it: it never compiled.
+  defmacro call_on_all_nodes(opts, do: block) when is_list(opts) do
+    do_call_on_nodes(nil, opts, block, __CALLER__)
+  end
+
+  # A literal keyword list in selector position means the options-only form:
+  # nebula selector lists contain @/&/!/atom AST shapes, never {atom, value}
+  # pairs, so the two can never collide. [] is excluded on purpose — it stays
+  # an (empty) selector list and fails compilation like it always has.
+  defp opts_kwlist?(ast) do
+    ast != [] and Keyword.keyword?(ast)
   end
 
   # The call_on_* macros only accept literal keyword lists, so conflicting
