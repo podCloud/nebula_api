@@ -118,6 +118,10 @@ defmodule NebulaAPI.APIServer do
   Calls a remote method with optional routing options.
 
   ## Options
+
+  For every option, `nil` means "not set": the call behaves as if the option
+  were absent (a computed `strategy: maybe_strategy` holding `nil` resolves to
+  the default). Any other malformed value raises `ArgumentError` up front.
   - `:timeout` - Timeout in milliseconds. Default: the module's `default_timeout`,
     then `config :nebula_api, default_timeout:`, then 5000. `nil` means "not set"
     (the default resolution applies); any other non-integer raises.
@@ -144,7 +148,7 @@ defmodule NebulaAPI.APIServer do
   def call_remote_method(module, fn_call, opts \\ []) do
     timeout = validate_call_opts!(module, opts)
     multicast = Keyword.get(opts, :multicast, false)
-    strategy = Keyword.get(opts, :strategy, :all)
+    strategy = Keyword.get(opts, :strategy) || :all
     node_selector = Keyword.get(opts, :node_selector)
 
     Logger.debug("""
@@ -498,10 +502,13 @@ defmodule NebulaAPI.APIServer do
   # routers also call this on LOCALLY-resolved calls carrying routing opts:
   # the opts are validated everywhere, consumed only where the call actually
   # goes remote — invalid opts raise identically on every node.
+  # Every opt follows the same nil convention as timeout:/node_selector: —
+  # nil means "not set", so a computed `strategy: maybe_strategy` holding nil
+  # resolves to the default instead of raising or half-applying.
   @doc false
   def validate_call_opts!(module, opts) do
-    multicast = Keyword.get(opts, :multicast, false)
-    strategy = Keyword.get(opts, :strategy, :all)
+    multicast = Keyword.get(opts, :multicast) || false
+    strategy = Keyword.get(opts, :strategy) || :all
     validate_strategy_opts!(opts, multicast)
     validate_predicate_opts!(opts, multicast, strategy)
     validate_quorum_opts!(opts, multicast, strategy)
@@ -817,6 +824,11 @@ defmodule NebulaAPI.APIServer do
       :error ->
         :ok
 
+      # nil means "not set" (the :all default applies) — same convention as
+      # every other call opt.
+      {:ok, nil} ->
+        :ok
+
       {:ok, strategy} when strategy not in @valid_strategies ->
         raise ArgumentError,
               "strategy: must be one of #{inspect(@valid_strategies)}, " <>
@@ -859,8 +871,10 @@ defmodule NebulaAPI.APIServer do
   end
 
   defp validate_predicate_opts!(opts, multicast, strategy) do
+    # A nil predicate is "not set" everywhere: it neither counts as present
+    # for the applicability check below, nor reaches the form validation.
     has_predicate? =
-      Keyword.has_key?(opts, :success) or Keyword.has_key?(opts, :failure)
+      Keyword.get(opts, :success) != nil or Keyword.get(opts, :failure) != nil
 
     if has_predicate? and not (multicast and strategy in [:first, :quorum]) do
       raise ArgumentError,

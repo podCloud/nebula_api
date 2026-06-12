@@ -82,6 +82,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An unknown `strategy:` no longer falls into the `:all` catch-all (`strategy: :qourum`
   silently turned a quorum write into a plain broadcast); it raises `ArgumentError` up
   front, as does `strategy:` on a non-multicast call, where it would be silently ignored.
+- The `nil`-means-"not set" convention now covers every call opt: `strategy: nil`
+  resolves to the `:all` default (it used to raise), and `success: nil` / `failure: nil`
+  are absent for the applicability check too (they used to raise "would be silently
+  ignored" on unicast while already counting as unset on `:first`/`:quorum`).
 - A `node_selector:` that is not a 1-arity function raises `ArgumentError` up front,
   like every other malformed call opt — it used to melt into
   `{:nebula_error, {:selector_failed, {:badfun, _}}}` at selection time, the one

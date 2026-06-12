@@ -130,6 +130,55 @@ defmodule NebulaAPI.CallOptionsTest do
     end
   end
 
+  describe "nil call opts mean 'not set' across the board" do
+    alias NebulaAPI.APIServer
+
+    test "strategy: nil resolves to the :all default, multicast or not" do
+      # Same convention as timeout:/node_selector: nil — a computed
+      # `strategy: maybe_strategy` holding nil must neither raise nor
+      # half-apply. Multicast with no workers → [] is :all's own contract.
+      assert APIServer.call_remote_method(NoSuchMod, {:work},
+               multicast: true,
+               strategy: nil,
+               timeout: 100
+             ) == []
+
+      assert {:nebula_error, {:no_worker, _}} =
+               APIServer.call_remote_method(NoSuchMod, {:work}, strategy: nil, timeout: 100)
+    end
+
+    test "success:/failure: nil are absent for the applicability check too" do
+      # Before the fix, Keyword.has_key? counted a nil predicate as PRESENT:
+      # success: nil raised 'would be silently ignored' on unicast while being
+      # treated as unset on :first — nil meant two different things one line
+      # apart.
+      assert {:nebula_error, {:no_worker, _}} =
+               APIServer.call_remote_method(NoSuchMod, {:work}, success: nil, timeout: 100)
+
+      assert APIServer.call_remote_method(NoSuchMod, {:work},
+               multicast: true,
+               strategy: :all,
+               failure: nil,
+               timeout: 100
+             ) == []
+    end
+
+    test "multicast: nil routes as unicast and validates cleanly" do
+      assert {:nebula_error, {:no_worker, _}} =
+               APIServer.call_remote_method(NoSuchMod, {:work}, multicast: nil, timeout: 100)
+
+      # The inapplicability checks must speak about the OPT, not crash on a
+      # bare `not nil`.
+      assert_raise ArgumentError, ~r/at_least/, fn ->
+        APIServer.call_remote_method(NoSuchMod, {:work},
+          multicast: nil,
+          at_least: 2,
+          timeout: 100
+        )
+      end
+    end
+  end
+
   describe "node_selector: validation" do
     alias NebulaAPI.APIServer
 
