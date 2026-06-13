@@ -259,50 +259,7 @@ use the short name: `@db` matches `:"db@db.example"`, `@worker` matches
 `:"worker@worker.example"` — when there's no ambiguity, short names are all you
 need.
 
-### 2. Compile with the target node name
-
-NebulaAPI keys its codegen on `node()` at **compile time** — so each release is *compiled*
-as the node it will run as. That's the `--name` flag on `mix compile`:
-
-```bash
-elixir --name api@api.example -S mix compile && mix release api
-```
-
-Build each release in its own stage, pinning the compile-time node name:
-
-```dockerfile
-# api release — compiled as node api@api.example
-RUN elixir --name api@api.example -S mix compile && mix release api
-
-# worker release — separate stage, compiled as node worker@worker.example
-RUN elixir --name worker@worker.example -S mix compile && mix release worker
-```
-
-Then each release must **boot as that same node name**. That's a separate, *runtime*
-concern, handled by [Mix release's own env vars](https://hexdocs.pm/mix/Mix.Tasks.Release.html#module-environment-variables)
-— `RELEASE_NODE` (the node name) and `RELEASE_DISTRIBUTION` (`name` for fully-qualified
-names across hosts; the default is `sname`):
-
-```bash
-# at run time, in the api container
-RELEASE_DISTRIBUTION=name RELEASE_NODE=api@api.example bin/api start
-```
-
-The compile-time `--name` and the runtime `RELEASE_NODE` **must match** — that's the whole
-contract: the routing was decided for `api@api.example` at build, so the release has to
-actually be `api@api.example` when it runs. (`RELEASE_NODE` defaults to `<release_name>@…`
-with short-name distribution, so set it explicitly to get the fully-qualified name.)
-
-In dev/test, you typically don't start the VM with `--name`. Use
-`default_opts` to tell the compiler which node to pretend to be:
-
-```elixir
-# config/dev.exs
-config :nebula_api,
-  default_opts: [self_node: :"api@api.example"]
-```
-
-### 3. Define distributed functions
+### 2. Define distributed functions
 
 ```elixir
 defmodule MyApp.Users do
@@ -315,7 +272,7 @@ defmodule MyApp.Users do
 end
 ```
 
-### 4. Wire a server into each app's supervision tree
+### 3. Wire a server into each app's supervision tree
 
 ```elixir
 defmodule MyApp.Application do
@@ -355,6 +312,50 @@ end
 If an app has modules with local methods but no `nebula_api_server()` wired into its
 supervisor, `mix compile` fails with an explanatory error — the same spirit as the
 compile error raised for a `defapi` targeting an unknown node.
+
+### 4. Compile with the target node name
+
+With the code and server in place, compile each release **as the node it will run as** —
+NebulaAPI keys its codegen on `node()` at **compile time**, which you set with the `--name`
+flag on `mix compile`:
+
+```bash
+elixir --name api@api.example -S mix compile && mix release api
+```
+
+Build each release in its own stage, pinning the compile-time node name:
+
+```dockerfile
+# api release — compiled as node api@api.example
+RUN elixir --name api@api.example -S mix compile && mix release api
+
+# worker release — separate stage, compiled as node worker@worker.example
+RUN elixir --name worker@worker.example -S mix compile && mix release worker
+```
+
+Then each release must **boot as that same node name**. That's a separate, *runtime*
+concern, handled by [Mix release's own env vars](https://hexdocs.pm/mix/Mix.Tasks.Release.html#module-environment-variables)
+— `RELEASE_NODE` (the node name) and `RELEASE_DISTRIBUTION` (`name` for fully-qualified
+names across hosts; the default is `sname`):
+
+```bash
+# at run time, in the api container
+RELEASE_DISTRIBUTION=name RELEASE_NODE=api@api.example bin/api start
+```
+
+The compile-time `--name` and the runtime `RELEASE_NODE` **must match** — that's the whole
+contract: the routing was decided for `api@api.example` at build, so the release has to
+actually be `api@api.example` when it runs. (`RELEASE_NODE` defaults to `<release_name>@…`
+with short-name distribution, so set it explicitly to get the fully-qualified name.)
+
+In dev/test, you typically don't start the VM with `--name`. Use
+`default_opts` to tell the compiler which node to pretend to be:
+
+```elixir
+# config/dev.exs
+config :nebula_api,
+  default_opts: [self_node: :"api@api.example"]
+```
 
 ### 5. Call it — local or remote, same API
 
