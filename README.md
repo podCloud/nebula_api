@@ -99,9 +99,7 @@ runtime router — it's a code generator that produces different bytecode
 for each node.
 
 **Smaller binaries.** Code that doesn't belong on a node doesn't exist in its binary — a
-`defapi` body is only emitted on matching nodes ([`bench/binary_size.exs`](bench/binary_size.exs):
-a module's `.beam` is **~4.0 KB on a non-matching node vs ~6.5 KB, 38% smaller** — the body
-isn't there). Whole dependencies fall away the same way. The
+`defapi` body is only emitted on matching nodes. Whole dependencies fall away the same way. The
 [runnable demo](https://github.com/podCloud/NebulaAPI/tree/main/demo) pins Cachex to its
 `db` node (`on_nebula_nodes @db` plus a conditional dep), so only that build carries Cachex
 and its dependency tree (~570 KB); every other node never compiles it and comes out
