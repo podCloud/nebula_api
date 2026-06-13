@@ -29,26 +29,30 @@ defmodule NebulaAPI.MulticastStrategiesTest do
     end
 
     test "call_remote_method accepts :first strategy" do
+      # With no workers registered there is no success to return — :first never
+      # yields a bare list anymore: it fails on the :nebula_error channel.
       opts = [multicast: true, strategy: :first, timeout: 100]
       result = APIServer.call_remote_method(NonExistentModule, {:test_fn}, opts)
-      assert result == []
+      assert result == {:nebula_error, :no_success, []}
     end
 
     test "call_remote_method accepts :quorum strategy" do
-      opts = [multicast: true, strategy: :quorum, quorum_count: 2, timeout: 100]
+      # With no workers registered, at_least: 2 is unreachable (0 workers < 2
+      # required) — the contract returns :quorum_unreachable instead of [].
+      opts = [multicast: true, strategy: :quorum, at_least: 2, timeout: 100]
       result = APIServer.call_remote_method(NonExistentModule, {:test_fn}, opts)
-      assert result == []
+      assert {:nebula_error, :quorum_unreachable, %{workers: 0, required: 2}} = result
     end
   end
 
   describe "unicast with selector" do
     test "returns error when no worker on selected node" do
-      selector = fn _nodes_info -> :"nonexistent@localhost" end
+      selector = fn _nodes_info -> :nonexistent@localhost end
       opts = [node_selector: selector, timeout: 100]
 
       result = APIServer.call_remote_method(NonExistentModule, {:test_fn}, opts)
 
-      assert {:error, _} = result
+      assert {:nebula_error, _} = result
     end
   end
 
@@ -81,19 +85,14 @@ defmodule NebulaAPI.MulticastStrategiesTest do
   end
 
   describe "quorum validation" do
-    test "quorum_count defaults to majority" do
-      # With 3 workers, default quorum should be 2 (3/2 + 1)
-      # With 5 workers, default quorum should be 3 (5/2 + 1)
-      # This is tested implicitly through the implementation
-
-      # We can test this by examining the default calculation
-      workers_count = 5
-      expected_quorum = div(workers_count, 2) + 1
-      assert expected_quorum == 3
-
-      workers_count = 3
-      expected_quorum = div(workers_count, 2) + 1
-      assert expected_quorum == 2
+    test "without at_least: the quorum defaults to a strict majority" do
+      # 0 workers, no at_least: → required = div(0, 2) + 1 = 1. The fail-fast
+      # :quorum_unreachable exposes the resolved requirement, so this exercises
+      # the actual default through the public API (not a re-derivation of the
+      # arithmetic).
+      opts = [multicast: true, strategy: :quorum, timeout: 100]
+      result = APIServer.call_remote_method(NonExistentModule, {:test_fn}, opts)
+      assert {:nebula_error, :quorum_unreachable, %{workers: 0, required: 1}} = result
     end
   end
 end

@@ -4,10 +4,10 @@ defmodule NebulaAPI.ConfigTest do
   alias NebulaAPI.Config
 
   @nodes [
-    {:"nebula@host1", :db},
-    {:"storage@host2", :storage},
-    {:"search@host3", [:db, :search]},
-    {:"full@host4", [:db, :storage, :search]}
+    {:nebula@host1, :db},
+    {:storage@host2, :storage},
+    {:search@host3, [:db, :search]},
+    {:full@host4, [:db, :storage, :search]}
   ]
 
   # ============================================================================
@@ -23,20 +23,24 @@ defmodule NebulaAPI.ConfigTest do
       result = Config.nodes_for_tags(@nodes, [:db])
       names = node_names(result)
 
-      assert :"nebula@host1" in names
-      assert :"search@host3" in names
-      assert :"full@host4" in names
-      refute :"storage@host2" in names
+      assert :nebula@host1 in names
+      assert :search@host3 in names
+      assert :full@host4 in names
+      refute :storage@host2 in names
     end
 
     test "filters nodes matching ANY of the requested tags (OR semantics)" do
       result = Config.nodes_for_tags(@nodes, [:db, :search])
       names = node_names(result)
 
-      assert :"nebula@host1" in names    # has :db
-      assert :"search@host3" in names    # has [:db, :search]
-      assert :"full@host4" in names      # has [:db, :storage, :search]
-      refute :"storage@host2" in names   # has :storage, no match
+      # has :db
+      assert :nebula@host1 in names
+      # has [:db, :search]
+      assert :search@host3 in names
+      # has [:db, :storage, :search]
+      assert :full@host4 in names
+      # has :storage, no match
+      refute :storage@host2 in names
     end
 
     test "three tags matches all nodes that have at least one" do
@@ -55,9 +59,9 @@ defmodule NebulaAPI.ConfigTest do
       result = Config.nodes_for_tags(@nodes, :storage)
       names = node_names(result)
 
-      assert :"storage@host2" in names
-      assert :"full@host4" in names
-      refute :"nebula@host1" in names
+      assert :storage@host2 in names
+      assert :full@host4 in names
+      refute :nebula@host1 in names
     end
 
     test "returns empty when no node matches" do
@@ -78,40 +82,40 @@ defmodule NebulaAPI.ConfigTest do
       result = Config.nodes_for_not_tags(@nodes, [:db])
       names = node_names(result)
 
-      refute :"nebula@host1" in names
-      assert :"storage@host2" in names
-      refute :"search@host3" in names
-      refute :"full@host4" in names
+      refute :nebula@host1 in names
+      assert :storage@host2 in names
+      refute :search@host3 in names
+      refute :full@host4 in names
     end
 
     test "excludes list-tagged nodes with any overlap" do
       result = Config.nodes_for_not_tags(@nodes, [:search])
       names = node_names(result)
 
-      assert :"nebula@host1" in names
-      assert :"storage@host2" in names
-      refute :"search@host3" in names
-      refute :"full@host4" in names
+      assert :nebula@host1 in names
+      assert :storage@host2 in names
+      refute :search@host3 in names
+      refute :full@host4 in names
     end
 
     test "accepts single atom instead of list" do
       result = Config.nodes_for_not_tags(@nodes, :storage)
       names = node_names(result)
 
-      refute :"storage@host2" in names
-      refute :"full@host4" in names
-      assert :"nebula@host1" in names
-      assert :"search@host3" in names
+      refute :storage@host2 in names
+      refute :full@host4 in names
+      assert :nebula@host1 in names
+      assert :search@host3 in names
     end
 
     test "excludes nodes matching any of multiple exclusion tags" do
       result = Config.nodes_for_not_tags(@nodes, [:db, :storage])
       names = node_names(result)
 
-      refute :"nebula@host1" in names
-      refute :"storage@host2" in names
-      refute :"search@host3" in names
-      refute :"full@host4" in names
+      refute :nebula@host1 in names
+      refute :storage@host2 in names
+      refute :search@host3 in names
+      refute :full@host4 in names
       assert result == []
     end
 
@@ -130,32 +134,32 @@ defmodule NebulaAPI.ConfigTest do
     end
 
     test "filters by full node name" do
-      result = Config.nodes_for_nodes_names(@nodes, [:"nebula@host1"])
+      result = Config.nodes_for_nodes_names(@nodes, [:nebula@host1])
       assert length(result) == 1
-      assert elem(hd(result), 0) == :"nebula@host1"
+      assert elem(hd(result), 0) == :nebula@host1
     end
 
     test "filters by short name (before @)" do
       result = Config.nodes_for_nodes_names(@nodes, [:nebula])
       assert length(result) == 1
-      assert elem(hd(result), 0) == :"nebula@host1"
+      assert elem(hd(result), 0) == :nebula@host1
     end
 
     test "filters multiple names" do
       result = Config.nodes_for_nodes_names(@nodes, [:nebula, :storage])
       names = node_names(result)
 
-      assert :"nebula@host1" in names
-      assert :"storage@host2" in names
+      assert :nebula@host1 in names
+      assert :storage@host2 in names
       assert length(result) == 2
     end
 
     test "mixes short and full names" do
-      result = Config.nodes_for_nodes_names(@nodes, [:nebula, :"storage@host2"])
+      result = Config.nodes_for_nodes_names(@nodes, [:nebula, :storage@host2])
       names = node_names(result)
 
-      assert :"nebula@host1" in names
-      assert :"storage@host2" in names
+      assert :nebula@host1 in names
+      assert :storage@host2 in names
       assert length(result) == 2
     end
   end
@@ -170,10 +174,10 @@ defmodule NebulaAPI.ConfigTest do
     end
 
     test "excludes by full node name" do
-      result = Config.nodes_for_not_nodes_names(@nodes, [:"nebula@host1"])
+      result = Config.nodes_for_not_nodes_names(@nodes, [:nebula@host1])
       names = node_names(result)
 
-      refute :"nebula@host1" in names
+      refute :nebula@host1 in names
       assert length(result) == 3
     end
 
@@ -181,7 +185,7 @@ defmodule NebulaAPI.ConfigTest do
       result = Config.nodes_for_not_nodes_names(@nodes, [:nebula])
       names = node_names(result)
 
-      refute :"nebula@host1" in names
+      refute :nebula@host1 in names
       assert length(result) == 3
     end
 
@@ -189,19 +193,19 @@ defmodule NebulaAPI.ConfigTest do
       result = Config.nodes_for_not_nodes_names(@nodes, [:nebula, :storage])
       names = node_names(result)
 
-      refute :"nebula@host1" in names
-      refute :"storage@host2" in names
+      refute :nebula@host1 in names
+      refute :storage@host2 in names
       assert length(result) == 2
     end
 
     test "mixes short and full names for exclusion" do
-      result = Config.nodes_for_not_nodes_names(@nodes, [:nebula, :"storage@host2"])
+      result = Config.nodes_for_not_nodes_names(@nodes, [:nebula, :storage@host2])
       names = node_names(result)
 
-      refute :"nebula@host1" in names
-      refute :"storage@host2" in names
-      assert :"search@host3" in names
-      assert :"full@host4" in names
+      refute :nebula@host1 in names
+      refute :storage@host2 in names
+      assert :search@host3 in names
+      assert :full@host4 in names
     end
   end
 
@@ -222,7 +226,7 @@ defmodule NebulaAPI.ConfigTest do
     end
 
     test "returns :ok with valid full node name" do
-      config = %{tags: [], not_tags: [], nodes: [:"nebula@host1"], not_nodes: []}
+      config = %{tags: [], not_tags: [], nodes: [:nebula@host1], not_nodes: []}
       assert Config.validate_with_nodes(config, @nodes) == :ok
     end
 

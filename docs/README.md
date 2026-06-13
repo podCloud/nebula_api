@@ -7,8 +7,8 @@ start; these pages go deeper.
 
 ## Pages
 
-- **[Concepts](concepts.md)** — nodes, tags, selectors, the execution model, result
-  wrapping, and the three `use` macros.
+- **[Concepts](concepts.md)** — nodes, tags, selectors, the execution model, return
+  values (the transparent contract), and the three `use` macros.
 - **[Configuration](configuration.md)** — the `nodes` topology, `default_opts`, dev/test
   setup, and compile-time validation.
 - **[Macros Reference](macros-reference.md)** — `defapi`, `on_nebula_nodes`,
@@ -21,7 +21,7 @@ start; these pages go deeper.
 ## Deep dive
 
 - **[AST Deep-Dive](deep-dive/ast-deep-dive.md)** — how selectors are parsed and how the
-  three functions per `defapi` are generated, with worked examples.
+  functions behind each `defapi` are generated, with worked examples.
 
 ## Guides
 

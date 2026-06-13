@@ -1,7 +1,9 @@
 defmodule NebulaAPI.Config do
   @defaults [
     nodes: [],
-    default_opts: []
+    default_opts: [],
+    nodes_info_refresh_interval: 5_000,
+    default_timeout: 5_000
   ]
 
   def config() do
@@ -15,6 +17,17 @@ defmodule NebulaAPI.Config do
 
   def default_opts() do
     config()[:default_opts]
+  end
+
+  # How often (ms) NodesInfoCache refreshes the cluster node-info snapshot.
+  def nodes_info_refresh_interval() do
+    config()[:nodes_info_refresh_interval]
+  end
+
+  # Global default timeout (ms) for remote calls, overridable per module
+  # (`use NebulaAPI, default_timeout: ...`) and per call (`timeout:` option).
+  def default_timeout() do
+    config()[:default_timeout]
   end
 
   def validate_with_nodes(config, nodes) do
@@ -43,6 +56,16 @@ defmodule NebulaAPI.Config do
 
                   is_atom(tags) ->
                     [tags]
+
+                  true ->
+                    raise CompileError,
+                      description: """
+                      Invalid tags for node #{inspect(name)}: #{inspect(tags)}
+
+                      Each node's tags must be an atom or a list of atoms, e.g.
+                        "node@host": :db
+                        "node@host": [:db, :api]
+                      """
                 end
           }
         end
@@ -113,7 +136,7 @@ defmodule NebulaAPI.Config do
     |> Enum.filter(fn
       {_node_name, node_tags} when is_list(node_tags) ->
         # keep node if NONE of the excluded tags are present
-        (tags -- node_tags) == tags
+        tags -- node_tags == tags
 
       {_node_name, node_tag} when is_atom(node_tag) ->
         not Enum.member?(tags, node_tag)

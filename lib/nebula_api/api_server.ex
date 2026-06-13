@@ -8,12 +8,23 @@ defmodule NebulaAPI.APIServer do
   - Multicast to multiple nodes
 
   ## Multicast strategies
-  - `:all` - Wait for all responses (or timeout), returns list of results
-  - `:first` - Return as soon as one response is received
-  - `:quorum` - Wait for N responses (configurable), returns tagged result:
-    - `{:ok, results}` when quorum is reached
-    - `{:error, :quorum_not_reached, results}` when not enough successful responses
-    - `{:error, :quorum_timeout, results}` when timeout occurs before quorum
+
+  Every per-node response is a `{node, value}` pair, where `value` is the body's
+  return value, verbatim. A node whose call failed at the transport level yields
+  `{node, {:nebula_error, reason}}`.
+
+  - `:all` - Wait for every targeted node (or the timeout). Returns one `{node, value}`
+    per targeted node — nodes that did not answer in time are reported as
+    `{node, {:nebula_error, :timeout}}`, never silently dropped.
+  - `:first` - Return the first response that counts as a success (see the
+    `:success`/`:failure` options) as a single `{node, value}`. If no response
+    qualifies: `{:nebula_error, :no_success, results}` (never a bare list).
+  - `:quorum` - Wait for N successes — `at_least:` workers, or a strict majority of the
+    targeted workers by default. Reached: the list of collected `{node, value}` responses.
+    Not reached:
+    `{:nebula_error, :quorum_not_reached, results}` or `{:nebula_error, :quorum_timeout, results}`.
+    Impossible quorum (required > available workers): `{:nebula_error, :quorum_unreachable,
+    %{workers: n, required: m}}` — returned before any call is made.
 
   ## Node Info Cache
 
@@ -55,10 +66,8 @@ defmodule NebulaAPI.APIServer do
 
   require Logger
 
-  @default_timeout 5000
   @nodes_cache_table :nebula_nodes_cache
   @nodes_info_cache_key :__nodes_info_snapshot__
-  @nodes_info_ttl_ms 5_000
 
   def start_link(init_arg) do
     Supervisor.start_link(__MODULE__, init_arg, name: __MODULE__)
@@ -77,11 +86,15 @@ defmodule NebulaAPI.APIServer do
         :ok
     end
 
-    # Only the cluster-wide bits live here: the :pg scope used for routing and the
-    # ETS nodes cache created above. Per-module workers are NOT started here — each
-    # consumer app owns a NebulaAPI.Server in its own tree (see the nebula_api_server/0
-    # macro), which discovers and supervises its modules' workers.
-    Supervisor.init([pg_spec()], strategy: :one_for_one)
+    # Only the cluster-wide bits live here: the :pg scope used for routing, the ETS
+    # nodes cache created above, and the per-node NodesInfoCache that refreshes the
+    # node-info snapshot in the background. Per-module workers are NOT started here —
+    # each consumer app owns a NebulaAPI.Server in its own tree (see the
+    # nebula_api_server/0 macro), which discovers and supervises its modules' workers.
+    Supervisor.init(
+      [pg_spec(), NebulaAPI.APIServer.NodesInfoCache],
+      strategy: :one_for_one
+    )
   end
 
   def registered_remote_methods(module) do
@@ -105,24 +118,40 @@ defmodule NebulaAPI.APIServer do
   Calls a remote method with optional routing options.
 
   ## Options
-  - `:timeout` - Timeout in milliseconds (default: #{@default_timeout})
-  - `:node_selector` - Function that takes nodes_info map and returns node(s) to call
-  - `:multicast` - If true, calls multiple nodes and returns list of results
+
+  For every option, `nil` means "not set": the call behaves as if the option
+  were absent (a computed `strategy: maybe_strategy` holding `nil` resolves to
+  the default). Any other malformed value raises `ArgumentError` up front, and
+  so does any unknown option key — the option set below is closed, a typo'd
+  key must not be silently dropped.
+  - `:timeout` - Timeout in milliseconds. Default: the module's `default_timeout`,
+    then `config :nebula_api, default_timeout:`, then 5000. `nil` means "not set"
+    (the default resolution applies); any other non-integer raises.
+  - `:node_selector` - 1-arity function that takes the nodes_info map and returns
+    node(s) to call. Anything else (besides `nil`, "not set") raises `ArgumentError`
+    up front, like every other malformed call opt.
+  - `:multicast` - If true, calls multiple nodes and returns a list of results
   - `:strategy` - Multicast strategy: `:all`, `:first`, `:quorum` (default: `:all`)
-  - `:quorum_count` - Number of responses needed for `:quorum` strategy
+  - `:at_least` - Positive integer: number of successes required by the `:quorum`
+    strategy. Default (when absent): a strict majority of the targeted workers,
+    `div(workers, 2) + 1`.
+  - `:success` - (`:first`/`:quorum` only) predicate `fn value -> boolean` defining
+    what counts as a business success. Default: any worker that replied counts
+    (a `{:nebula_error, _}` never does). Mutually exclusive with `:failure`.
+  - `:failure` - mirror of `:success`: `fn value -> boolean` returning true for
+    values that must NOT count as successes. Mutually exclusive with `:success`.
 
   ## Returns
-  - For unicast: The result from the remote call
-  - For multicast with `:all` strategy: List of `{:ok, result, node}`, `{:error, reason, node}`, or `{:timeout, node}`
-  - For multicast with `:first` strategy: `{:ok, result, node}` on first success, or list of failures
-  - For multicast with `:quorum` strategy: `{:ok, results}` when quorum reached,
-    `{:error, :quorum_not_reached, results}` or `{:error, :quorum_timeout, results}` otherwise
+  - For unicast: the body's return value, verbatim. A library/transport failure
+    (timeout, no worker available, worker crash) yields `{:nebula_error, reason}`.
+  - For multicast: per-node `{node, value}` pairs — see "Multicast strategies"
+    in the moduledoc for the exact shape per strategy.
   """
   def call_remote_method(module, fn_call, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, @default_timeout)
-    node_selector = Keyword.get(opts, :node_selector)
+    timeout = validate_call_opts!(module, opts)
     multicast = Keyword.get(opts, :multicast, false)
-    strategy = Keyword.get(opts, :strategy, :all)
+    strategy = Keyword.get(opts, :strategy) || :all
+    node_selector = Keyword.get(opts, :node_selector)
 
     Logger.debug("""
       Will do remote execution on #{inspect(module)}
@@ -130,35 +159,52 @@ defmodule NebulaAPI.APIServer do
       opts: #{inspect(opts)}
     """)
 
-    cond do
-      multicast && node_selector ->
-        # Multicast with selector
-        call_selected_workers(module, fn_call, node_selector, timeout, strategy, opts)
+    try do
+      cond do
+        multicast && node_selector ->
+          # Multicast with selector
+          call_selected_workers(module, fn_call, node_selector, timeout, strategy, opts)
 
-      multicast ->
-        # Multicast to all workers
-        call_all_workers(module, fn_call, timeout, strategy, opts)
+        multicast ->
+          # Multicast to all workers
+          call_all_workers(module, fn_call, timeout, strategy, opts)
 
-      node_selector ->
-        # Unicast with selector
-        call_selected_worker(module, fn_call, node_selector, timeout)
+        node_selector ->
+          # Unicast with selector
+          call_selected_worker(module, fn_call, node_selector, timeout)
 
-      true ->
-        # Default unicast (first available worker)
-        call_first_worker(module, fn_call, timeout)
+        true ->
+          # Default unicast (first available worker)
+          call_first_worker(module, fn_call, timeout)
+      end
+    rescue
+      err ->
+        Logger.error("""
+        Remote method call failed:
+          module: #{inspect(module)}
+          fn_call: #{inspect(fn_call)}
+          opts: #{inspect(opts)}
+          error: #{Exception.message(err)}
+          stacktrace: #{Exception.format_stacktrace(__STACKTRACE__)}
+        """)
+
+        {:nebula_error, err}
+    catch
+      # User code on the routing path (a success:/failure: predicate runs in
+      # the calling process) may throw or exit, not just raise — all three
+      # escape kinds land on the :nebula_error channel, the same shapes a
+      # body produces, instead of crashing the caller with a nocatch.
+      kind, reason ->
+        Logger.error("""
+        Remote method call failed:
+          module: #{inspect(module)}
+          fn_call: #{inspect(fn_call)}
+          opts: #{inspect(opts)}
+          #{inspect(kind)}: #{inspect(reason)}
+        """)
+
+        {:nebula_error, {kind, reason}}
     end
-  rescue
-    err ->
-      Logger.error("""
-      Remote method call failed:
-        module: #{inspect(module)}
-        fn_call: #{inspect(fn_call)}
-        opts: #{inspect(opts)}
-        error: #{Exception.message(err)}
-        stacktrace: #{Exception.format_stacktrace(__STACKTRACE__)}
-      """)
-
-      {:error, err}
   end
 
   @doc """
@@ -227,14 +273,8 @@ defmodule NebulaAPI.APIServer do
         timeout: 6000,
         on_timeout: :kill_task
       )
-      |> Enum.map(fn
-        {:ok, result} -> result
-        {:exit, :timeout} -> {:timeout, :unknown}
-      end)
-      |> Enum.filter(fn
-        {:timeout, :unknown} -> false
-        _ -> true
-      end)
+      |> Enum.map(&normalize_stream_result/1)
+      |> Enum.reject(&(&1 == :dropped))
 
     # Build a map of successful responses by node
     health_by_node =
@@ -279,6 +319,14 @@ defmodule NebulaAPI.APIServer do
     |> Map.new()
   end
 
+  # Normalize one Task.async_stream result. A successful task yields {:ok, value};
+  # any {:exit, reason} (timeout OR crash — e.g. a raise in
+  # collect_node_health_data_local) means that node's info is unavailable this
+  # round: mark it :dropped so build_nodes_info filters it out instead of raising.
+  @doc false
+  def normalize_stream_result({:ok, result}), do: result
+  def normalize_stream_result({:exit, _reason}), do: :dropped
+
   @doc """
   Gets cached node info from ETS.
   Returns empty map if not found.
@@ -304,21 +352,23 @@ defmodule NebulaAPI.APIServer do
   end
 
   @doc """
-  Returns cached nodes_info if still fresh (within TTL), otherwise rebuilds.
-  Default TTL is #{@nodes_info_ttl_ms}ms.
+  Returns the latest cluster node-info snapshot — a pure ETS read.
+
+  The snapshot is written exclusively by `NebulaAPI.APIServer.NodesInfoCache`
+  on its background interval; readers NEVER build it themselves, so there is
+  no fan-out on the read path, ever. Before the first refresh completes (boot
+  window) this returns `%{}` — selectors still see every node with a
+  registered worker through synthesized entries (`runtime: nil`, see
+  `get_available_nodes_info/2`).
   """
   def get_nodes_info do
-    now = System.monotonic_time(:millisecond)
-
     case :ets.lookup(@nodes_cache_table, @nodes_info_cache_key) do
-      [{_, %{data: data, updated_at: updated_at}}] when now - updated_at < @nodes_info_ttl_ms ->
-        data
-
-      _ ->
-        refresh_nodes_cache()
+      [{_, %{data: data}}] -> data
+      _ -> %{}
     end
   rescue
-    ArgumentError -> build_nodes_info()
+    # Table not created yet (APIServer not booted, bare test contexts).
+    ArgumentError -> %{}
   end
 
   @doc """
@@ -359,27 +409,28 @@ defmodule NebulaAPI.APIServer do
           {node_name, "unknown"}
       end
 
-    # Find this node's tags from config
-    tags =
-      NebulaAPI.Config.nodes()
-      |> Enum.find_value(fn {n, t} ->
-        if n == node_name do
-          case t do
-            t when is_list(t) -> t
-            t when is_atom(t) -> [t]
-            _ -> []
-          end
-        end
-      end) || []
-
     %{
       short_name: short_name,
       long_name: node_name,
       host: host,
-      tags: tags,
+      tags: tags_for_node(node_name),
       connected: true,
       runtime: collect_runtime_info()
     }
+  end
+
+  # A node's tags from the static config, normalized to a list.
+  defp tags_for_node(node_name) do
+    NebulaAPI.Config.nodes()
+    |> Enum.find_value(fn {n, t} ->
+      if n == node_name do
+        case t do
+          t when is_list(t) -> t
+          t when is_atom(t) -> [t]
+          _ -> []
+        end
+      end
+    end) || []
   end
 
   @doc """
@@ -431,21 +482,119 @@ defmodule NebulaAPI.APIServer do
   @doc """
   Gets nodes_info for workers that are actually available for a method.
   Only includes nodes that have registered workers.
+
+  pg is the source of truth for WHO serves the method; the snapshot only
+  enriches HOW they're doing. A node whose worker just registered but is not
+  in the background snapshot yet gets a synthesized entry (`runtime: nil`,
+  `last_seen_at: nil` until the next refresh).
   """
   def get_available_nodes_info(module, fn_call) do
     workers = get_all_workers(module, fn_call)
-    all_nodes_info = get_nodes_info()
 
-    # Get the nodes that have workers
-    worker_nodes =
-      workers
-      |> Enum.map(&node/1)
-      |> Enum.uniq()
+    workers
+    |> Enum.map(&node/1)
+    |> Enum.uniq()
+    |> nodes_info_for()
+  end
 
-    # Filter nodes_info to only include nodes with workers
-    all_nodes_info
-    |> Enum.filter(fn {node_name, _info} -> node_name in worker_nodes end)
-    |> Map.new()
+  # Validates every call opt up front and returns the resolved timeout. Bad
+  # call opts are a programming error: this runs OUTSIDE the transport rescue
+  # of call_remote_method/3, so they crash loud instead of melting into
+  # {:nebula_error, _} like genuine transport failures do. The generated
+  # routers also call this on LOCALLY-resolved calls carrying routing opts:
+  # the opts are validated everywhere, consumed only where the call actually
+  # goes remote — invalid opts raise identically on every node.
+  # Every opt follows the same nil convention as timeout:/node_selector: —
+  # nil means "not set", so a computed `strategy: maybe_strategy` holding nil
+  # resolves to the default instead of raising or half-applying.
+  @doc false
+  def validate_call_opts!(module, opts) do
+    validate_known_opts!(opts)
+    multicast = Keyword.get(opts, :multicast) || false
+    strategy = Keyword.get(opts, :strategy) || :all
+    validate_strategy_opts!(opts, multicast)
+    validate_predicate_opts!(opts, multicast, strategy)
+    validate_quorum_opts!(opts, multicast, strategy)
+    validate_selector_opt!(opts)
+
+    timeout = resolve_timeout(module, opts)
+    validate_timeout!(timeout)
+    timeout
+  end
+
+  @valid_call_opts [
+    :timeout,
+    :node_selector,
+    :multicast,
+    :strategy,
+    :at_least,
+    :success,
+    :failure
+  ]
+
+  # The set of call opts is closed, so an unknown KEY is as much a programming
+  # error as a malformed value: a typo'd key (timout:) or a stale one
+  # (quorum_count:, removed in 0.4.0) would otherwise be silently dropped and
+  # the call would run with defaults the caller never chose — for a quorum,
+  # that's a durability requirement quietly replaced by the majority default.
+  defp validate_known_opts!(opts) do
+    case Keyword.keys(opts) |> Enum.uniq() |> Kernel.--(@valid_call_opts) do
+      [] ->
+        :ok
+
+      unknown ->
+        raise ArgumentError,
+              "unknown call option(s): #{inspect(unknown)} — " <>
+                "valid options are #{inspect(@valid_call_opts)}"
+    end
+  end
+
+  # Like every other call opt, the selector's FORM is a programming error when
+  # wrong: only a 1-arity function can ever be applied to the nodes_info map,
+  # so anything else raises up front instead of melting into
+  # {:nebula_error, {:selector_failed, {:badfun, _}}} at selection time. What
+  # the function DOES remains a runtime concern — its bugs are contained by
+  # safe_call_selector/2. nil means "not set", same convention as timeout: nil.
+  defp validate_selector_opt!(opts) do
+    case Keyword.get(opts, :node_selector) do
+      nil ->
+        :ok
+
+      selector when is_function(selector, 1) ->
+        :ok
+
+      bad ->
+        raise ArgumentError,
+              "node_selector: must be a 1-arity function taking the nodes_info map, " <>
+                "got: #{inspect(bad)}"
+    end
+  end
+
+  # Timeout precedence: the call's timeout: option, then the module's
+  # default_timeout (the __nebula_api__/1 accessor generated by
+  # `use NebulaAPI` — a function head on a literal, no attribute scan on this
+  # hot path), then the global config :nebula_api, default_timeout (5000 by
+  # default).
+  #
+  # nil means "not set" — a computed `timeout: maybe_timeout` holding nil
+  # falls back to the defaults, exactly as if the option were absent. Any
+  # other non-integer (false included) flows into validate_timeout! and
+  # raises: only nil is the documented "inherit" value.
+  @doc false
+  def resolve_timeout(module, opts) do
+    case Keyword.get(opts, :timeout) do
+      nil -> module_default_timeout(module) || NebulaAPI.Config.default_timeout()
+      timeout -> timeout
+    end
+  end
+
+  defp module_default_timeout(module) do
+    module.__nebula_api__(:default_timeout)
+  rescue
+    # Modules without `use NebulaAPI` (bare atoms used as module names in
+    # tests, plain GenServer doubles) have no __nebula_api__/1 — treat them
+    # as carrying no module-level default.
+    _ -> nil
   end
 
   # Private functions
@@ -459,12 +608,60 @@ defmodule NebulaAPI.APIServer do
     |> List.first()
   end
 
+  # Wraps a GenServer.call: tells a received reply apart from an exit (timeout / other).
+  # `{:replied, term}` = the worker replied (term may be a business-level error).
+  # `{:exit, :timeout}` / `{:exit, reason}` = the call exited without a reply.
+  #
+  # This always runs inside a throwaway process (confined_call, the multicast
+  # fan-out tasks) whose death marks the end of interest in the result — the
+  # worker monitors it to purge queued entries (see Worker.handle_call/3).
+  defp safe_call(worker, fn_call, timeout) do
+    {:replied, GenServer.call(worker, {:nebula_call, fn_call}, timeout)}
+  catch
+    :exit, {:timeout, _} -> {:exit, :timeout}
+    :exit, reason -> {:exit, reason}
+  end
+
+  # Confined unicast: the GenServer.call runs in a throwaway task, so that a late
+  # reply {ref, reply} (left behind by a call that timed out) lands in the task's
+  # mailbox — which dies — and never in the caller's. async_nolink (monitor only,
+  # no link) so a trap_exit caller never receives an {:EXIT, _, :normal} either.
+  # The task always returns quickly (safe_call has an internal timeout) and cannot
+  # crash (safe_call catches every exit), so Task.await/:infinity is safe.
+  #
+  # The body's return value is passed through untouched; only a transport failure
+  # turns into {:nebula_error, reason}.
+  defp confined_call(worker, fn_call, timeout) do
+    task =
+      Task.Supervisor.async_nolink(NebulaAPI.TaskSupervisor, fn ->
+        case safe_call(worker, fn_call, timeout) do
+          {:replied, reply} -> reply
+          {:exit, :timeout} -> {:nebula_error, :timeout}
+          {:exit, reason} -> {:nebula_error, reason}
+        end
+      end)
+
+    Task.await(task, :infinity)
+  end
+
+  # Node-tagged multicast call, built on safe_call/3. Returns {node, value} when the
+  # worker replied (value passed through as-is), or {node, {:nebula_error, reason}}
+  # on a transport failure.
+  defp tagged_call(worker, fn_call, timeout, target_node) do
+    case safe_call(worker, fn_call, timeout) do
+      {:replied, reply} -> {target_node, reply}
+      {:exit, :timeout} -> {target_node, {:nebula_error, :timeout}}
+      {:exit, reason} -> {target_node, {:nebula_error, reason}}
+    end
+  end
+
   defp call_first_worker(module, fn_call, timeout) do
-    with worker <- module |> get_remote_method_worker(fn_call),
-         {:is_pid, true} <- {:is_pid, is_pid(worker)} do
-      GenServer.call(worker, fn_call, timeout)
-    else
-      {:is_pid, false} -> {:error, "No worker found for remote method #{inspect(fn_call)}"}
+    case get_remote_method_worker(module, fn_call) do
+      worker when is_pid(worker) ->
+        confined_call(worker, fn_call, timeout)
+
+      _ ->
+        {:nebula_error, {:no_worker, fn_call}}
     end
   end
 
@@ -486,13 +683,13 @@ defmodule NebulaAPI.APIServer do
       {:ok, selected_node} ->
         if selected_node && Map.has_key?(workers_by_node, selected_node) do
           worker = workers_by_node[selected_node]
-          GenServer.call(worker, fn_call, timeout)
+          confined_call(worker, fn_call, timeout)
         else
-          {:error, "No worker found on selected node #{inspect(selected_node)}"}
+          {:nebula_error, {:no_worker_on_node, selected_node}}
         end
 
       {:error, reason} ->
-        {:error, reason}
+        {:nebula_error, reason}
     end
   end
 
@@ -514,25 +711,62 @@ defmodule NebulaAPI.APIServer do
       {:ok, selected_nodes} ->
         selected_nodes = if is_list(selected_nodes), do: selected_nodes, else: [selected_nodes]
 
-        # Filter to only nodes with workers
+        # Filter to only nodes with workers. A selector may return duplicates:
+        # a node must count ONCE — toward the quorum especially, where two
+        # replies from the same node are one confirmation, not two.
         target_workers =
           selected_nodes
+          |> Enum.uniq()
           |> Enum.filter(&Map.has_key?(workers_by_node, &1))
           |> Enum.map(fn node -> {node, workers_by_node[node]} end)
 
         do_multicast_call(target_workers, fn_call, timeout, strategy, opts)
 
       {:error, reason} ->
-        {:error, reason}
+        {:nebula_error, reason}
     end
   end
 
   defp filter_nodes_info_for_workers(workers_by_node) do
-    worker_nodes = Map.keys(workers_by_node)
+    nodes_info_for(Map.keys(workers_by_node))
+  end
 
-    get_nodes_info()
-    |> Enum.filter(fn {node_name, _info} -> node_name in worker_nodes end)
-    |> Map.new()
+  # One entry per worker node: the background snapshot's entry when present,
+  # a synthesized one otherwise. pg is the source of truth for WHO serves a
+  # method; the snapshot only enriches HOW they're doing — a node whose worker
+  # just registered must be visible to selectors immediately, not after the
+  # next background refresh (see get_available_nodes_info/2 and
+  # filter_nodes_info_for_workers/1, which both delegate here).
+  defp nodes_info_for(worker_nodes) do
+    snapshot = get_nodes_info()
+
+    Map.new(worker_nodes, fn node_name ->
+      {node_name, Map.get(snapshot, node_name) || synthesize_node_info(node_name)}
+    end)
+  end
+
+  # Entry for a pg-registered node not (yet) in the snapshot: everything
+  # derivable locally is filled in; only runtime/last_seen_at need the next
+  # background refresh. Selectors must therefore treat info.runtime as nilable
+  # (the documented examples already filter on it).
+  defp synthesize_node_info(node_name) do
+    node_str = to_string(node_name)
+
+    {short_name, host} =
+      case String.split(node_str, "@", parts: 2) do
+        [s, h] -> {String.to_atom(s), h}
+        _ -> {node_name, "unknown"}
+      end
+
+    %{
+      short_name: short_name,
+      long_name: node_name,
+      host: host,
+      tags: tags_for_node(node_name),
+      connected: node_name in [node() | Node.list()],
+      last_seen_at: nil,
+      runtime: nil
+    }
   end
 
   defp safe_call_selector(selector_fn, nodes_info) do
@@ -554,211 +788,371 @@ defmodule NebulaAPI.APIServer do
     do_multicast_call(target_workers, fn_call, timeout, strategy, opts)
   end
 
+  defp do_multicast_call(target_workers, fn_call, timeout, :quorum, opts) do
+    worker_count = length(target_workers)
+    required = resolve_quorum_required(opts, worker_count)
+
+    # Fail fast: an arithmetically impossible quorum makes zero calls — for a
+    # write quorum, no partial non-quorate write is even attempted. No silent
+    # clamping: asking for 3 confirmations and "reaching quorum" with 2 would
+    # be a durability guarantee lowered behind the caller's back.
+    if required > worker_count do
+      {:nebula_error, :quorum_unreachable, %{workers: worker_count, required: required}}
+    else
+      do_multicast_quorum(target_workers, fn_call, timeout, required, opts)
+    end
+  end
+
+  # :first never returns a bare list: with nobody to ask there is no success.
+  defp do_multicast_call([], _fn_call, _timeout, :first, _opts) do
+    {:nebula_error, :no_success, []}
+  end
+
   defp do_multicast_call([], _fn_call, _timeout, _strategy, _opts) do
     []
   end
 
   defp do_multicast_call(target_workers, fn_call, timeout, strategy, opts) do
     case strategy do
-      :first ->
-        do_multicast_first(target_workers, fn_call, timeout)
+      :first -> do_multicast_first(target_workers, fn_call, timeout, opts)
+      _all -> do_multicast_all(target_workers, fn_call, timeout)
+    end
+  end
 
-      :quorum ->
-        quorum_count = Keyword.get(opts, :quorum_count, div(length(target_workers), 2) + 1)
-        do_multicast_quorum(target_workers, fn_call, timeout, quorum_count)
+  # at_least: explicit worker count > majority of the targeted workers.
+  defp resolve_quorum_required(opts, worker_count) do
+    Keyword.get(opts, :at_least) || div(worker_count, 2) + 1
+  end
 
-      _all ->
-        do_multicast_all(target_workers, fn_call, timeout)
+  # Validating the RESOLVED value covers both the per-call timeout: option and
+  # the global config :nebula_api, default_timeout: (the module-level default is
+  # already validated at compile time by `use NebulaAPI`). :infinity is rejected
+  # on purpose, unicast included: distribution monitors catch dead workers and
+  # partitions, but a live worker whose body never finishes would hang the
+  # caller forever (confined_call awaits with :infinity) — an unbounded wait has
+  # no place in a transport whose whole 0.4.0 contract is "the caller never
+  # crashes, never hangs".
+  defp validate_timeout!(timeout) do
+    unless is_integer(timeout) and timeout > 0 do
+      raise ArgumentError,
+            "timeout: must be a positive integer in milliseconds, got: #{inspect(timeout)}" <>
+              if(timeout == :infinity,
+                do: " — :infinity is not supported; use a large finite budget instead",
+                else: ""
+              )
+    end
+  end
+
+  @valid_strategies [:all, :first, :quorum]
+
+  # Same up-front philosophy as the other call opts: a typo'd strategy must not
+  # silently fall into the :all catch-all — a :quorum write degrading into a
+  # plain broadcast is a durability guarantee lost behind the caller's back
+  # (and both return lists, so the caller would never notice).
+  defp validate_strategy_opts!(opts, multicast) do
+    case Keyword.fetch(opts, :strategy) do
+      :error ->
+        :ok
+
+      # nil means "not set" (the :all default applies) — same convention as
+      # every other call opt.
+      {:ok, nil} ->
+        :ok
+
+      {:ok, strategy} when strategy not in @valid_strategies ->
+        raise ArgumentError,
+              "strategy: must be one of #{inspect(@valid_strategies)}, " <>
+                "got: #{inspect(strategy)}"
+
+      {:ok, strategy} ->
+        unless multicast do
+          raise ArgumentError,
+                "strategy: #{inspect(strategy)} only applies to multicast calls " <>
+                  "(multicast: true) — it would be silently ignored here"
+        end
+
+        :ok
+    end
+  end
+
+  # Bad call opts are a programming error: validate them up front, OUTSIDE the
+  # transport rescue in call_remote_method/3, so they crash loud instead of melting
+  # into {:nebula_error, _} like genuine transport failures do.
+  defp validate_quorum_opts!(opts, multicast, strategy) do
+    at_least = Keyword.get(opts, :at_least)
+
+    if at_least && not (multicast and strategy == :quorum) do
+      raise ArgumentError, "at_least: only applies to the :quorum strategy"
+    end
+
+    case at_least do
+      nil ->
+        :ok
+
+      n when is_integer(n) and n > 0 ->
+        :ok
+
+      bad ->
+        raise ArgumentError,
+              "at_least: must be a positive integer (a number of workers), " <>
+                "got: #{inspect(bad)} — without it, the default is a strict majority " <>
+                "of the targeted workers"
+    end
+  end
+
+  defp validate_predicate_opts!(opts, multicast, strategy) do
+    # A nil predicate is "not set" everywhere: it neither counts as present
+    # for the applicability check below, nor reaches the form validation.
+    has_predicate? =
+      Keyword.get(opts, :success) != nil or Keyword.get(opts, :failure) != nil
+
+    if has_predicate? and not (multicast and strategy in [:first, :quorum]) do
+      raise ArgumentError,
+            "success:/failure: only apply to multicast strategies :first and :quorum " <>
+              "(got multicast: #{inspect(multicast)}, strategy: #{inspect(strategy)}) — " <>
+              "they would be silently ignored here"
+    end
+
+    case {Keyword.get(opts, :success), Keyword.get(opts, :failure)} do
+      {nil, nil} ->
+        :ok
+
+      {success, nil} when is_function(success, 1) ->
+        :ok
+
+      {nil, failure} when is_function(failure, 1) ->
+        :ok
+
+      {nil, bad} ->
+        raise ArgumentError, "failure: must be a 1-arity function, got: #{inspect(bad)}"
+
+      {bad, nil} ->
+        raise ArgumentError, "success: must be a 1-arity function, got: #{inspect(bad)}"
+
+      {_success, _failure} ->
+        raise ArgumentError,
+              "success: and failure: are mutually exclusive — pass one or the other, not both"
+    end
+  end
+
+  # Success predicate for :first/:quorum, derived from the call opts (validated up
+  # front by validate_predicate_opts!/3). By default any worker that replied (no
+  # transport error) is a success. `success: fn value -> bool` narrows that to a
+  # business success; `failure:` is its mirror.
+  defp success_predicate(opts) do
+    cond do
+      f = Keyword.get(opts, :success) -> f
+      # Kernel.! (not `not`): success: predicates are consumed by `if`, which
+      # accepts any truthy/falsy value — the mirror must accept the same range,
+      # not crash on a non-boolean truthy return only when spelled failure:.
+      f = Keyword.get(opts, :failure) -> fn value -> !f.(value) end
+      true -> fn _value -> true end
+    end
+  end
+
+  # A multicast response is {node, value} (replied) or {node, {:nebula_error, reason}}
+  # (transport failed). A transport failure is never a success; otherwise the
+  # predicate decides.
+  defp response_success?({_node, {:nebula_error, _reason}}, _predicate), do: false
+  defp response_success?({_node, value}, predicate), do: predicate.(value)
+
+  # One fan-out call, bounded by what remains of the caller's timeout when the
+  # task actually starts. If the deadline is already gone, don't call at all:
+  # the collector (wait_for_*) stops at the deadline, so a reply earned during
+  # any grace window could only be flushed — calling would just make the worker
+  # run a body nobody collects. Report the node as a timeout directly.
+  defp tagged_call_within(worker, fn_call, deadline, target_node) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if remaining > 0 do
+      tagged_call(worker, fn_call, remaining, target_node)
+    else
+      {target_node, {:nebula_error, :timeout}}
     end
   end
 
   defp do_multicast_all(target_workers, fn_call, timeout) do
-    deadline = System.monotonic_time(:millisecond) + timeout
-
-    target_workers
-    |> Enum.map(fn {target_node, worker} ->
-      Task.async(fn ->
-        try do
-          remaining = max(deadline - System.monotonic_time(:millisecond), 100)
-          result = GenServer.call(worker, fn_call, remaining)
-          {status, value} = unwrap_worker_result(result)
-          {status, value, target_node}
-        catch
-          :exit, {:timeout, _} -> {:timeout, target_node}
-          :exit, reason -> {:error, reason, target_node}
-        end
-      end)
-    end)
-    |> Task.await_many(max(deadline - System.monotonic_time(:millisecond), 100))
-  end
-
-  defp do_multicast_first(target_workers, fn_call, timeout) do
     parent = self()
     ref = make_ref()
     deadline = System.monotonic_time(:millisecond) + timeout
 
-    # Spawn tasks for each worker using Task.async
     tasks =
       target_workers
       |> Enum.map(fn {target_node, worker} ->
-        Task.async(fn ->
-          try do
-            remaining = max(deadline - System.monotonic_time(:millisecond), 100)
-            result = GenServer.call(worker, fn_call, remaining)
-            {status, value} = unwrap_worker_result(result)
-            send(parent, {ref, {status, value, target_node}})
-          catch
-            :exit, {:timeout, _} -> send(parent, {ref, {:timeout, target_node}})
-            :exit, reason -> send(parent, {ref, {:error, reason, target_node}})
-          end
+        Task.Supervisor.async_nolink(NebulaAPI.TaskSupervisor, fn ->
+          send(parent, {ref, tagged_call_within(worker, fn_call, deadline, target_node)})
         end)
       end)
 
-    # Wait for first successful response
-    result = wait_for_first(ref, length(target_workers), deadline, [])
+    received = wait_for_all(ref, length(target_workers), deadline, [])
 
-    # Shutdown remaining tasks gracefully
-    Enum.each(tasks, fn task ->
-      Task.shutdown(task, :brutal_kill)
-    end)
-
-    # Flush stray messages from tasks that sent before being killed
+    Enum.each(tasks, fn task -> Task.shutdown(task, :brutal_kill) end)
     flush_ref(ref)
 
-    result
+    # Guarantee one entry per targeted node: nodes that did not answer before the
+    # deadline are reported as {node, {:nebula_error, :timeout}} instead of being
+    # silently dropped (one result per node, without exiting the caller on timeout).
+    answered = MapSet.new(received, &result_node/1)
+
+    timeouts =
+      for {target_node, _worker} <- target_workers,
+          not MapSet.member?(answered, target_node),
+          do: {target_node, {:nebula_error, :timeout}}
+
+    received ++ timeouts
   end
 
-  defp wait_for_first(_ref, 0, _deadline, results) do
-    # All failed, return all results
-    results
+  defp wait_for_all(_ref, 0, _deadline, results) do
+    Enum.reverse(results)
   end
 
-  defp wait_for_first(ref, remaining, deadline, results) do
+  defp wait_for_all(ref, remaining, deadline, results) do
     remaining_ms = max(deadline - System.monotonic_time(:millisecond), 0)
 
     receive do
-      {^ref, {:ok, _, _} = success} ->
-        # Got a success, return immediately
-        success
-
-      {^ref, failure} ->
-        # Got a failure, continue waiting
-        wait_for_first(ref, remaining - 1, deadline, [failure | results])
+      {^ref, response} ->
+        wait_for_all(ref, remaining - 1, deadline, [response | results])
     after
       remaining_ms ->
-        # Timeout, return what we have
-        results
+        Enum.reverse(results)
     end
   end
 
-  defp do_multicast_quorum(target_workers, fn_call, timeout, quorum_count) do
-    worker_count = length(target_workers)
+  defp result_node({target_node, _value}), do: target_node
 
-    # Validate that quorum is achievable
-    if quorum_count > worker_count do
-      Logger.warning(
-        "Quorum count #{quorum_count} is greater than available workers #{worker_count}"
-      )
-    end
-
-    # Ensure quorum_count is at least 1 and at most worker_count
-    effective_quorum = max(1, min(quorum_count, worker_count))
-
+  defp do_multicast_first(target_workers, fn_call, timeout, opts) do
     parent = self()
     ref = make_ref()
     deadline = System.monotonic_time(:millisecond) + timeout
+    predicate = success_predicate(opts)
 
-    # Spawn tasks for each worker using Task.async
     tasks =
       target_workers
       |> Enum.map(fn {target_node, worker} ->
-        Task.async(fn ->
-          try do
-            remaining = max(deadline - System.monotonic_time(:millisecond), 100)
-            result = GenServer.call(worker, fn_call, remaining)
-            {status, value} = unwrap_worker_result(result)
-            send(parent, {ref, {status, value, target_node}})
-          catch
-            :exit, {:timeout, _} -> send(parent, {ref, {:timeout, target_node}})
-            :exit, reason -> send(parent, {ref, {:error, reason, target_node}})
-          end
+        Task.Supervisor.async_nolink(NebulaAPI.TaskSupervisor, fn ->
+          send(parent, {ref, tagged_call_within(worker, fn_call, deadline, target_node)})
         end)
       end)
 
-    # Wait for quorum with validation
-    result = wait_for_quorum(ref, worker_count, deadline, effective_quorum, [], [])
-
-    # Shutdown remaining tasks gracefully
-    Enum.each(tasks, fn task ->
-      Task.shutdown(task, :brutal_kill)
-    end)
-
-    # Flush stray messages from tasks that sent before being killed
-    flush_ref(ref)
-
-    result
-  end
-
-  defp wait_for_quorum(_ref, 0, _deadline, needed, successes, failures) do
-    # All responses received - check if we actually got enough successes
-    results = successes ++ failures
-
-    if needed > 0 do
-      Logger.warning("Quorum not reached: needed #{needed} more successes")
-      {:error, :quorum_not_reached, results}
-    else
-      {:ok, results}
+    # Return the first response that counts as a success (replied + predicate).
+    # try/after: the user predicate runs inside wait_for_first — if it raises,
+    # the tasks must still be killed and the {ref, _} replies flushed, or the
+    # stray messages would pollute the caller's mailbox forever.
+    try do
+      wait_for_first(ref, length(target_workers), deadline, predicate, [])
+    after
+      Enum.each(tasks, fn task -> Task.shutdown(task, :brutal_kill) end)
+      flush_ref(ref)
     end
   end
 
-  defp wait_for_quorum(_ref, _remaining, _deadline, 0, successes, failures) do
-    # Quorum reached with enough successes
-    {:ok, successes ++ failures}
+  defp wait_for_first(_ref, 0, _deadline, _predicate, results) do
+    # No success among the responses: lib-level failure, on the lib channel.
+    {:nebula_error, :no_success, Enum.reverse(results)}
   end
 
-  defp wait_for_quorum(ref, remaining, deadline, needed, successes, failures) do
+  defp wait_for_first(ref, remaining, deadline, predicate, results) do
+    remaining_ms = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {^ref, response} ->
+        if response_success?(response, predicate) do
+          response
+        else
+          wait_for_first(ref, remaining - 1, deadline, predicate, [response | results])
+        end
+    after
+      remaining_ms ->
+        {:nebula_error, :no_success, Enum.reverse(results)}
+    end
+  end
+
+  defp do_multicast_quorum(target_workers, fn_call, timeout, required, opts) do
+    worker_count = length(target_workers)
+    parent = self()
+    ref = make_ref()
+    deadline = System.monotonic_time(:millisecond) + timeout
+    predicate = success_predicate(opts)
+
+    tasks =
+      target_workers
+      |> Enum.map(fn {target_node, worker} ->
+        Task.Supervisor.async_nolink(NebulaAPI.TaskSupervisor, fn ->
+          send(parent, {ref, tagged_call_within(worker, fn_call, deadline, target_node)})
+        end)
+      end)
+
+    # Same try/after rationale as do_multicast_first.
+    try do
+      wait_for_quorum(ref, worker_count, deadline, required, predicate, [], [])
+    after
+      Enum.each(tasks, fn task -> Task.shutdown(task, :brutal_kill) end)
+      flush_ref(ref)
+    end
+  end
+
+  # Quorum reached → the list of {node, value} responses.
+  # Quorum not reached → {:nebula_error, :quorum_not_reached | :quorum_timeout, results}.
+  defp wait_for_quorum(_ref, 0, _deadline, needed, _predicate, successes, failures) do
+    results = Enum.reverse(successes) ++ Enum.reverse(failures)
+
+    if needed > 0 do
+      Logger.warning("Quorum not reached: needed #{needed} more successes")
+      {:nebula_error, :quorum_not_reached, results}
+    else
+      results
+    end
+  end
+
+  defp wait_for_quorum(_ref, _remaining, _deadline, 0, _predicate, successes, failures) do
+    Enum.reverse(successes) ++ Enum.reverse(failures)
+  end
+
+  defp wait_for_quorum(ref, remaining, deadline, needed, predicate, successes, failures) do
     # Check if quorum is still achievable (remaining workers >= needed successes)
     if remaining < needed do
-      # Not enough workers left to reach quorum, return early
       Logger.warning("Quorum unreachable: #{remaining} workers remaining but need #{needed}")
-      {:error, :quorum_not_reached, successes ++ failures}
+
+      {:nebula_error, :quorum_not_reached, Enum.reverse(successes) ++ Enum.reverse(failures)}
     else
       remaining_ms = max(deadline - System.monotonic_time(:millisecond), 0)
 
       receive do
-        {^ref, {:ok, _, _} = success} ->
-          wait_for_quorum(
-            ref,
-            remaining - 1,
-            deadline,
-            needed - 1,
-            [success | successes],
-            failures
-          )
-
-        {^ref, failure} ->
-          wait_for_quorum(ref, remaining - 1, deadline, needed, successes, [failure | failures])
+        {^ref, response} ->
+          if response_success?(response, predicate) do
+            wait_for_quorum(
+              ref,
+              remaining - 1,
+              deadline,
+              needed - 1,
+              predicate,
+              [response | successes],
+              failures
+            )
+          else
+            wait_for_quorum(
+              ref,
+              remaining - 1,
+              deadline,
+              needed,
+              predicate,
+              successes,
+              [response | failures]
+            )
+          end
       after
         remaining_ms ->
-          # Timeout, return what we have with warning if quorum not reached
-          results = successes ++ failures
+          results = Enum.reverse(successes) ++ Enum.reverse(failures)
 
           if needed > 0 do
             Logger.warning("Quorum timeout: still needed #{needed} more successes")
-            {:error, :quorum_timeout, results}
+            {:nebula_error, :quorum_timeout, results}
           else
-            {:ok, results}
+            results
           end
       end
     end
   end
-
-  # Unwrap worker results to avoid double-wrapping.
-  # Real defapi workers return {:ok, val} from __nbapi_local_* via __wrap_nebula_api_result.
-  # Test doubles may return raw values — those fall through to {:ok, other}.
-  defp unwrap_worker_result({:ok, val}), do: {:ok, val}
-  defp unwrap_worker_result({:error, reason}), do: {:error, reason}
-  defp unwrap_worker_result(other), do: {:ok, other}
 
   defp flush_ref(ref) do
     receive do

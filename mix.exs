@@ -1,7 +1,7 @@
 defmodule NebulaAPI.MixProject do
   use Mix.Project
 
-  @version "0.3.0"
+  @version "0.4.0"
   @source_url "https://github.com/podCloud/NebulaAPI"
 
   def project do
@@ -16,7 +16,8 @@ defmodule NebulaAPI.MixProject do
       docs: docs(),
       package: package(),
       name: "NebulaAPI",
-      description: "Compile-time selective compilation and transparent distributed execution for Erlang/Elixir clusters",
+      description:
+        "Compile-time selective compilation and transparent distributed execution for Erlang/Elixir clusters",
       source_url: @source_url
     ]
   end
@@ -50,13 +51,13 @@ defmodule NebulaAPI.MixProject do
       main: "readme",
       extras: [
         "README.md",
+        {"docs/README.md", title: "Documentation", filename: "documentation"},
         "docs/concepts.md",
         "docs/configuration.md",
         "docs/macros-reference.md",
-        "docs/examples.md",
-        "docs/api-server.md",
-        "docs/ast-deep-dive.md",
+        "docs/server-and-compiler.md",
         "docs/troubleshooting.md",
+        "docs/deep-dive/ast-deep-dive.md",
         "docs/guides/adding-nebula-api.md"
       ],
       groups_for_extras: [

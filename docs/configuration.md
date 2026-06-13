@@ -53,6 +53,31 @@ config :nebula_api,
 In production, prefer compiling each release with `elixir --name node@host -S mix compile`
 (then `node()` is authoritative).
 
+`default_opts` also accepts inherited defaults for every `use NebulaAPI` module:
+`max_concurrent_calls:` (positive integer or `:infinity`) and `default_timeout:`
+(positive integer, ms). A module's own `use NebulaAPI` options override them.
+
+### `default_timeout`
+
+Global default timeout (ms) for remote calls. Resolution order for every call:
+the call's `timeout:` option, then the module's `default_timeout:`
+(`use NebulaAPI, default_timeout: ...`), then this setting, then 5000.
+
+```elixir
+config :nebula_api, default_timeout: 15_000
+```
+
+### `nodes_info_refresh_interval`
+
+How often (ms, default `5000`) each node's background `NodesInfoCache` rebuilds the
+cluster node-info snapshot served to selector functions. Raise it on larger clusters
+or when selectors tolerate staler info; until the first refresh completes, nodes not
+yet in the snapshot are offered to selectors with `runtime: nil`.
+
+```elixir
+config :nebula_api, nodes_info_refresh_interval: 10_000
+```
+
 ## Adding a node or a tag
 
 Just edit the `nodes` list — add a node, or add a tag to an existing node:

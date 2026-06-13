@@ -14,7 +14,8 @@ defmodule NebulaAPI.CompilerCheckTest do
   test "ok when there are local methods and another module wired the server" do
     attrs = [
       # accumulate: true → one entry per defapi, each a single-element list
-      {Some.Store, [nebula_local_api_methods: [{:get, 1}], nebula_local_api_methods: [{:put, 2}]]},
+      {Some.Store,
+       [nebula_local_api_methods: [{:get, 1}], nebula_local_api_methods: [{:put, 2}]]},
       {Some.Application, [nebula_api_server_wired: [true]]}
     ]
 
@@ -23,8 +24,7 @@ defmodule NebulaAPI.CompilerCheckTest do
 
   test "ok when the server is wired on the very module that has local methods" do
     attrs = [
-      {Some.Store,
-       [nebula_local_api_methods: [{:get, 1}], nebula_api_server_wired: [true]]}
+      {Some.Store, [nebula_local_api_methods: [{:get, 1}], nebula_api_server_wired: [true]]}
     ]
 
     assert CompilerCheck.verify(attrs) == :ok

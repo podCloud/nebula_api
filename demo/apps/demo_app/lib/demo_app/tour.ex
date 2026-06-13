@@ -29,14 +29,14 @@ defmodule DemoApp.Tour do
       end
     end)
 
-    step("5. :quorum OK (count: 2) — tolerates worker3's failure", fn ->
-      call_on_nodes &worker, strategy: :quorum, quorum_count: 2, timeout: 5_000 do
+    step("5. :quorum OK (at_least: 2) — tolerates worker3's failure", fn ->
+      call_on_nodes &worker, strategy: :quorum, at_least: 2, timeout: 5_000 do
         Worker.Job.run_task_flaky(3)
       end
     end)
 
-    step("6. :quorum KO (count: 3) — worker3 always fails → not reached", fn ->
-      call_on_nodes &worker, strategy: :quorum, quorum_count: 3, timeout: 5_000 do
+    step("6. :quorum KO (at_least: 3) — worker3 always fails → not reached", fn ->
+      call_on_nodes &worker, strategy: :quorum, at_least: 3, timeout: 5_000 do
         Worker.Job.run_task_flaky(3)
       end
     end)
@@ -54,14 +54,16 @@ defmodule DemoApp.Tour do
   end
 
   # Dogfood the lib: multicast a ready? probe until all 3 workers + @db answer.
+  # Multicast results are {node, value}; a transport failure for a node shows up
+  # as {node, {:nebula_error, reason}}. Unicast returns the body's value verbatim.
   defp wait_for_cluster(retries \\ 60) do
     workers_up =
       (call_on_nodes &worker, strategy: :all, timeout: 500 do
          Worker.Job.ready?()
        end)
-      |> Enum.count(&match?({:ok, _, _}, &1))
+      |> Enum.count(&match?({_node, true}, &1))
 
-    db_up? = match?({:ok, _}, (call_on_node @db, timeout: 500 do Db.Store.ready?() end))
+    db_up? = (call_on_node @db, timeout: 500 do Db.Store.ready?() end) == true
 
     cond do
       workers_up >= 3 and db_up? -> :ready

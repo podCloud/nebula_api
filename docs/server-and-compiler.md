@@ -22,7 +22,7 @@ guards your wiring.
 ┌─────────────────────────────────────────────────────────────────────┐
 │  NebulaAPI.APIServer  (one per node — cluster-wide plumbing)          │
 │   - :pg scope :pg_nebula_api   (worker discovery + routing)           │
-│   - ETS node-info cache        (memory/load per node, TTL'd)          │
+│   - ETS node-info snapshot     (refreshed by NodesInfoCache)          │
 │   - call_remote_method/3       (unicast / multicast / quorum)         │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -67,15 +67,19 @@ registers each of the module's local methods in `:pg`:
 :pg.join(:pg_nebula_api, {module, {function, arity}}, self())
 ```
 
-On a remote call it `apply/3`s the function and replies. It's supervised `:one_for_one`
-under its app's `NebulaAPI.Server`.
+On a remote call it runs the body in a supervised task and replies asynchronously
+(`GenServer.reply/2`), so a slow body never blocks the module's other calls; the worker
+itself only does slot/queue bookkeeping (`max_concurrent_calls`). It's supervised
+`:one_for_one` under its app's `NebulaAPI.Server`.
 
 ## APIServer (per node)
 
 `NebulaAPI.APIServer` is a small supervisor holding the cluster-wide plumbing only:
 
 - the `:pg` scope `:pg_nebula_api` used to find workers across nodes,
-- an ETS cache of node info (memory, load, `last_seen_at`) with a short TTL,
+- an ETS snapshot of node info (memory, load, `last_seen_at`), rebuilt in the
+  background by `NebulaAPI.APIServer.NodesInfoCache` every
+  `nodes_info_refresh_interval` ms (reads never trigger a rebuild),
 - `call_remote_method/3`, which routes a call (unicast, multicast `:all`/`:first`/`:quorum`).
 
 It does **not** start workers — that's each app's `NebulaAPI.Server`.
@@ -90,8 +94,9 @@ Process.whereis(MyApp.Users)   # the worker for that module, if local here
 ## The `:nebula` compiler (optional guard)
 
 It's easy to forget `nebula_api_server()` in an app that has `defapi` modules — the
-result is workers that never start and calls that fail at runtime with *"No worker
-found"*. The optional `:nebula` Mix compiler turns that into a **compile error**.
+result is workers that never start and calls that fail at runtime with
+`{:nebula_error, {:no_worker, ...}}`. The optional `:nebula` Mix compiler turns that
+into a **compile error**.
 
 Opt in from the app's `mix.exs`:
 

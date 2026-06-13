@@ -42,7 +42,7 @@ The AST processing pipeline:
 │         ▼                                                               │
 │  ┌──────────────────────────────────────────────────────────────────┐  │
 │  │  4. AST.Builder                                                  │  │
-│  │     Generates the 3 functions (local / remote / public router)   │  │
+│  │     Generates remote + router (+ local on matching nodes)        │  │
 │  └────────────────────────────────────────────────────────────────────┘  │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -193,56 +193,77 @@ nodes()
 
 **File:** `lib/nebula_api/ast/builder.ex`
 
-For each `defapi`, the builder generates **three** functions:
+For each `defapi`, the builder generates:
 
-- `__nbapi_local_<name>` — private; the real implementation (matching nodes) or a
-  raising stub (everywhere else)
-- `__nbapi_remote_<name>` — private; dispatches via `NebulaAPI.APIServer`
+- `__nbapi_local_<name>` — private; the real implementation — **matching nodes
+  only** (on the other nodes the router never references it, so nothing is emitted)
+- `__nbapi_remote_<name>` — private; dispatches via `NebulaAPI.APIServer` (every node)
 - `<name>` — the public router that delegates to local or remote based on context
+
+**Return contract.** None of these wrap the body's value. The value of the `defapi`
+body is returned **verbatim** — `10`, `%User{}`, `{:ok, x}`, `{:error, y}`,
+`{:ok, a, b}` are all passthrough. The `{:nebula_error, reason}` tuple is reserved for
+**library/transport failures**: a timeout, no available worker, a worker crash, an
+exception raised by the body, or a quorum that could not be reached. For a multicast
+call the router returns a list of `{node, value}` entries, with a failing node yielding
+`{node, {:nebula_error, reason}}`.
 
 ### Local function
 
 When the current node matches the selector, `build_local_function/3` emits the real
-body; otherwise it emits a stub that raises if called directly.
+body; on every other node it emits **nothing** — the router's default branch goes
+remote there, so no code references a local implementation (a raising stub would
+only exist to keep a dead reference compilable). The body's value is returned
+**as-is** — there is no wrapping. Anything that escapes the body is translated: a
+raised exception becomes `{:nebula_error, exception}`, a throw or exit becomes
+`{:nebula_error, {kind, reason}}` — the same shapes the worker produces for a
+remote call.
 
 ```elixir
 # is_local? = true
 defp __nbapi_local_get(id) do
-  Repo.get(User, id)
-  |> __wrap_nebula_api_result()
+  Repo.get(User, id)   # value returned verbatim — no wrapping
 rescue
   e ->
     require Logger
     Logger.error(Exception.format(:error, e, __STACKTRACE__))
-    {:error, e}
+    {:nebula_error, e}
+catch
+  kind, reason ->
+    require Logger
+    Logger.error("defapi body #{inspect(kind)}: #{inspect(reason)}")
+    {:nebula_error, {kind, reason}}
 end
 
-# is_local? = false
-defp __nbapi_local_get(id) do
-  raise "Method get is not available locally on node #{node()}"
-end
+# is_local? = false → no __nbapi_local_get at all
 ```
+
+Note that only the public router carries the defaults — the private helpers are
+always called with every argument, so they take plain parameters (a default there
+would trigger an "is never used" compiler warning in every consumer module).
 
 ### Remote function
 
 `build_remote_function/1` is generated on **every** node. It dispatches through the
-APIServer and threads routing options:
+APIServer and threads routing options. Whatever `call_remote_method/3` returns is passed
+straight back to the caller — no re-wrapping, no `is_list` branching. A local exception
+becomes `{:nebula_error, exception}`:
 
 ```elixir
-defp __nbapi_remote_get(id, nebula_routing_opts \\ []) do
-  case NebulaAPI.APIServer.call_remote_method(__MODULE__, {:get, id}, nebula_routing_opts) do
-    result when is_list(result) -> result          # multicast :all → pass through
-    result -> __wrap_nebula_api_result(result)       # unicast / :first / :quorum
-  end
+defp __nbapi_remote_get(id, nebula_routing_opts) do
+  NebulaAPI.APIServer.call_remote_method(__MODULE__, {:get, id}, nebula_routing_opts)
 rescue
-  e -> {:error, e}
+  e -> {:nebula_error, e}
 end
 ```
 
 ### Public router
 
 `build_public_function/2` is the function callers actually invoke. It reads the call
-context (set by `call_on_node`/`call_on_nodes`) and decides where to go:
+context (set by `call_on_node`/`call_on_nodes`) and decides where to go. `is_local?`
+is known at codegen time, so the default branch is emitted as a direct call — local
+on matching nodes, remote everywhere else — instead of a runtime check whose outcome
+is predetermined:
 
 ```elixir
 def get(id, nebula_routing_opts \\ []) do
@@ -252,24 +273,41 @@ def get(id, nebula_routing_opts \\ []) do
   merged_opts = Keyword.merge(context_opts, nebula_routing_opts)
 
   cond do
-    # Inside a call_on_node / call_on_nodes block → remote
-    not is_nil(context_selector) ->
-      __nbapi_remote_get(id, Keyword.merge(merged_opts,
-        node_selector: context_selector, multicast: context_mode == :multicast))
-
-    # Explicit :node_selector / :multicast opts → remote
+    # Truthy :node_selector / :multicast opts on the call → remote.
+    # The innermost explicit routing wins, even inside a call_on_* block:
+    # the call routes itself, the block's routing and opts are ignored.
     nebula_routing_opts[:node_selector] || nebula_routing_opts[:multicast] ->
       __nbapi_remote_get(id, nebula_routing_opts)
 
-    # Default: local if compiled local, remote otherwise
-    is_local? ->
-      __nbapi_local_get(id)
+    # Inside a call_on_node / call_on_nodes block (the MODE is the signal —
+    # a selector expression may evaluate to nil, meaning "no restriction"),
+    # and the call carries no routing key of its own. A routing key present
+    # but nil/false opts the call out of the block, down to the default.
+    not is_nil(context_mode) and
+      not Keyword.has_key?(nebula_routing_opts, :node_selector) and
+        not Keyword.has_key?(nebula_routing_opts, :multicast) ->
+      __nbapi_remote_get(id, Keyword.merge(merged_opts,
+        node_selector: context_selector, multicast: context_mode == :multicast))
 
+    # Default branch, chosen at codegen time:
     true ->
-      __nbapi_remote_get(id, nebula_routing_opts)
+      # On a matching node — routing opts validated (when present), not consumed:
+      if nebula_routing_opts != [] do
+        NebulaAPI.APIServer.validate_call_opts!(__MODULE__, nebula_routing_opts)
+      end
+
+      __nbapi_local_get(id)
+      # __nbapi_remote_get(id, nebula_routing_opts)  # everywhere else
   end
 end
 ```
+
+Routing opts are validated on **every** node: a call that resolves locally still
+validates the opts it was given (then ignores them — there is no transport), so an
+invalid opt (`timeout: :infinity`, `strategy:`/`success:` without `multicast:`)
+raises identically wherever the call runs. A valid-but-inapplicable opt, like a
+`timeout:` on a local call, is a silent no-op — the same source compiles on every
+node. The `!= []` guard keeps the opt-less hot path free of validation cost.
 
 ### Function signature building
 
@@ -279,12 +317,12 @@ defp build_function_signature(fn_name, fn_args) do
 end
 ```
 
-Handles default arguments:
+Handles default arguments (public router only — see the note above):
 ```elixir
 # Input
 [{:query, %{}}, {:opts, []}]
 
-# Output signature
+# Output signature (public)
 get(query \\ %{}, opts \\ [])
 ```
 
@@ -330,11 +368,10 @@ def get(id, opts \\ [], nebula_routing_opts \\ []) do
   # ...routes to __nbapi_local_get by default
 end
 
-defp __nbapi_local_get(id, opts \\ []) do
-  Repo.get(User, id, opts)
-  |> __wrap_nebula_api_result()
+defp __nbapi_local_get(id, opts) do
+  Repo.get(User, id, opts)   # body value returned as-is
 rescue
-  e -> {:error, e}
+  e -> {:nebula_error, e}
 end
 ```
 
@@ -344,14 +381,16 @@ end
 @nebula_local_api_methods []
 @nebula_remote_api_methods [{:get, 2}]
 
-# public router → remote (local stub raises if called directly)
+# public router → remote (no __nbapi_local_get is generated on this node)
 def get(id, opts \\ [], nebula_routing_opts \\ []) do
   # ...routes to __nbapi_remote_get
 end
 
-defp __nbapi_remote_get(id, opts \\ [], nebula_routing_opts \\ []) do
+defp __nbapi_remote_get(id, opts, nebula_routing_opts) do
   NebulaAPI.APIServer.call_remote_method(MyApp.Users, {:get, id, opts}, nebula_routing_opts)
-  |> __wrap_nebula_api_result()
+  # result returned verbatim
+rescue
+  e -> {:nebula_error, e}
 end
 ```
 

@@ -31,11 +31,18 @@ app's supervisor (see [server-and-compiler.md](server-and-compiler.md)).
 
 ## Runtime errors
 
-### "No worker found for remote method"
+### `{:nebula_error, {:no_worker, ...}}`
+
+Transport-level failures are signalled with `{:nebula_error, reason}` — never with
+`{:error, ...}`. An `:ok`/`:error` you get back is always the business result of your
+function, never the library reporting a fault. When no worker is reachable for a method:
 
 ```elixir
-{:error, "No worker found for remote method {:get, \"abc\"}"}
+{:nebula_error, {:no_worker, {:get, "abc"}}}
 ```
+
+If a selector targeted a node that has no worker for the method, you'll instead see
+`{:nebula_error, {:no_worker_on_node, node}}`.
 
 Causes and checks:
 
@@ -61,8 +68,16 @@ call_on_node @worker, timeout: 30_000 do
 end
 ```
 
+A timeout does **not** crash the caller — it returns a `:nebula_error`. For a unicast
+call you get `{:nebula_error, :timeout}`; in multicast, the transport failure for a given
+node is reported per-node as `{node, {:nebula_error, :timeout}}`.
+
 If calls time out, check network latency (`Node.ping/1`), the target's load
 (`:erlang.statistics(:run_queue)` on it), or make the operation faster.
+
+Other transport faults follow the same shape: `{:nebula_error, {:selector_failed, reason}}`
+when a selector function raises, or `{:nebula_error, exception}` when the worker body
+itself raises.
 
 ### Serialization errors
 
