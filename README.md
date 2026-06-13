@@ -98,15 +98,6 @@ NebulaAPI resolves all routing decisions at compile time. This is not a
 runtime router — it's a code generator that produces different bytecode
 for each node.
 
-**Smaller binaries.** Code that doesn't belong on a node doesn't exist in its binary — a
-`defapi` body is only emitted on matching nodes. Whole dependencies fall away the same way. The
-[runnable demo](https://github.com/podCloud/NebulaAPI/tree/main/demo) pins Cachex to its
-`db` node (`on_nebula_nodes @db` plus a conditional dep), so only that build carries Cachex
-and its dependency tree (~570 KB); every other node never compiles it and comes out
-**~38% smaller — ≈860 KB vs the db node's 1.4 MB** (measured, per-node `_build` from
-`mix compile`). Your web node doesn't carry FFmpeg bindings; your worker doesn't carry
-Phoenix routes.
-
 **No unnecessary deps.** Wrap a `use`, an `import`, or a child spec in `on_nebula_nodes` so
 it exists only where it belongs:
 
@@ -124,6 +115,15 @@ end
 
 The non-matching branch is absent from the bytecode, so a non-`&cache` node never loads
 Cachex (gate the dependency itself the same way and it isn't even pulled in).
+
+**Smaller binaries.** Code that doesn't belong on a node doesn't exist in its binary — a
+`defapi` body is only emitted on matching nodes. Whole dependencies fall away the same way. The
+[runnable demo](https://github.com/podCloud/NebulaAPI/tree/main/demo) pins Cachex to its
+`db` node (`on_nebula_nodes @db` plus a conditional dep), so only that build carries Cachex
+and its dependency tree (~570 KB); every other node never compiles it and comes out
+**~38% smaller — ≈860 KB vs the db node's 1.4 MB** (measured, per-node `_build` from
+`mix compile`). Your web node doesn't carry FFmpeg bindings; your worker doesn't carry
+Phoenix routes.
 
 **Compile-time safety.** Reference a tag or node that isn't in your topology and the build
 stops — no silent RPC into the void:
@@ -220,19 +220,20 @@ nodes: [
 # prod — scale the workers out, keep one db; w3 lives in another cloud
 nodes: [
   "app@app.prod":    [:mainframe_cluster, :api, :cache],
-  "worker@w1.prod":  [:mainframe_cluster, :worker],
-  "worker@w2.prod":  [:alpha_cluster, :worker],
-  "worker@w3.prod":  [:cloud_worker_lambda, :worker],
+  "worker@w1.prod":  [:mainframe_cluster, :gpu],
+  "worker@w2.prod":  [:alpha_cluster, :llm],
+  "worker@w3.prod":  [:cloud_worker_lambda, :gpu, :storage],
   "db@db.prod":      [:mainframe_cluster, :db, :cache]
 ]
 ```
 
-Moving `:db` off the app node, or fanning `:worker` across three machines, is a config
-change and a rebuild — never a code change. And the tags follow how you actually think
-about the fleet: the deployment tag varies by environment (`:staging_cluster`) and even by
-node (`worker@w3.prod` is tagged `:cloud_worker_lambda` — a worker living in a different
-cloud), while the role tags (`:api`/`:db`/`:worker`/`:cache`) stay put. A tag is just a
-label; slice the cluster however suits you.
+Moving `:db` off the app node, or fanning workers across three machines, is a config change
+and a rebuild — never a code change. And the tags follow how you actually think about the
+fleet: the three workers share the short name `worker@` (so `@worker` hits all of them
+without any `:worker` tag), the deployment tag varies by environment and even by node
+(`worker@w3.prod` is `:cloud_worker_lambda` — off in another cloud), and the capability
+tags (`:gpu`, `:llm`, `:storage`) carve out *which* worker you mean (`@worker &gpu`). A tag
+is just a label; slice the cluster however suits you.
 
 ## Installation
 
@@ -474,7 +475,7 @@ others.** Routing reads the live `:pg` membership and calls the first registered
 that method; that's the only node that runs it. No fan-out, no load-balancing by default.
 Membership is live, though: if that node drops, `:pg` removes it, so the next call simply
 lands on whoever is first among the nodes still connected. (Want several nodes at once, a
-specific one, or a load-aware pick? That's [runtime routing](#runtime-routing).)
+specific one, a random one, or a load-aware pick? That's [runtime routing](#runtime-routing).)
 
 ## `on_nebula_nodes` — conditional compilation
 
@@ -526,7 +527,7 @@ call_on_node @worker do
   MyApp.Jobs.transcode(file, opts)
 end
 
-# Pick a node dynamically based on runtime info
+# Pick a node dynamically based on runtime info — least loaded
 call_on_node fn nodes_info ->
   nodes_info
   |> Enum.filter(fn {_, info} -> info.connected && info.runtime end)
@@ -534,6 +535,11 @@ call_on_node fn nodes_info ->
   |> elem(0)
 end do
   MyApp.HeavyTask.run()
+end
+
+# Or just pick one at random
+call_on_node fn nodes_info -> nodes_info |> Map.keys() |> Enum.random() end do
+  MyApp.Jobs.transcode(file, opts)
 end
 ```
 
@@ -691,8 +697,8 @@ Three nodes, three roles — an API front, a database node, and a worker:
 config :nebula_api,
   nodes: [
     "api@api.example": [:mainframe_cluster, :api],
-    "db@db.example": [:mainframe_cluster, :db],
-    "worker@worker.example": [:mainframe_cluster, :worker]
+    "db@db.example": [:alpha_server, :db],
+    "worker@worker.example": [:mainframe_cluster, :gpu]
   ]
 ```
 
@@ -710,6 +716,9 @@ defmodule MyApp.Users do
     User |> where_filters(filters) |> Repo.all()
   end
 
+  # A plain def — no defapi: keep utils and pure business logic local, on every release.
+  def user_name(%User{nickname: name}), do: name
+
   # Helper only exists on &db nodes
   on_nebula_nodes &db do
     defp where_filters(query, filters) do
@@ -725,11 +734,17 @@ end
 defmodule MyApp.Jobs do
   use NebulaAPI
 
-  defapi &worker, transcode(input, opts) do
+  # @worker targets the worker node by its (short) name — no :worker tag needed.
+  defapi @worker, transcode(input, opts) do
     FFmpex.new_command()
     |> FFmpex.add_input_file(input)
     |> FFmpex.add_output_file(opts[:output])
     |> FFmpex.execute()
+  end
+
+  # @worker AND &gpu — a faster path that only the GPU-equipped workers carry.
+  defapi @worker &gpu, quick_transcode(input, opts) do
+    GpuTranscoder.run(input, opts)
   end
 end
 ```
