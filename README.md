@@ -6,10 +6,27 @@ zero-overhead distributed calls.
 Define your functions once. The compiler decides what runs where. Calls
 across nodes look and feel like local function calls.
 
+First, declare your cluster as a map of nodes to capability **tags**:
+
+```elixir
+# config/config.exs
+config :nebula_api,
+  nodes: [
+    "api@api.example": [:cluster, :api],
+    "db@db.example": [:cluster, :db],
+    "worker@worker.example": [:cluster, :worker]
+  ]
+```
+
+You target those nodes with **selectors**: `@node` picks a node by its name (short or
+full), and `&tag` picks every node carrying that capability tag — so `&db` means "any
+`:db` node". Now define a function and declare where its body runs:
+
 ```elixir
 defmodule MyApp.Users do
   use NebulaAPI
 
+  # The body compiles on &db nodes. Everywhere else, the same call is transparent RPC.
   defapi &db, find(id) do
     Repo.get!(User, id)
   end
@@ -20,8 +37,8 @@ MyApp.Users.find(42)
 #=> %User{id: 42, ...}
 ```
 
-On the `:db` node, `find/1` runs locally. On every other node, it
-transparently dispatches via RPC. The caller never knows.
+On a node tagged `:db`, `find/1` is a direct `Repo.get!`. On every other node, the same
+call dispatches over Erlang distribution to a `&db` node. The caller never knows.
 
 ## Why compile-time?
 
@@ -33,18 +50,18 @@ for each node.
 in its binary. Your web node doesn't carry FFmpeg bindings. Your worker
 doesn't carry Phoenix routes.
 
-**No unnecessary deps.** Combine `defapi` with `on_nebula_nodes` to
-conditionally `use Ecto.Repo` or start supervisors. Nodes that don't
-need a database connection don't load Ecto at all.
+**No unnecessary deps.** Wrap a `use` or a child spec in `on_nebula_nodes` (conditional
+compilation, [below](#on_nebula_nodes--conditional-compilation)) to `use Ecto.Repo` or
+start a supervisor only where it belongs. Nodes that don't touch the database never load
+Ecto at all.
 
 **Compile-time safety.** Reference a tag or node that doesn't exist in
 your topology? `CompileError`. Typo in a node name? Caught before it
 ships. No silent RPC calls into the void.
 
-**Almost zero runtime overhead.** A locally-resolved call is a direct
-function call plus a handful of process-dictionary reads (~0.00002 ms) to
-check for an active routing context — no routing table, no RPC
-serialization. The decision was made once, at compile time.
+**Zero runtime overhead.** A locally-resolved call is a direct function call — no routing
+table, no RPC serialization, just a couple of process-dictionary reads to check for an
+active routing context. The decision was made once, at compile time.
 
 > **"Compile per release" — the one mental shift.** NebulaAPI produces
 > different bytecode per node, so each release is its own build. For Elixir
@@ -52,6 +69,55 @@ serialization. The decision was made once, at compile time.
 > practice it's one extra `elixir --name node@host -S mix compile` per
 > release — a few seconds of CI, paid back many times over in smaller
 > binaries, fewer dependencies, and zero routing overhead.
+
+## Route business code to the right node — automatically
+
+Write your calls as plain business calls. NebulaAPI sends each one to the node that
+actually implements it — no `GenServer.call` to a named node, no RPC plumbing, no "which
+node am I on?":
+
+```elixir
+# A web request handler runs on the api node, but reads and encodes elsewhere:
+def show(conn, %{"id" => id}) do
+  user  = MyApp.Users.get(id)           # resolves on a &db node
+  thumb = MyApp.Media.thumbnail(user)   # resolves on a &worker node
+  render(conn, :show, user: user, thumb: thumb)
+end
+```
+
+Each `defapi` already knows where it lives. You write the *business* logic; the topology
+is a compile-time detail.
+
+## Reshape your topology without touching code
+
+This is why NebulaAPI exists: the flexibility of umbrella releases, **without rewriting
+code** every time you split a node out or stand up a new release. The same source ships as
+one node or many — you change config and which releases you build, nothing else.
+
+```elixir
+# dev — one node wears every hat, a single release, every call local
+nodes: ["dev@localhost": [:api, :db, :worker]]
+
+# staging — pull the database onto its own node
+nodes: [
+  "app@app.staging": [:api, :worker],
+  "db@db.staging":   [:db]
+]
+
+# prod — scale the workers out, keep one db
+nodes: [
+  "app@app.prod":    [:api],
+  "worker@w1.prod":  [:worker],
+  "worker@w2.prod":  [:worker],
+  "worker@w3.prod":  [:worker],
+  "db@db.prod":      [:db]
+]
+```
+
+Moving `:db` off the app node, or fanning `:worker` across three machines, is a config
+change and a rebuild — never a code change. The
+[runnable demo](https://github.com/podCloud/NebulaAPI/tree/main/demo) boots exactly this
+kind of multi-node cluster from one codebase.
 
 ## How it works
 
@@ -88,7 +154,8 @@ serialization. The decision was made once, at compile time.
 
 Same source, different bytecode. Each release is compiled with its
 target node name — the compiler reads `node()` to know who it's
-building for.
+building for. For the full mechanics, see [Concepts](docs/concepts.md) and the
+[AST deep-dive](docs/deep-dive/ast-deep-dive.md).
 
 ## Installation
 
@@ -101,6 +168,9 @@ end
 ```
 
 ## Quick start
+
+The four moving parts below are the whole setup; the full walkthrough is in
+**[Getting started](docs/guides/getting-started.md)**.
 
 ### 1. Define your cluster topology
 
@@ -120,7 +190,7 @@ capability tags — arbitrary atoms that describe what the node can do.
 Node selectors can use either the full name or the short name (the part
 before `@`). So `@db` matches `:"db@db.example"`, `@worker` matches
 `:"worker@worker.example"`, etc. When there's no ambiguity, short names
-are all you need.
+are all you need. See [Configuration](docs/configuration.md) for every option.
 
 ### 2. Compile with the target node name
 
@@ -185,7 +255,8 @@ on the modules that actually define `defapi` endpoints.
 supervised GenServer worker for each one that has local methods on this node; each worker
 registers in `:pg` process groups for discovery across nodes. The set is discovered, never
 declared — and because the server lives in the app's own tree, its workers die with the
-app (so `:pg` never holds stale entries).
+app (so `:pg` never holds stale entries). See
+[Server and compiler](docs/server-and-compiler.md).
 
 #### Optional: guard against forgetting it
 
@@ -263,32 +334,30 @@ defapi @:"db@db.example", do_something() do ... end
 ```
 
 This keeps your code readable. `@db` and `@worker` are clear
-enough — the host part is infrastructure detail.
+enough — the host part is infrastructure detail. The full selector grammar and every
+option live in the **[Macros reference](docs/macros-reference.md)**.
 
 ### What gets generated
 
 For each `defapi`, the macro generates:
 
-1. **`__nbapi_local_<name>/N`** — the real body, on **matching nodes only**
-   (nothing is generated elsewhere — the router goes remote there)
-2. **`__nbapi_remote_<name>/N`** — RPC dispatch via `APIServer` (every node)
-3. **`<name>/N`** — the public router that delegates to local or remote
+1. **`__nbapi_remote_<name>/N`** — RPC dispatch via `APIServer`, on **every** node.
+2. **`<name>/N`** — the public router callers actually invoke.
+3. **`__nbapi_local_<name>/N`** — the real body, on **matching nodes only**. Elsewhere
+   nothing is emitted: the router goes remote there, so there's no stub to keep.
 
 The remote function is generated on **every** node, including nodes
 that have the local implementation. This is what makes `call_on_node`
 and `call_on_nodes` work from anywhere — even a `&db` node can call
 other `&db` nodes remotely for quorum writes, load distribution, etc.
-The need is asymmetric: a local node may still call out, but a remote
-node never needs a local implementation — so none is emitted.
 
-The public router decides where to dispatch — the innermost explicit routing
-wins:
-- Truthy `:node_selector` / `:multicast` opts on the call → always remote,
-  even inside a `call_on_*` block (the call routes itself; a routing key set
-  to `nil`/`false` instead opts the call out of the block, back to the default)
+The public router decides where to dispatch — the innermost explicit routing wins:
+- Truthy `:node_selector` / `:multicast` opts on the call → remote, even inside a block
+  (the call routes itself; a key set to `nil`/`false` opts back out to the default)
 - Inside a `call_on_node`/`call_on_nodes` block → remote
-- Default → local on matching nodes, remote everywhere else (decided at
-  compile time, like everything else)
+- Default → local on matching nodes, remote everywhere else
+
+The codegen, step by step, is in the [AST deep-dive](docs/deep-dive/ast-deep-dive.md).
 
 ## `on_nebula_nodes` — conditional compilation
 
@@ -319,12 +388,15 @@ defmodule MyApp.Application do
 end
 ```
 
-The non-matching branch is completely absent from the compiled bytecode.
+The non-matching branch is completely absent from the compiled bytecode. More patterns
+(nesting, a `defapi` inside `on_nebula_nodes`) are in
+**[Conditional compilation](docs/guides/conditional-compilation.md)**.
 
 ## Runtime routing
 
 Sometimes you need to override the default routing at runtime — target
-a specific node, broadcast to many, or pick nodes based on load.
+a specific node, broadcast to many, or pick nodes based on load. The full strategy and
+return-value reference is in **[Calling across nodes](docs/guides/calling-across-nodes.md)**.
 
 ### `call_on_node` — unicast
 
@@ -358,26 +430,13 @@ call_on_nodes &worker, strategy: :first do
   MyApp.Jobs.transcode(file, opts)
 end
 
-# Quorum: at least 2 nodes must succeed (majority by default)
+# Quorum: at least 2 nodes must succeed (a strict majority by default)
 call_on_nodes &db, strategy: :quorum, at_least: 2 do
-  MyApp.Users.write_replica(user)
-end
-
-# No selector at all: every node serving the method
-call_on_nodes strategy: :quorum, at_least: 2 do
   MyApp.Users.write_replica(user)
 end
 ```
 
-`call_on_node` has the same options-only form — a semantic with_options:
-`call_on_node timeout: 30_000 do ... end` is a unicast to any available
-worker, with the options applying to every call in the block.
-
 ### `call_on_all_nodes` — broadcast
-
-Named alias of the selector-less `call_on_nodes` form: calls every node that
-serves this method (i.e. has a registered worker for it), not necessarily every
-configured node.
 
 ```elixir
 call_on_all_nodes timeout: 5_000 do
@@ -387,46 +446,18 @@ end
 
 ### Multicast strategies
 
-Multicast results are always tagged by node. A node that answered yields
-`{node, value}` (whatever the body returned); a node whose call failed at the
-transport level yields `{node, {:nebula_error, reason}}`.
+Results are always tagged per node — `{node, value}` on success,
+`{node, {:nebula_error, reason}}` for a node whose call failed at the transport level.
 
 | Strategy | Behavior |
 |---|---|
-| `:all` | Wait for every node (or timeout). Returns a list of `{node, value}` / `{node, {:nebula_error, reason}}`. |
-| `:first` | Returns the first `{node, value}` that counts as a success. If none qualify: `{:nebula_error, :no_success, results}` — never a bare list. |
-| `:quorum` | Reached: the list of collected `{node, value}` responses. Not reached: `{:nebula_error, :quorum_not_reached, results}` or `{:nebula_error, :quorum_timeout, results}`. Impossible quorum (required > available workers): `{:nebula_error, :quorum_unreachable, %{workers: n, required: m}}` — returned before any call is made. |
+| `:all` | Wait for every node (or timeout). Returns a list of `{node, value}`. |
+| `:first` | Return the first response that counts as a success; `{:nebula_error, :no_success, results}` if none. |
+| `:quorum` | Wait for `at_least:` successes (a strict majority by default). Fails fast if the quorum becomes unreachable. |
 
-`at_least:` (positive integer) sets the number of successes required — an absolute
-durability floor: "at least 2 nodes hold this write" is legitimate even when 2 is a
-minority of the targeted workers. Without it, the default is a strict majority,
-`div(workers, 2) + 1`. The value is an ordinary runtime expression — a variable or a
-computed count works.
-
-#### Defining "success" — `success:` / `failure:`
-
-By default, a node counts as a success for `:first` and `:quorum` as soon as it
-*responds* (a `{:nebula_error, _}` never counts). To base success on the
-returned value instead, pass a predicate:
-
-```elixir
-# Only count a node when it returned {:ok, _}
-call_on_nodes &db, strategy: :quorum, at_least: 2,
-  success: &match?({:ok, _}, &1) do
-  MyApp.Users.write_replica(user)
-end
-
-# Mirror form: treat {:error, _} as failure, everything else as success
-call_on_nodes &worker, strategy: :first,
-  failure: &match?({:error, _}, &1) do
-  MyApp.Jobs.transcode(file, opts)
-end
-```
-
-A transport failure (`{:nebula_error, _}`) is never a success, regardless of the
-predicate. Passing both `success:` and `failure:` raises an `ArgumentError`. Passing
-either option outside of a `:first` or `:quorum` multicast also raises an `ArgumentError`
-— on a unicast call or `strategy: :all` they would be silently ignored.
+`:first` and `:quorum` let you define what counts as a success with a `success:` (or
+`failure:`) predicate. Full return-value tables, `at_least:`, and the predicates are in
+[Calling across nodes](docs/guides/calling-across-nodes.md).
 
 ## Node info and intelligent routing
 
@@ -453,11 +484,9 @@ receive live runtime data about every node:
 }
 ```
 
-Every node with a registered worker is offered to the selector — even one that
-just joined and is not in the background node-info snapshot yet. Such a node
-appears with `runtime: nil` and `last_seen_at: nil` until the next refresh, so
-selectors that read `info.runtime` must filter on it first (as the examples
-below do).
+A node whose worker just registered but isn't in the background snapshot yet still appears,
+with `runtime: nil` / `last_seen_at: nil` until the next refresh — so filter on
+`info.runtime` before reading through it (as the examples do).
 
 ```elixir
 # Route to the node with the most headroom
@@ -489,12 +518,6 @@ NebulaAPI never wraps your return value. A `defapi` body returns exactly what it
 computed — local or over RPC, the result is identical:
 
 ```elixir
-defapi &math, add(a, b) do
-  a + b
-end
-
-Math.add(3, 7)   #=> 10
-
 defapi &db, find(id) do
   Repo.get(User, id)      # returns %User{} or nil
 end
@@ -502,7 +525,7 @@ end
 find(1)        #=> %User{...}
 find(999)      #=> nil
 
-# Tuples you return yourself are passed through untouched — including your own
+# Tuples you return yourself are passed through untouched, including your own
 # {:ok, _} / {:error, _}:
 defapi &db, create(attrs) do
   Repo.insert(User.changeset(attrs))  # {:ok, user} or {:error, changeset}
@@ -512,87 +535,12 @@ create(%{name: "Ada"})   #=> {:ok, %User{...}}
 create(%{})              #=> {:error, %Ecto.Changeset{...}}
 ```
 
-### `:nebula_error` — library and transport failures only
-
-The one value NebulaAPI *does* inject is `{:nebula_error, reason}`. It signals a
-failure of the library or the transport — never a business outcome:
-
-- a call timed out,
-- no worker is available for the method,
-- a network/RPC crash,
-- the body raised an exception (`{:nebula_error, exception}`),
-- a quorum wasn't reached.
-
-```elixir
-# No worker serves the method anywhere
-find(1)   #=> {:nebula_error, {:no_worker, {:find, 1}}}
-
-# The selector picked a node with no worker for it
-find(1)   #=> {:nebula_error, {:no_worker_on_node, :"db@db.test"}}
-
-# The body raised
-find(1)   #=> {:nebula_error, %RuntimeError{...}}
-```
-
-This keeps the two worlds cleanly separated: any `:ok` / `:error` you ever see in
-a return value is **business** — it's what your function chose to return.
-`:nebula_error` is **infrastructure** — the lib telling you the call itself
-didn't complete. You never have to guess whether an `{:error, _}` came from your
-code or from the framework.
-
-### Concurrency
-
-`defapi` bodies run concurrently, like any function — two simultaneous callers
-execute the body twice at the same time. There is no implicit serialization: if a
-body needs mutual exclusion, that is its own concern (a dedicated process,
-`:global.trans`, ...).
-
-To bound that concurrency, cap it on the module:
-
-```elixir
-use NebulaAPI, max_concurrent_calls: 10
-```
-
-The module's worker then executes at most 10 calls at a time; excess calls wait
-in line (each caller keeps its own `timeout:`). Each queued entry is monitored
-through its caller: the moment nobody awaits the result anymore — the call timed
-out, a `:first` multicast already got its winner, the caller crashed or its node
-disconnected — the entry is purged without executing. The limit is per module
-**per node** — a module served on 3 nodes runs up to 30 concurrent calls
-cluster-wide. Likewise, `max_concurrent_calls: 1` gives strict serialization
-**on each node**, not across the cluster: with 3 nodes serving the module, up
-to 3 calls still run at the same time, one per node. For cluster-wide mutual
-exclusion you need your own coordination (e.g. `:global.trans`). One caveat:
-under `max_concurrent_calls: 1`, a body that re-enters the same module holds
-the only slot while waiting for itself — the re-entrant call waits in line
-until its own timeout, then fails `{:nebula_error, :timeout}`.
-
-### Timeouts
-
-Every call resolves its timeout in this order:
-
-1. the call's `timeout:` option,
-2. the module's `default_timeout:` (`use NebulaAPI, default_timeout: 15_000`),
-3. `config :nebula_api, default_timeout: ...`,
-4. 5000 ms.
-
-Both options can also be set globally for every module via
-`config :nebula_api, default_opts: [max_concurrent_calls: 50, default_timeout: 15_000]`.
-
-A timeout means the outcome is **unknown**, not failed: the body may still be
-running on the callee and complete after your `{:nebula_error, :timeout}` came
-back. That ambiguity is inherent to any RPC — if callers retry on timeout, make
-the bodies idempotent.
-
-`timeout:` must be a positive integer (milliseconds). `:infinity` is rejected
-with an `ArgumentError`: distribution monitors already catch dead workers and
-partitions instantly, so the only thing an unbounded wait would buy you is
-hanging forever on a live worker whose body never finishes. If you really mean
-"very long", say it with a number.
-
-`timeout: nil` means "not set": the resolution above applies as if the option
-were absent — handy for a computed `timeout: maybe_timeout`. Only `nil` inherits;
-any other non-integer (`false` included) raises.
+The one value the library *does* inject is `{:nebula_error, reason}` — a **library or
+transport** failure (a timeout, no worker available, a crashing body, a quorum that wasn't
+reached), never a business outcome. So any `:ok` / `:error` you ever see is **yours**, and
+you never have to guess whether an `{:error, _}` came from your code or the framework. The
+full contract — including how throws and exits are reported — is in
+**[Using `defapi`](docs/guides/using-defapi.md)**.
 
 ## Worked example: a 3-role cluster
 
@@ -673,7 +621,7 @@ end
 defmodule MyAppWeb.UserController do
   def show(conn, %{"id" => id}) do
     # "Just works" on any node. Local on @db, RPC everywhere else.
-    # get/1 wraps Repo.get/2, so it returns a %User{} (or nil) directly.
+    # get/1 returns the struct (or nil) directly — no wrapping.
     case MyApp.Users.get(id) do
       %MyApp.User{} = user -> render(conn, :show, user: user)
       nil -> send_resp(conn, 404, "Not found")
@@ -700,92 +648,21 @@ If you've ever thought *"I'd love to use Cachex / a counter / a cron here, but
 its state is per-node, so now I need Redis / a shared DB / `:global` locks…"* —
 this is the escape hatch. The library stays exactly as it is. You add a wrapper.
 
-### Rate limiter — cluster-wide Hammer
-
-[Hammer](https://hex.pm/packages/hammer) with the ETS backend counts per node.
-Wrap it so the whole cluster shares one count:
-
 ```elixir
-defmodule MyApp.RateLimitLocal do
-  use Hammer, backend: :ets
-end
-
-defmodule MyApp.RateLimit do
+# Cachex runs only on the @cache node; every node shares one cache through the wrapper.
+defmodule MyApp.Cache do
   use NebulaAPI
 
-  defapi [@control], hit(key, scale_ms, limit) do
-    MyApp.RateLimitLocal.hit(key, scale_ms, limit)
-  end
+  defapi @cache, get(key),        do: Cachex.get(:app_cache, key)
+  defapi @cache, put(key, value), do: Cachex.put(:app_cache, key, value)
 end
 ```
 
-Every node calls `MyApp.RateLimit.hit/3`; it resolves locally on `@control` and
-routes transparently via RPC everywhere else. One coherent count, no Redis.
-
-### Aggregated counters and metrics
-
-An Erlang `:counters` table or a GenServer counter, pinned to a `@stats` node:
-
-```elixir
-defmodule MyApp.Metric do
-  use NebulaAPI
-
-  defapi [@stats], incr(name, n \\ 1), do: MyApp.MetricLocal.incr(name, n)
-  defapi [@stats], get(name), do: MyApp.MetricLocal.get(name)
-end
-```
-
-Cluster-wide counters without Prometheus or StatsD. For coarse numbers
-("how many uploads this month") it's plenty.
-
-### Run-once-per-cluster scheduling
-
-The classic: a job that must fire **once for the cluster**, not once per node.
-The usual answers are `:global` locks or pulling in Oban + Postgres. Instead,
-pin a Quantum or a plain scheduler GenServer to `@scheduler`:
-
-```elixir
-defmodule MyApp.Cron do
-  use NebulaAPI
-
-  defapi [@scheduler], schedule(name, cron_expr, mfa) do
-    MyApp.LocalCron.schedule(name, cron_expr, mfa)
-  end
-end
-```
-
-Single-execution guarantee, no external dependency.
-
-### Singleton workers
-
-"There must be exactly one process coordinating X across the cluster" — a
-WebSocket registry, a GenStage broker, a job coordinator. `:global` works but is
-verbose and fails over poorly. Wrap the GenServer on `@coordinator` and you get
-the same API as the single-node version, centralized.
-
-### Feature-flag store
-
-An `:ets` + GenServer flag store is trivial single-node but drifts between
-instances. Wrap it on `@config` so every instance sees the same state — no Redis,
-no shared DB:
-
-```elixir
-defmodule MyApp.FeatureFlags do
-  use NebulaAPI
-
-  defapi [@config], enabled?(flag), do: MyApp.FeatureFlagsLocal.enabled?(flag)
-  defapi [@config], set(flag, value), do: MyApp.FeatureFlagsLocal.set(flag, value)
-end
-```
-
-### Caching — with an honest caveat
-
-For values read often and invalidated rarely (dynamic config, reference data),
-wrapping Cachex on a `@cache` node is great. But for a hot path doing thousands
-of reads per second per node, every read becomes an RPC round-trip — that's the
-**wrong** use, and a real distributed cache (Redis, or `:mnesia`) stays better.
-NebulaAPI is the right tool when the access pattern fits (rare reads, or config),
-not a universal replacement for a distributed cache.
+Any node calls `MyApp.Cache.get/1`; it resolves locally on `@cache` and routes
+transparently everywhere else. One shared cache, no Redis. The same trick gives you
+cluster-wide rate limiters, counters, run-once-per-cluster schedulers, singleton
+coordinators, and feature-flag stores — with recipes (and an honest caveat on hot-path
+caching) in **[Wrapping single-node libraries](docs/guides/wrapping-libraries.md)**.
 
 ## When NOT to use NebulaAPI
 
@@ -794,11 +671,16 @@ Being honest about the edges:
 - **External clients.** If the caller isn't a node in your Erlang cluster — a
   public web client, a non-Elixir mobile app — gRPC or REST is still the right
   boundary. NebulaAPI is for intra-cluster calls.
-- **Massively ephemeral fleets.** Hundreds of Kubernetes pods churning in and
-  out make compile-time `--name`-per-node unworkable. Reach for runtime service
-  discovery instead.
-- **Topologies that change at runtime.** Continuous auto-scaling breaks the core
-  assumption: NebulaAPI expects a stable topology known at compile time.
+- **Node names unknown at build time.** NebulaAPI needs your node names and tags in
+  config when you compile. The nodes themselves can come up and go down freely at
+  runtime — workers register and drop through `:pg`, and selectors only ever route to
+  what's actually connected. What it can't handle is a node whose *name* wasn't known at
+  build time: an unbounded fleet of randomly-named pods has no compiled identity to route
+  to. Scaling the count of *known* roles is fine; minting brand-new node identities at
+  runtime is not.
+- **Topologies whose roles change at runtime.** Adding a wholly new tag or node *name* to
+  the cluster means a recompile — NebulaAPI decided the routing at build time. Bringing
+  more instances of an existing role online needs nothing but starting them.
 
 ## Performance
 
@@ -810,10 +692,9 @@ Indicative, order-of-magnitude:
 | NebulaAPI, resolved local | ~0.00002 ms |
 | NebulaAPI, cross-node (Erlang distribution RPC) | ~0.2–2 ms |
 
-The point: a locally-resolved NebulaAPI call adds almost nothing — a direct
-function call plus a few process-dictionary reads (~0.00002 ms per call), roughly
-10,000× cheaper than a cross-node call. Cross-node calls are standard Erlang
-distribution RPC, i.e. fast.
+The point: a locally-resolved NebulaAPI call adds almost nothing — a direct function call
+plus a couple of process-dictionary reads, roughly 10,000× cheaper than a cross-node call.
+Cross-node calls are standard Erlang distribution RPC, i.e. fast.
 
 ## Configuration reference
 
@@ -828,19 +709,21 @@ config :nebula_api,
   ],
 
   # Optional: override node identity for dev/test.
-  # In production, compile with: elixir --name node@host -S mix compile
-  # Also accepts inherited defaults for every `use NebulaAPI` module:
+  # In production, compile with: elixir --name node@host -S mix compile.
+  # default_opts also accepts inherited defaults for every `use NebulaAPI` module:
   # max_concurrent_calls: and default_timeout:.
   default_opts: [self_node: :"api@api.example"],
 
   # Optional: global default timeout (ms) for remote calls.
-  # Per call timeout: > per module default_timeout: > this > 5000.
+  # Per-call timeout: > per-module default_timeout: > this > 5000.
   default_timeout: 5_000,
 
   # Optional: how often (ms) each node's background NodesInfoCache rebuilds
   # the node-info snapshot served to selector functions.
   nodes_info_refresh_interval: 5_000
 ```
+
+Every option is documented in **[Configuration](docs/configuration.md)**.
 
 ## Architecture
 
@@ -867,6 +750,24 @@ config :nebula_api,
 │  :pg groups         worker discovery across nodes     │
 └─────────────────────────────────────────────────────┘
 ```
+
+## Documentation
+
+**Guides**
+- [Getting started](docs/guides/getting-started.md) — from zero to a working cross-node call
+- [Using `defapi`](docs/guides/using-defapi.md) — define, call, return values, error handling
+- [Conditional compilation](docs/guides/conditional-compilation.md) — `on_nebula_nodes`
+- [Calling across nodes](docs/guides/calling-across-nodes.md) — unicast, multicast, quorum, blocks
+- [Gotchas and process scope](docs/guides/gotchas-and-scope.md) — trailing opts, tasks, nesting, timeouts
+
+**Reference**
+- [Concepts](docs/concepts.md) — nodes, tags, selectors, the execution model
+- [Configuration](docs/configuration.md) — topology, `default_opts`, dev/test
+- [Macros reference](docs/macros-reference.md) — every macro and option
+- [Server and compiler](docs/server-and-compiler.md) — workers, `:pg`, the `:nebula` compiler
+
+**Deep dive**
+- [AST deep-dive](docs/deep-dive/ast-deep-dive.md) — how the per-node code is generated
 
 ## License
 
