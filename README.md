@@ -98,8 +98,13 @@ NebulaAPI resolves all routing decisions at compile time. This is not a
 runtime router — it's a code generator that produces different bytecode
 for each node.
 
-**Smaller binaries.** Code that doesn't belong on a node doesn't exist
-in its binary. Your web node doesn't carry FFmpeg bindings. Your worker
+**Smaller binaries.** Code that doesn't belong on a node doesn't exist in its binary — a
+`defapi` body is only emitted on matching nodes. [`bench/binary_size.exs`](bench/binary_size.exs)
+measures it on one module: the non-matching node's `.beam` is **~4.0 KB vs ~6.5 KB
+(38% smaller)**, because the body simply isn't there. Scale that to a gated dependency and
+it's megabytes, not kilobytes: a node that wraps Cachex in `on_nebula_nodes &cache` never
+references it, so you can keep the library out of that release entirely — ~440 KB of
+compiled `.beam` it never ships. Your web node doesn't carry FFmpeg bindings; your worker
 doesn't carry Phoenix routes.
 
 **No unnecessary deps.** Wrap a `use`, an `import`, or a child spec in `on_nebula_nodes` so
