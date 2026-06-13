@@ -458,16 +458,25 @@ that have the local implementation. This is what makes `call_on_node`
 and `call_on_nodes` work from anywhere — even a `&db` node can call
 other `&db` nodes remotely for quorum writes, load distribution, etc.
 
-The public router decides where a call goes, from the default outward — the more explicit
-you get, the more it wins. Take the same call, `MyApp.Cache.get(key)`:
+## Router and priorities
+
+The public router on each `defapi` decides where a call goes, from the default outward —
+the more explicit you get, the more it wins. Take the same call, `MyApp.Cache.get(key)`:
 
 1. **Default** — `MyApp.Cache.get(key)` runs locally if this node serves the method,
-   otherwise a single remote (unicast).
+   otherwise a single remote call (unicast).
 2. **Wrapped in a block** — the same call inside `call_on_nodes &cache do … end` routes per
    the block instead.
 3. **Its own trailing opts win over the block** — `MyApp.Cache.get(key, multicast: true)`
    routes itself, even inside a block; a routing key set to `nil` / `false` opts the call
    back out to the default.
+
+**Default unicast goes to the first connected node that serves the method — never the
+others.** Routing reads the live `:pg` membership and calls the first registered worker for
+that method; that's the only node that runs it. No fan-out, no load-balancing by default.
+Membership is live, though: if that node drops, `:pg` removes it, so the next call simply
+lands on whoever is first among the nodes still connected. (Want several nodes at once, a
+specific one, or a load-aware pick? That's [runtime routing](#runtime-routing).)
 
 ## `on_nebula_nodes` — conditional compilation
 
@@ -816,7 +825,9 @@ Being honest about the edges:
   runtime — workers register and drop through `:pg`, and selectors only ever route to
   what's actually connected. What it can't handle is a node whose *name* wasn't known at
   build time: an unbounded fleet of randomly-named pods has no compiled identity to route
-  to. Scaling the count of *known* roles is fine; minting brand-new node identities at
+  to — though a fixed, generic *caller* node is easy (see
+  [Compiling a generic node](#compiling-a-generic-node)). Scaling the count of *known* roles
+  is fine; minting brand-new node identities at
   runtime is not.
 - **Topologies whose roles change at runtime.** Adding a wholly new tag or node *name* to
   the cluster means a recompile — NebulaAPI decided the routing at build time. Bringing
@@ -847,9 +858,9 @@ config :nebula_api,
   # Required: cluster topology — tags per node.
   # Used at compile time to decide what code goes where.
   nodes: [
-    "api@api.example": [:mainframe_cluster, :api],
-    "db@db.example": [:mainframe_cluster, :db],
-    "worker@worker.example": [:mainframe_cluster, :worker]
+    "api@api.example": [:mainframe_cluster, :api, :cache],
+    "db@db.example": [:mainframe_cluster, :db, :cache],
+    "worker@worker.example": [:cloud_worker_lambda, :worker]
   ],
 
   # Optional: override node identity for dev/test.
@@ -866,6 +877,25 @@ config :nebula_api,
   # the node-info snapshot served to selector functions.
   nodes_info_refresh_interval: 5_000
 ```
+
+## Compiling a generic node
+
+Add a node with **no tags** and you get a pure caller — every `defapi` resolves remote on
+it, because it matches no `&tag` and no `@other`:
+
+```elixir
+config :nebula_api,
+  nodes: [
+    # ... your real nodes ...
+    "generic@anyhost.localhost": []
+  ]
+```
+
+Compile a release as `generic@anyhost.localhost` and it serves nothing: every call is RPC
+out to whichever node does serve it. The only bodies that stay local on it are `defapi :*`
+(local everywhere by definition) and `defapi @generic` (targeted at it by name). Handy for a
+control plane, a console, or any node that should only *call* the cluster — and the closest
+thing to a "client" node when you can't know every caller's name at build time.
 
 ## Architecture
 
