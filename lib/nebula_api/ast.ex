@@ -19,8 +19,10 @@ defmodule NebulaAPI.AST do
                opts
                |> Keyword.validate!(
                  only: [
+                   defapi: 1,
                    defapi: 2,
                    defapi: 3,
+                   on_nebula_nodes: 1,
                    on_nebula_nodes: 2,
                    call_on_node: 1,
                    call_on_node: 2,
@@ -65,15 +67,36 @@ defmodule NebulaAPI.AST do
         collect_runtime_info()
       end
   """
-  # Canonical form, multiple selectors juxtaposed by a space:
-  #   defapi &db !@backup, get(id) do ... end
-  # Elixir folds the trailing signature into the deepest selector call
-  # (`&db !@backup, get(id)` parses as `&db(!@backup, get(id))`), so the call
-  # arrives at arity 2 with the signature absorbed. peel_trailing/1 lifts the
-  # signature back out, leaving the pure selector chain the parser expects.
+  # Canonical multi-selector with an INLINE `do:` — `defapi &db !@backup, get(id), do: ...`.
+  # Paren-less parsing folds the continuation selector, the signature AND the `[do: ...]`
+  # all into the chain, so the call arrives at arity 1. peel_chain/1 lifts the whole
+  # absorbed tail back out: [signature, [do: body]].
+  defmacro defapi(selectors_signature_and_do) do
+    case peel_chain(selectors_signature_and_do) do
+      {nebula_ast, [fn_ast, [do: do_fn]]} ->
+        expand_defapi(nebula_ast, fn_ast, do_fn, __CALLER__)
+
+      _ ->
+        raise CompileError,
+          line: __CALLER__.line,
+          file: __CALLER__.file,
+          description: """
+          Malformed defapi. Expected: defapi <selectors>, name(args) do ... end
+          (or the inline `, do:` form). Selectors are juxtaposed by a space, e.g.
+          `defapi &db !@backup, get(id) do ... end`.
+          """
+    end
+  end
+
+  # Canonical multi-selector with a `do ... end` BLOCK — `defapi &db !@backup, get(id) do`.
+  # Here the block is a separate arg (arity 2); only the signature is folded into the
+  # chain, so peel_chain/1 returns it as the single absorbed item.
   defmacro defapi(selectors_with_signature, do: do_fn) do
-    case peel_trailing(selectors_with_signature) do
-      {_clean, nil} ->
+    case peel_chain(selectors_with_signature) do
+      {nebula_ast, [fn_ast]} ->
+        expand_defapi(nebula_ast, fn_ast, do_fn, __CALLER__)
+
+      {_clean, _} ->
         raise CompileError,
           line: __CALLER__.line,
           file: __CALLER__.file,
@@ -83,9 +106,6 @@ defmodule NebulaAPI.AST do
           Expected: defapi <selectors>, name(args) do ... end
           Selectors are juxtaposed by a space, e.g. `defapi &db !@backup, get(id) do ... end`.
           """
-
-      {nebula_ast, fn_ast} ->
-        expand_defapi(nebula_ast, fn_ast, do_fn, __CALLER__)
     end
   end
 
@@ -172,10 +192,33 @@ defmodule NebulaAPI.AST do
       end
   """
   defmacro on_nebula_nodes(nebula_ast, opts) do
+    expand_on_nebula_nodes(nebula_ast, opts, __CALLER__)
+  end
+
+  # Inline form: `on_nebula_nodes &db !@backup, do: ..., else: ...` — the multi-selector
+  # chain, the do: AND the else: all fold into one arity-1 arg. peel_chain/1 lifts the
+  # do:/else: kwlist back out.
+  defmacro on_nebula_nodes(selectors_and_opts) do
+    case peel_chain(selectors_and_opts) do
+      {nebula_ast, [opts]} when is_list(opts) ->
+        expand_on_nebula_nodes(nebula_ast, opts, __CALLER__)
+
+      _ ->
+        raise CompileError,
+          line: __CALLER__.line,
+          file: __CALLER__.file,
+          description: """
+          Malformed on_nebula_nodes. Expected: on_nebula_nodes <selectors> do ... [else ...] end
+          (or the inline `, do:` / `, else:` form). Selectors are juxtaposed by a space.
+          """
+    end
+  end
+
+  defp expand_on_nebula_nodes(nebula_ast, opts, caller) do
     execution_nodes = nebula_ast |> get_execution_nodes_from_nebula_ast!()
 
     self_node =
-      case __CALLER__.module do
+      case caller.module do
         nil -> node()
         mod -> Module.get_attribute(mod, :nebula_api, []) |> Keyword.get(:self_node, node())
       end
@@ -185,10 +228,10 @@ defmodule NebulaAPI.AST do
       |> Keyword.keys()
       |> Enum.member?(self_node)
 
-    if(is_current_node, do: opts |> Keyword.get(:do), else: opts |> Keyword.get(:else))
+    if(is_current_node, do: Keyword.get(opts, :do), else: Keyword.get(opts, :else))
   rescue
     e in CompileError ->
-      raise %{e | line: __CALLER__.line, file: __CALLER__.file}
+      raise %{e | line: caller.line, file: caller.file}
   end
 
   @doc """
@@ -241,6 +284,14 @@ defmodule NebulaAPI.AST do
   defmacro call_on_node(opts) when is_list(opts) do
     {block, opts} = Keyword.pop!(opts, :do)
     do_call_on_node(nil, opts, block, __CALLER__)
+  end
+
+  # Inline `do:` with a multi-selector chain — `call_on_node @a !@b, do: ...` folds the
+  # chain, the opts AND the do into one arity-1, non-list arg (a plain opts list is the
+  # options-only clause above). Lift them back out.
+  defmacro call_on_node(selectors_opts_and_do) when not is_list(selectors_opts_and_do) do
+    {selector, opts, block} = unwrap_inline_chain_call!(selectors_opts_and_do, __CALLER__)
+    do_call_on_node(selector, opts, block, __CALLER__)
   end
 
   defmacro call_on_node(selector_or_nebula_ast, opts_or_block)
@@ -353,6 +404,13 @@ defmodule NebulaAPI.AST do
   defmacro call_on_nodes(opts) when is_list(opts) do
     {block, opts} = Keyword.pop!(opts, :do)
     do_call_on_nodes(nil, opts, block, __CALLER__)
+  end
+
+  # Inline `do:` with a multi-selector chain — `call_on_nodes @a !@b, strategy: :all, do: ...`
+  # folds the chain, the opts AND the do into one arity-1, non-list arg.
+  defmacro call_on_nodes(selectors_opts_and_do) when not is_list(selectors_opts_and_do) do
+    {selector, opts, block} = unwrap_inline_chain_call!(selectors_opts_and_do, __CALLER__)
+    do_call_on_nodes(selector, opts, block, __CALLER__)
   end
 
   defmacro call_on_nodes(selector_or_nebula_ast, opts_or_block)
@@ -653,51 +711,65 @@ defmodule NebulaAPI.AST do
   #     &db !@backup, get(id)            ==>  &db(!@backup, get(id))
   #     &db !@backup, strategy: :all     ==>  &db(!@backup, [strategy: :all])
   #
-  # So the chain arrives with the signature/opts absorbed as the last argument of
-  # its deepest selector. peel_trailing/1 walks the chain and lifts that absorbed
-  # argument back out, returning {pure_selector_ast, trailing_or_nil}. The pure
-  # chain is exactly what the single-selector / bracketed forms already feed the
-  # parser. A pure selector identifier carries `nil` or a single continuation
-  # arg, so a 2-arity selector identifier is the unambiguous marker of an
-  # absorbed trailing argument.
-  defp peel_trailing({op, meta, [inner]}) when op in [:&, :@, :!] do
-    {clean, trailing} = peel_trailing(inner)
-    {{op, meta, [clean]}, trailing}
+  # So the chain arrives with the signature/opts (and, in the inline `do:` form, the
+  # `[do: ...]` too) absorbed as extra args of its deepest selector. peel_chain/1 walks
+  # the chain and lifts that whole absorbed tail back out, returning
+  # {pure_selector_ast, absorbed_list} — [] when nothing was absorbed. The pure chain is
+  # exactly what the single-selector / bracketed forms already feed the parser. A pure
+  # selector identifier carries `nil` or a single continuation arg, so any extra args on
+  # a selector identifier are the absorbed tail.
+  defp peel_chain({op, meta, [inner]}) when op in [:&, :@, :!] do
+    {clean, absorbed} = peel_chain(inner)
+    {{op, meta, [clean]}, absorbed}
   end
 
-  defp peel_trailing({name, meta, ctx}) when is_atom(ctx) do
-    {{name, meta, ctx}, nil}
+  defp peel_chain({name, meta, ctx}) when is_atom(ctx) do
+    {{name, meta, ctx}, []}
   end
 
-  defp peel_trailing({name, meta, [cont]}) do
-    {clean_cont, trailing} = peel_trailing(cont)
-    {{name, meta, [clean_cont]}, trailing}
-  end
-
-  defp peel_trailing({name, meta, [cont, trailing]}) do
-    {clean_cont, _} = peel_trailing(cont)
-    {{name, meta, [clean_cont]}, trailing}
+  defp peel_chain({name, meta, [cont | absorbed]}) do
+    {clean_cont, deeper} = peel_chain(cont)
+    {{name, meta, [clean_cont]}, absorbed ++ deeper}
   end
 
   # Anything that isn't a selector chain head (a [list], :*, a function selector,
   # a variable, a bare opts list): nothing to peel.
-  defp peel_trailing(other), do: {other, nil}
+  defp peel_chain(other), do: {other, []}
 
   # Only peel actual selector chain heads (@/&/!); leave function selectors,
   # lists, :* and opts-only lists untouched.
-  defp maybe_peel({op, _, _} = selector) when op in [:&, :@, :!], do: peel_trailing(selector)
-  defp maybe_peel(selector), do: {selector, nil}
+  defp maybe_peel_chain({op, _, _} = selector) when op in [:&, :@, :!], do: peel_chain(selector)
+  defp maybe_peel_chain(selector), do: {selector, []}
 
   # For call_on_* : lift any opts the canonical syntax folded into the selector
   # back out and merge them ahead of opts passed the long way (the explicit ones
   # win on conflict — they can't realistically both be present, but be safe).
   defp absorb_trailing_opts(selector, opts) do
-    case maybe_peel(selector) do
-      {clean, trailing} when is_list(trailing) and trailing != [] ->
-        {clean, Keyword.merge(trailing, opts)}
+    case maybe_peel_chain(selector) do
+      {clean, [absorbed_opts]} when is_list(absorbed_opts) ->
+        {clean, Keyword.merge(absorbed_opts, opts)}
 
       {clean, _} ->
         {clean, opts}
+    end
+  end
+
+  # call_on_* inline form: `call_on_node @a !@b, opt: v, do: block` folds the selector
+  # chain, the opts and the do into one arity-1 arg. Peel the chain, then split the do
+  # block out of the absorbed opts. Returns {clean_selector, opts, block}.
+  defp unwrap_inline_chain_call!(ast, caller) do
+    with {selector, [opts]} when is_list(opts) <- peel_chain(ast),
+         {block, rest} when not is_nil(block) <- Keyword.pop(opts, :do) do
+      {selector, rest, block}
+    else
+      _ ->
+        raise CompileError,
+          line: caller.line,
+          file: caller.file,
+          description: """
+          Malformed call_on_* call. Expected a do block, e.g.
+          `call_on_nodes &db !@backup, strategy: :all do ... end` (selectors juxtaposed by a space).
+          """
     end
   end
 

@@ -95,6 +95,33 @@ defmodule NebulaAPI.NebulaAstParsingTest do
       assert mod.get(1) == {:got, 1}
     end
 
+    test "inline do: — single selector" do
+      mod =
+        compile_module!("DefapiInlineOne", """
+        defapi &db, get(id), do: {:got, id}
+        """)
+
+      assert mod.get(5) == {:got, 5}
+    end
+
+    test "inline do: — two selectors juxtaposed by a space" do
+      mod =
+        compile_module!("DefapiInlineTwo", """
+        defapi &db !@backup, get(id), do: {:got, id}
+        """)
+
+      assert mod.get(6) == {:got, 6}
+    end
+
+    test "inline do: — three selectors juxtaposed by spaces" do
+      mod =
+        compile_module!("DefapiInlineThree", """
+        defapi &db &api !@backup, get(id), do: {:got, id}
+        """)
+
+      assert mod.get(7) == {:got, 7}
+    end
+
     test "a single negation selector" do
       mod =
         compile_module!("DefapiNeg", """
@@ -306,6 +333,88 @@ defmodule NebulaAPI.NebulaAstParsingTest do
         defapi &db, payload(), do: :data
 
         def run, do: (call_on_all_nodes timeout: 100, strategy: :first do payload() end)
+        """)
+
+      assert function_exported?(mod, :run, 0)
+    end
+  end
+
+  # ====================================================================
+  # inline `do:` / `else:` — must work for every macro, mono and multi
+  # ====================================================================
+
+  describe "on_nebula_nodes — inline do:/else:" do
+    test "mono selector, inline do:" do
+      mod =
+        compile_module!("OnInlineMono", """
+        on_nebula_nodes &db, do: def(here?, do: true)
+        """)
+
+      assert mod.here?() == true
+    end
+
+    test "two selectors, inline do:" do
+      mod =
+        compile_module!("OnInlineTwo", """
+        on_nebula_nodes &db !@backup, do: def(here?, do: true)
+        """)
+
+      assert mod.here?() == true
+    end
+
+    test "two selectors, inline do: + else: (else taken on a non-matching node)" do
+      mod =
+        compile_module!("OnInlineElse", """
+        on_nebula_nodes &worker !@backup, do: def(role, do: :worker), else: def(role, do: :other)
+        """)
+
+      # test@host is not a :worker → the else branch compiles
+      assert mod.role() == :other
+    end
+
+    test "two selectors, block do/else" do
+      mod =
+        compile_module!("OnBlockElse", """
+        on_nebula_nodes &worker !@backup do
+          def role, do: :worker
+        else
+          def role, do: :other
+        end
+        """)
+
+      assert mod.role() == :other
+    end
+  end
+
+  describe "call_on_node / call_on_nodes — inline do:" do
+    test "call_on_node — mono selector, inline do:" do
+      mod =
+        compile_module!("CallNodeInlineMono", """
+        defapi &db, payload(), do: :data
+
+        def run, do: (call_on_node @test, do: payload())
+        """)
+
+      assert function_exported?(mod, :run, 0)
+    end
+
+    test "call_on_node — two selectors, inline do:" do
+      mod =
+        compile_module!("CallNodeInlineTwo", """
+        defapi &db, payload(), do: :data
+
+        def run, do: (call_on_node @test !@backup, do: payload())
+        """)
+
+      assert function_exported?(mod, :run, 0)
+    end
+
+    test "call_on_nodes — two selectors + opts, inline do:" do
+      mod =
+        compile_module!("CallNodesInlineTwo", """
+        defapi &db, payload(), do: :data
+
+        def run, do: (call_on_nodes &db !@backup, strategy: :all, do: payload())
         """)
 
       assert function_exported?(mod, :run, 0)

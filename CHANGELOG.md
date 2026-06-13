@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parser. Previously only a single selector or the bracketed `[&db, !@backup]`
   form compiled for these macros. The bracketed list keeps working as a
   tolerated, non-canonical alternative. Covered by `nebula_ast_parsing_test`.
+- **The inline `do:` (and `else:`) form now works with multi-selectors too**, across
+  `defapi`, `on_nebula_nodes` and `call_on_node` / `call_on_nodes` — e.g.
+  `defapi &db !@backup, get(id), do: ...` and
+  `on_nebula_nodes &worker !@backup, do: ..., else: ...`. The paren-less parse folds the
+  `do:`/`else:`/opts keyword list into the selector chain (arity 1); the macros lift it
+  back out alongside the signature. Block (`do ... end`) and inline forms now behave
+  identically for one selector or many.
 
 ## [0.4.0] - 2026-06-13
 
