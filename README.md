@@ -9,17 +9,18 @@ across nodes look and feel like local function calls.
 ## The model in 30 seconds
 
 A NebulaAPI cluster is a set of **nodes** (each one an Erlang VM, e.g.
-`db@db.example`). Every node carries one or more **tags** — arbitrary atoms that
-describe what it's *for*: `:db`, `:worker`, `:cache`, whatever fits. You declare
-that map once, in config:
+`db@db.example`). Every node carries one or more **tags** — arbitrary atoms. No atom is
+special; a tag can name a role (`:db`, `:worker`), a capability (`:cache`), or a whole
+deployment (`:mainframe_cluster` here, `:staging_cluster` over in staging). You declare the
+map once, in config:
 
 ```elixir
 # config/config.exs
 config :nebula_api,
   nodes: [
-    "api@api.example":       [:cluster, :api],
-    "db@db.example":         [:cluster, :db],
-    "worker@worker.example": [:cluster, :worker]
+    "api@api.example":       [:mainframe_cluster, :api, :cache],
+    "db@db.example":         [:mainframe_cluster, :db, :cache],
+    "worker@worker.example": [:mainframe_cluster, :worker]
   ]
 ```
 
@@ -28,15 +29,16 @@ name:
 
 - **`&tag`** — *any* node carrying that tag (picking by capability). `&db` reads
   as "wherever the `:db` tag lives"; the `&` turns the tag atom `:db` into a
-  selector.
-- **`@node`** — one *specific* node, by its short name. `@worker` is the node
-  named `worker@…`.
+  selector. Tags are lowercase atoms — `&db`, `&cache`, `&mainframe_cluster`.
+- **`@node`** — pick a node by name. `@worker` is the **short** name (everything
+  before `@`); when several nodes share it, `@worker` targets them all — that's a
+  feature, see [short vs full names](#short-vs-full-names) for pinning exactly one.
 
 `!` negates either one: `!&legacy` is "every node *without* the `:legacy` tag",
 `!@backup` is "every node except `@backup`". These are **selectors** — they tell
 the compiler which nodes get the real code.
 
-Now write a function and tag it with the selector for where its body belongs:
+Now write functions and tag each with the selector for where its body belongs:
 
 ```elixir
 defmodule MyApp.Users do
@@ -45,19 +47,50 @@ defmodule MyApp.Users do
   # `&db` → the body is compiled only on nodes carrying the :db tag.
   # On every other node, the same call becomes transparent RPC to a :db node.
   defapi &db, find(id) do
-    Repo.get!(User, id)
+    Repo.get(User, id)        # %User{} or nil — returned verbatim, no wrapping
+  end
+
+  # A different capability, on different nodes: the cache lives on &cache nodes.
+  defapi &cache, update_cache(id, user) do
+    Cachex.put(:users, id, user)
   end
 end
-
-# On any node — same call, same result:
-MyApp.Users.find(42)
-#=> %User{id: 42, ...}
 ```
 
-On a node tagged `:db`, `find/1` is a direct `Repo.get!`. On every other node the
-same call dispatches over Erlang distribution to a `:db` node and hands back the
-identical value. The caller never knows which node actually ran it — and never
-has to.
+On a node tagged `:db`, `find/1` is a direct `Repo.get`; on every other node the same call
+dispatches over Erlang distribution to a `:db` node and hands back the identical value. The
+caller never knows which node ran it — and never has to. The body's value comes back as-is,
+so you branch on it like any local call:
+
+```elixir
+# Same call on any node:
+case MyApp.Users.find(42) do
+  %User{} = user -> MyApp.Users.update_cache(user.id, user)
+  nil            -> :not_found
+end
+```
+
+That `update_cache/2` call carries `&cache`, so **by default it resolves on one node** —
+locally if the caller is a `&cache` node, otherwise a single `&cache` worker (the first
+registered one; it's a unicast, not a broadcast and not a race). The *other* `&cache` nodes
+still hold a stale copy. When you mean "reach more than one", say so explicitly:
+
+```elixir
+# every &cache node serving the method
+call_on_all_nodes do
+  MyApp.Users.update_cache(user.id, user)
+end
+
+# one specific node
+call_on_node @db do
+  MyApp.Users.update_cache(user.id, user)
+end
+
+# every &cache node except @db — multicast, space-juxtaposed selector + negation
+call_on_nodes &cache !@db do
+  MyApp.Users.update_cache(user.id, user)
+end
+```
 
 ## Why compile-time?
 
@@ -69,13 +102,37 @@ for each node.
 in its binary. Your web node doesn't carry FFmpeg bindings. Your worker
 doesn't carry Phoenix routes.
 
-**No unnecessary deps.** Wrap a `use` or a child spec in `on_nebula_nodes`
-(conditional compilation, below) to `use Ecto.Repo` or start a supervisor only where it
-belongs. Nodes that don't touch the database never load Ecto at all.
+**No unnecessary deps.** Wrap a `use`, an `import`, or a child spec in `on_nebula_nodes` so
+it exists only where it belongs:
 
-**Compile-time safety.** Reference a tag or node that doesn't exist in
-your topology? `CompileError`. Typo in a node name? Caught before it
-ships. No silent RPC calls into the void.
+```elixir
+defmodule MyApp.Cache do
+  use NebulaAPI
+
+  on_nebula_nodes &cache do
+    import Cachex, only: [put: 3]   # only &cache nodes even reference Cachex
+  end
+
+  defapi &cache, update_cache(id, user), do: put(:users, id, user)
+end
+```
+
+The non-matching branch is absent from the bytecode, so a non-`&cache` node never loads
+Cachex (gate the dependency itself the same way and it isn't even pulled in).
+
+**Compile-time safety.** Reference a tag or node that isn't in your topology and the build
+stops — no silent RPC into the void:
+
+```elixir
+defapi @nope, f() do ... end
+# ** (CompileError) Unknown nodes in defapi call:
+#      - @nope
+#    Available nodes: @api, @db, @worker
+```
+
+The `:nebula` compiler goes one further: an app with `defapi` modules but no
+`nebula_api_server()` wired in fails to compile, instead of silently shipping workers that
+never register.
 
 **Zero runtime overhead.** A locally-resolved call is a direct function call — no routing
 table, no RPC serialization, just a couple of process-dictionary reads to check for an
@@ -133,26 +190,29 @@ one node or many — you change config and which releases you build, nothing els
 
 ```elixir
 # dev — one node wears every hat, a single release, every call local
-nodes: ["dev@localhost": [:api, :db, :worker]]
+nodes: ["dev@localhost": [:staging_cluster, :api, :db, :worker, :cache]]
 
 # staging — pull the database onto its own node
 nodes: [
-  "app@app.staging": [:api, :worker],
-  "db@db.staging":   [:db]
+  "app@app.staging": [:staging_cluster, :api, :worker, :cache],
+  "db@db.staging":   [:staging_cluster, :db, :cache]
 ]
 
 # prod — scale the workers out, keep one db
 nodes: [
-  "app@app.prod":    [:api],
-  "worker@w1.prod":  [:worker],
-  "worker@w2.prod":  [:worker],
-  "worker@w3.prod":  [:worker],
-  "db@db.prod":      [:db]
+  "app@app.prod":    [:mainframe_cluster, :api, :cache],
+  "worker@w1.prod":  [:mainframe_cluster, :worker],
+  "worker@w2.prod":  [:mainframe_cluster, :worker],
+  "worker@w3.prod":  [:mainframe_cluster, :worker],
+  "db@db.prod":      [:mainframe_cluster, :db, :cache]
 ]
 ```
 
 Moving `:db` off the app node, or fanning `:worker` across three machines, is a config
-change and a rebuild — never a code change.
+change and a rebuild — never a code change. Notice the deployment tag travels with the
+environment (`:staging_cluster` vs `:mainframe_cluster`) while the role tags
+(`:api`/`:db`/`:worker`/`:cache`) stay put — a tag is just a label, you slice the cluster
+however you think about it.
 
 ## Installation
 
@@ -172,9 +232,9 @@ end
 # config/config.exs
 config :nebula_api,
   nodes: [
-    "api@api.example": [:cluster, :api],
-    "db@db.example": [:cluster, :db],
-    "worker@worker.example": [:cluster, :worker]
+    "api@api.example": [:mainframe_cluster, :api],
+    "db@db.example": [:mainframe_cluster, :db],
+    "worker@worker.example": [:mainframe_cluster, :worker]
   ]
 ```
 
@@ -316,19 +376,33 @@ defapi :*, health_check() do
 end
 ```
 
-### Short names
+### Short vs full names
 
-In the config, node names are full Erlang names (`short@host`). In
-selectors, you can use just the short part:
+In config, node names are full Erlang names — `short@host`. In a selector you can use just
+the **short** part (everything before `@`), which keeps call sites readable:
 
 ```elixir
-# These are equivalent when there's no ambiguity:
+# Equivalent when only one node is named "db@…":
 defapi @db, do_something() do ... end
-defapi @:"db@db.example", do_something() do ... end
+defapi @:"db@db.example", do_something() do ... end   # full name as an atom
 ```
 
-This keeps your code readable. `@db` and `@worker` are clear
-enough — the host part is infrastructure detail.
+The full-name form is `@:"name@host"` (an atom, because of the `@`) — and `!@:"name@host"`
+to negate it.
+
+**The short name is intentionally "many": that's a feature.** A short name matches *every*
+node that shares it, which is usually exactly what you want for a horizontally-scaled role.
+In the [runnable demo](https://github.com/podCloud/NebulaAPI/tree/main/demo), three nodes
+run the same `worker` release on three hosts:
+
+```elixir
+"worker@worker1.test": [:nebula, :worker],
+"worker@worker2.test": [:nebula, :worker],
+"worker@worker3.test": [:nebula, :worker]
+```
+
+`@worker` therefore targets *all three* — every node whose release name is `worker`,
+across hosts. To pin exactly one, reach for its full name: `@:"worker@worker2.test"`.
 
 ### What gets generated
 
@@ -470,7 +544,7 @@ receive live runtime data about every node:
   short_name: :db,
   long_name: :"db@db.example",
   host: "db.example",
-  tags: [:cluster, :db],
+  tags: [:mainframe_cluster, :db],
   connected: true,
   last_seen_at: ~U[2024-06-15 12:00:00Z],
   runtime: %{
@@ -550,9 +624,9 @@ Three nodes, three roles — an API front, a database node, and a worker:
 ```elixir
 config :nebula_api,
   nodes: [
-    "api@api.example": [:cluster, :api],
-    "db@db.example": [:cluster, :db],
-    "worker@worker.example": [:cluster, :worker]
+    "api@api.example": [:mainframe_cluster, :api],
+    "db@db.example": [:mainframe_cluster, :db],
+    "worker@worker.example": [:mainframe_cluster, :worker]
   ]
 ```
 
@@ -710,9 +784,9 @@ config :nebula_api,
   # Required: cluster topology — tags per node.
   # Used at compile time to decide what code goes where.
   nodes: [
-    "api@api.example": [:cluster, :api],
-    "db@db.example": [:cluster, :db],
-    "worker@worker.example": [:cluster, :worker]
+    "api@api.example": [:mainframe_cluster, :api],
+    "db@db.example": [:mainframe_cluster, :db],
+    "worker@worker.example": [:mainframe_cluster, :worker]
   ],
 
   # Optional: override node identity for dev/test.
