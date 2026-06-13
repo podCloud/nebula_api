@@ -65,8 +65,9 @@ end
 
 `use NebulaAPI.Server` is the lightweight host entry point (it brings `nebula_api_server/0`
 and the `on_nebula_nodes`/`call_on_*` macros into scope, without the `defapi` bookkeeping).
-Forget this step and calls fail at runtime with *"No worker found"* — so consider adding
-the [`:nebula` compiler](../server-and-compiler.md) to catch it at build time.
+Forget this step and calls fail at runtime with `{:nebula_error, {:no_worker, ...}}` — so
+consider adding the [`:nebula` compiler](../server-and-compiler.md) to catch it at build
+time.
 
 ## 4. Configure the topology
 

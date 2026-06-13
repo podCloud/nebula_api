@@ -137,8 +137,9 @@ fails at the transport level, returning `{:nebula_error, reason}`.
 
 ### Multicast
 
-A `:*` selector fans out to several nodes. The shape of the result depends on the
-collection strategy:
+`call_on_nodes` / `call_on_all_nodes` (or a call carrying `multicast: true`) fans a call
+out to several nodes — note this is a *runtime routing* choice, not a `defapi` selector. The
+shape of the result depends on the collection strategy:
 
 | Strategy | Result |
 |----------|--------|

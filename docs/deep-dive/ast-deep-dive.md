@@ -133,7 +133,10 @@ end
 Handles:
 - Simple arguments: `arg` → `arg`
 - Default arguments: `arg \\ default` → `{arg, default}`
-- Inline atoms: `:atom` → `{:__inline, :atom}`
+
+Anything else — a pattern-matched argument (atom, map, list, tuple) — raises a
+`CompileError`: a `defapi` argument needs a *name* to travel through the generated router
+and the remote call tuple. Dispatch on values inside the body instead.
 
 ## Config Filter Functions
 
@@ -246,13 +249,15 @@ would trigger an "is never used" compiler warning in every consumer module).
 
 `build_remote_function/1` is generated on **every** node. It dispatches through the
 APIServer and threads routing options. Whatever `call_remote_method/3` returns is passed
-straight back to the caller — no re-wrapping, no `is_list` branching. A local exception
-becomes `{:nebula_error, exception}`:
+straight back to the caller — no re-wrapping, no `is_list` branching. A programming error
+(an invalid call option, validated up front) is re-raised so it crashes loud at the call
+site; only a genuine runtime exception becomes `{:nebula_error, exception}`:
 
 ```elixir
 defp __nbapi_remote_get(id, nebula_routing_opts) do
   NebulaAPI.APIServer.call_remote_method(__MODULE__, {:get, id}, nebula_routing_opts)
 rescue
+  e in ArgumentError -> reraise(e, __STACKTRACE__)
   e -> {:nebula_error, e}
 end
 ```
@@ -390,6 +395,7 @@ defp __nbapi_remote_get(id, opts, nebula_routing_opts) do
   NebulaAPI.APIServer.call_remote_method(MyApp.Users, {:get, id, opts}, nebula_routing_opts)
   # result returned verbatim
 rescue
+  e in ArgumentError -> reraise(e, __STACKTRACE__)
   e -> {:nebula_error, e}
 end
 ```
