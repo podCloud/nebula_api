@@ -132,11 +132,25 @@ defapi @nope, f() do ... end
 
 The `:nebula` compiler goes one further: an app with `defapi` modules but no
 `nebula_api_server()` wired in fails to compile, instead of silently shipping workers that
-never register.
+never register:
+
+```
+Found 1 module(s) using NebulaAPI with local methods in app :my_app, but no
+nebula_api_server() has been found in :my_app's supervisor — their RPC workers
+will never start.
+
+   App:         :my_app
+   Application: MyApp.Application
+                ^------ hint: add nebula_api_server() to its supervisor's children
+   Modules using NebulaAPI (with local methods on this node):
+         - MyApp.Users
+```
 
 **Zero runtime overhead.** A locally-resolved call is a direct function call — no routing
 table, no RPC serialization, just a couple of process-dictionary reads to check for an
-active routing context. The decision was made once, at compile time.
+active routing context. Measured, that's **~60 ns** versus **~8 ns** for a plain call (see
+[Performance](#performance)) — free in any practical sense. The decision was made once, at
+compile time.
 
 > **"Compile per release" — the one mental shift.** NebulaAPI produces
 > different bytecode per node, so each release is its own build. For Elixir
@@ -190,7 +204,7 @@ one node or many — you change config and which releases you build, nothing els
 
 ```elixir
 # dev — one node wears every hat, a single release, every call local
-nodes: ["dev@localhost": [:staging_cluster, :api, :db, :worker, :cache]]
+nodes: ["dev@localhost": [:api, :db, :worker, :cache]]
 
 # staging — pull the database onto its own node
 nodes: [
@@ -198,21 +212,22 @@ nodes: [
   "db@db.staging":   [:staging_cluster, :db, :cache]
 ]
 
-# prod — scale the workers out, keep one db
+# prod — scale the workers out, keep one db; w3 lives in another cloud
 nodes: [
   "app@app.prod":    [:mainframe_cluster, :api, :cache],
   "worker@w1.prod":  [:mainframe_cluster, :worker],
   "worker@w2.prod":  [:mainframe_cluster, :worker],
-  "worker@w3.prod":  [:mainframe_cluster, :worker],
+  "worker@w3.prod":  [:cloud_worker_lambda, :worker],
   "db@db.prod":      [:mainframe_cluster, :db, :cache]
 ]
 ```
 
 Moving `:db` off the app node, or fanning `:worker` across three machines, is a config
-change and a rebuild — never a code change. Notice the deployment tag travels with the
-environment (`:staging_cluster` vs `:mainframe_cluster`) while the role tags
-(`:api`/`:db`/`:worker`/`:cache`) stay put — a tag is just a label, you slice the cluster
-however you think about it.
+change and a rebuild — never a code change. And the tags follow how you actually think
+about the fleet: the deployment tag varies by environment (`:staging_cluster`) and even by
+node (`worker@w3.prod` is tagged `:cloud_worker_lambda` — a worker living in a different
+cloud), while the role tags (`:api`/`:db`/`:worker`/`:cache`) stay put. A tag is just a
+label; slice the cluster however suits you.
 
 ## Installation
 
@@ -765,17 +780,21 @@ Being honest about the edges:
 
 ## Performance
 
-Indicative, order-of-magnitude:
+Measured by [`bench/routing.exs`](bench/routing.exs) on OTP 26 (run it yourself with
+`elixir --name bench@127.0.0.1 --cookie nebula_bench -S mix run bench/routing.exs`):
 
-| Call | Typical latency |
+| Call | Per call |
 |---|---|
-| Local call (plain Elixir) | ~0.000005 ms |
-| NebulaAPI, resolved local | ~0.00002 ms |
-| NebulaAPI, cross-node (Erlang distribution RPC) | ~0.2–2 ms |
+| Plain local Elixir call (baseline) | ~8 ns |
+| NebulaAPI, resolved local | ~60 ns |
+| Cross-node round-trip, same host (loopback) | ~50 µs |
 
-The point: a locally-resolved NebulaAPI call adds almost nothing — a direct function call
-plus a couple of process-dictionary reads, roughly 10,000× cheaper than a cross-node call.
-Cross-node calls are standard Erlang distribution RPC, i.e. fast.
+The point: a locally-resolved NebulaAPI call adds only a handful of nanoseconds over a
+plain call — a couple of process-dictionary reads and a `cond` — so it's free in any
+practical sense. A cross-node call is a standard Erlang-distribution round-trip; the ~50 µs
+above is loopback (same host), and over a real network you pay link latency on top
+(commonly ~0.2–2 ms). Either way the rule of thumb holds: resolve local whenever you can,
+and a cross-node hop costs roughly what a distributed `GenServer.call` costs — no more.
 
 ## Configuration reference
 
