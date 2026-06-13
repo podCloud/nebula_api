@@ -19,6 +19,7 @@ defmodule NebulaAPI.AST do
                opts
                |> Keyword.validate!(
                  only: [
+                   defapi: 2,
                    defapi: 3,
                    on_nebula_nodes: 2,
                    call_on_node: 1,
@@ -64,7 +65,37 @@ defmodule NebulaAPI.AST do
         collect_runtime_info()
       end
   """
+  # Canonical form, multiple selectors juxtaposed by a space:
+  #   defapi &db !@backup, get(id) do ... end
+  # Elixir folds the trailing signature into the deepest selector call
+  # (`&db !@backup, get(id)` parses as `&db(!@backup, get(id))`), so the call
+  # arrives at arity 2 with the signature absorbed. peel_trailing/1 lifts the
+  # signature back out, leaving the pure selector chain the parser expects.
+  defmacro defapi(selectors_with_signature, do: do_fn) do
+    case peel_trailing(selectors_with_signature) do
+      {_clean, nil} ->
+        raise CompileError,
+          line: __CALLER__.line,
+          file: __CALLER__.file,
+          description: """
+          defapi is missing a function signature.
+
+          Expected: defapi <selectors>, name(args) do ... end
+          Selectors are juxtaposed by a space, e.g. `defapi &db !@backup, get(id) do ... end`.
+          """
+
+      {nebula_ast, fn_ast} ->
+        expand_defapi(nebula_ast, fn_ast, do_fn, __CALLER__)
+    end
+  end
+
+  # Single selector (or the tolerated [list] form): selector and signature are
+  # already two distinct arguments — nothing absorbed, nothing to peel.
   defmacro defapi(nebula_ast, fn_ast, do: do_fn) do
+    expand_defapi(nebula_ast, fn_ast, do_fn, __CALLER__)
+  end
+
+  defp expand_defapi(nebula_ast, fn_ast, do_fn, caller) do
     parsed = nebula_ast |> NebulaAPI.AST.Parser.parse_nebula_ast()
 
     # If all_nodes is true, skip execution node filtering
@@ -75,11 +106,11 @@ defmodule NebulaAPI.AST do
         execution_nodes = nebula_ast |> get_execution_nodes_from_nebula_ast!()
 
         self_node =
-          case Module.get_attribute(__CALLER__.module, :nebula_api) do
+          case Module.get_attribute(caller.module, :nebula_api) do
             nil ->
               raise CompileError,
                 description: """
-                defapi used in #{inspect(__CALLER__.module)} without `use NebulaAPI`.
+                defapi used in #{inspect(caller.module)} without `use NebulaAPI`.
 
                 Only `use NebulaAPI` registers the bookkeeping defapi needs. Use it on
                 modules that define defapi endpoints — `use NebulaAPI.AST` is for
@@ -98,7 +129,7 @@ defmodule NebulaAPI.AST do
     fundef = fn_ast |> NebulaAPI.AST.Parser.parse_fundef_ast()
 
     # Register method as local or remote
-    __CALLER__.module
+    caller.module
     |> Module.put_attribute(
       if is_current_node do
         :nebula_local_api_methods
@@ -118,7 +149,7 @@ defmodule NebulaAPI.AST do
     end
   rescue
     e in CompileError ->
-      raise %{e | line: __CALLER__.line, file: __CALLER__.file}
+      raise %{e | line: caller.line, file: caller.file}
   end
 
   @doc """
@@ -236,6 +267,7 @@ defmodule NebulaAPI.AST do
   end
 
   defp do_call_on_node(selector_or_nebula_ast, opts, block, caller) do
+    {selector_or_nebula_ast, opts} = absorb_trailing_opts(selector_or_nebula_ast, opts)
     validate_static_opts!(opts, :unicast, caller)
     selector = build_selector(selector_or_nebula_ast, :unicast, caller)
 
@@ -345,6 +377,7 @@ defmodule NebulaAPI.AST do
   end
 
   defp do_call_on_nodes(selector_or_nebula_ast, opts, block, caller) do
+    {selector_or_nebula_ast, opts} = absorb_trailing_opts(selector_or_nebula_ast, opts)
     validate_static_opts!(opts, :multicast, caller)
     selector = build_selector(selector_or_nebula_ast, :multicast, caller)
 
@@ -603,6 +636,69 @@ defmodule NebulaAPI.AST do
 
   defp compile_error!(caller, description) do
     raise CompileError, line: caller.line, file: caller.file, description: description
+  end
+
+  # --- Canonical space-juxtaposed selectors ----------------------------------
+  #
+  # The canonical NebulaAPI syntax juxtaposes selectors with a SPACE, never a
+  # bracketed list:
+  #
+  #     defapi &db !@backup, get(id) do ... end
+  #     call_on_nodes &db !@backup, strategy: :all do ... end
+  #
+  # Elixir parses a space-juxtaposed chain followed by a trailing comma argument
+  # (the defapi signature, or the call_on_* opts) by folding that trailing
+  # argument INTO the deepest selector call:
+  #
+  #     &db !@backup, get(id)            ==>  &db(!@backup, get(id))
+  #     &db !@backup, strategy: :all     ==>  &db(!@backup, [strategy: :all])
+  #
+  # So the chain arrives with the signature/opts absorbed as the last argument of
+  # its deepest selector. peel_trailing/1 walks the chain and lifts that absorbed
+  # argument back out, returning {pure_selector_ast, trailing_or_nil}. The pure
+  # chain is exactly what the single-selector / bracketed forms already feed the
+  # parser. A pure selector identifier carries `nil` or a single continuation
+  # arg, so a 2-arity selector identifier is the unambiguous marker of an
+  # absorbed trailing argument.
+  defp peel_trailing({op, meta, [inner]}) when op in [:&, :@, :!] do
+    {clean, trailing} = peel_trailing(inner)
+    {{op, meta, [clean]}, trailing}
+  end
+
+  defp peel_trailing({name, meta, ctx}) when is_atom(ctx) do
+    {{name, meta, ctx}, nil}
+  end
+
+  defp peel_trailing({name, meta, [cont]}) do
+    {clean_cont, trailing} = peel_trailing(cont)
+    {{name, meta, [clean_cont]}, trailing}
+  end
+
+  defp peel_trailing({name, meta, [cont, trailing]}) do
+    {clean_cont, _} = peel_trailing(cont)
+    {{name, meta, [clean_cont]}, trailing}
+  end
+
+  # Anything that isn't a selector chain head (a [list], :*, a function selector,
+  # a variable, a bare opts list): nothing to peel.
+  defp peel_trailing(other), do: {other, nil}
+
+  # Only peel actual selector chain heads (@/&/!); leave function selectors,
+  # lists, :* and opts-only lists untouched.
+  defp maybe_peel({op, _, _} = selector) when op in [:&, :@, :!], do: peel_trailing(selector)
+  defp maybe_peel(selector), do: {selector, nil}
+
+  # For call_on_* : lift any opts the canonical syntax folded into the selector
+  # back out and merge them ahead of opts passed the long way (the explicit ones
+  # win on conflict — they can't realistically both be present, but be safe).
+  defp absorb_trailing_opts(selector, opts) do
+    case maybe_peel(selector) do
+      {clean, trailing} when is_list(trailing) and trailing != [] ->
+        {clean, Keyword.merge(trailing, opts)}
+
+      {clean, _} ->
+        {clean, opts}
+    end
   end
 
   # Build a selector function from either a Nebula AST expression or a function.

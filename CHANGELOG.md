@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Canonical space-juxtaposed multi-selectors now compile in `defapi` and
+  `call_on_node` / `call_on_nodes`.** The canonical NebulaAPI syntax juxtaposes
+  selectors with a space (`defapi &db !@backup, get(id)`), never a bracketed
+  list. Elixir folds a juxtaposed chain's trailing argument (the `defapi`
+  signature, or the `call_on_*` opts) into the chain's deepest selector
+  (`&db !@backup, get(id)` parses as `&db(!@backup, get(id))`); the macros now
+  lift that trailing argument back out before handing the pure chain to the
+  parser. Previously only a single selector or the bracketed `[&db, !@backup]`
+  form compiled for these macros. The bracketed list keeps working as a
+  tolerated, non-canonical alternative. Covered by `nebula_ast_parsing_test`.
+
 ## [0.4.0] - 2026-06-13
 
 ### Changed
