@@ -758,19 +758,17 @@ config :nebula_api,
 
 ## Documentation
 
-This README is the whole picture. When you want to go deeper:
+This README is the whole picture. The [`docs/`](docs/) pages go deeper, in the order you
+meet each theme:
 
-- [Concepts](docs/concepts.md) — nodes, tags, selectors, the execution model, return values
-- [Configuration](docs/configuration.md) — topology, `default_opts`, dev/test, validation
-- [Macros reference](docs/macros-reference.md) — every macro and option
-- [Server and compiler](docs/server-and-compiler.md) — workers, `:pg`, the `:nebula` compiler
-- [Troubleshooting](docs/troubleshooting.md) — common compile-time and runtime errors
+1. [Configuration](docs/configuration.md) — nodes, tags, topology, compile-per-node, dev/test, validation
+2. [Defining APIs](docs/defining.md) — the three `use` macros, `defapi`, selectors, return values, `on_nebula_nodes`, wiring the server
+3. [Calling across nodes](docs/calling.md) — calling endpoints, `call_on_*`, multicast strategies, node-info routing, wrapping single-node libraries
+4. [Gotchas and troubleshooting](docs/gotchas.md) — trailing opts, process scope, the `nil`-selector distinction, common errors
+
+Deep dive:
+
 - [AST deep-dive](docs/deep-dive/ast-deep-dive.md) — how the per-node code is generated
-
-Guides:
-
-- [Adding a NebulaAPI function](docs/guides/adding-nebula-api.md) — a step-by-step walkthrough
-- [Wrapping single-node libraries](docs/guides/wrapping-libraries.md) — Cachex, rate limiters, schedulers…
 
 ## License
 

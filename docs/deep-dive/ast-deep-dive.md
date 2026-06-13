@@ -14,7 +14,7 @@ The AST processing pipeline:
 │                                                                         │
 │  Source Code                                                            │
 │  ────────────                                                           │
-│  defapi [&db, !@backup], get(id) do                                    │
+│  defapi &db !@backup, get(id) do                                       │
 │    Repo.get(User, id)                                                  │
 │  end                                                                    │
 │                                                                         │
@@ -54,19 +54,24 @@ The AST processing pipeline:
 
 ### Input: Selector AST
 
-When you write:
+The canonical syntax juxtaposes selectors with a space. When you write:
 ```elixir
-defapi [&db, !@backup], get(id) do ... end
+defapi &db !@backup, get(id) do ... end
 ```
 
-The selector `[&db, !@backup]` becomes this AST:
+the selector chain `&db !@backup` is *one* nested AST — each selector carries the next as
+its sole argument (its "rest"):
 
 ```elixir
-[
-  {:&, [], [{:db, [], nil}]},
+{:&, [], [{:db, [], [
   {:!, [], [{:@, [], [{:backup, [], nil}]}]}
-]
+]}]}
 ```
+
+The parser walks that chain via its `rest` clauses (a selector identifier with a single
+continuation arg), terminating at the last one (`nil` args). The bracketed list form
+`[&db, !@backup]` parses to the equivalent config through a separate `is_list` clause — it
+is tolerated, but not the canonical syntax.
 
 ### Parsing Process
 
@@ -94,10 +99,24 @@ The parser matches AST patterns:
 | `!@node` | `{:!, _, [{:@, _, [{node, _, _}]}]}` | `not_nodes` |
 | `&tag` | `{:&, _, [{tag, _, _}]}` | `tags` |
 | `!&tag` | `{:!, _, [{:&, _, [{tag, _, _}]}]}` | `not_tags` |
-| `[...]` | list | Process each element |
+| `a b …` (space-juxtaposed) | a selector node whose args carry the next selector as its `rest` | process the chain |
+| `[…]` | list | process each element (tolerated, non-canonical) |
 
-A single selector can be written without the surrounding list — `defapi &db, ...`
-is the same as `defapi [&db], ...`. Use the bracket form only to combine selectors.
+Combine selectors by juxtaposing them with a space — `defapi &db !@backup, ...`. The
+bracketed list (`defapi [&db, !@backup], ...`) parses to the same thing but is not the
+canonical form.
+
+### Lifting an absorbed trailing argument
+
+A subtlety specific to `defapi` (and `call_on_*`): Elixir parses a space-juxtaposed chain
+*followed by a trailing comma argument* — the `defapi` signature, or the `call_on_*` opts —
+by folding that argument into the chain's deepest selector. `&db !@backup, get(id)` parses
+as `&db(!@backup, get(id))`: the deepest selector identifier ends up with **two** args
+(`!@backup` and the signature). Since a pure selector identifier only ever has `nil` or a
+single continuation arg, that second arg is the unambiguous marker of an absorbed trailing
+argument. `NebulaAPI.AST.peel_trailing/1` walks the chain, lifts the trailing argument back
+out, and hands the pure selector chain to the parser — which is why the canonical
+multi-selector form compiles even though the macro is `defapi/2` in that case.
 
 ### Example Parsing
 
@@ -433,7 +452,7 @@ end
 ### Inspect a parsed selector
 
 ```elixir
-NebulaAPI.AST.Parser.parse_nebula_ast(quote do: [&db, !@backup])
+NebulaAPI.AST.Parser.parse_nebula_ast(quote do: &db !@backup)
 # => %{tags: [:db], not_tags: [], nodes: [], not_nodes: [:backup]}
 ```
 
@@ -450,6 +469,6 @@ nodes()
 
 ## See Also
 
-- [Macros Reference](../macros-reference.md) — using the macros
-- [Server and Compiler](../server-and-compiler.md) — runtime execution
+- [Defining APIs](../defining.md) — using `defapi`, `on_nebula_nodes`, wiring the server
+- [Calling across nodes](../calling.md) — runtime routing and the worker/`:pg` layer
 - [Elixir Metaprogramming Guide](https://elixir-lang.org/getting-started/meta/quote-and-unquote.html)
