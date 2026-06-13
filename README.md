@@ -11,8 +11,8 @@ across nodes look and feel like local function calls.
 A NebulaAPI cluster is a set of **nodes** (each one an Erlang VM, e.g.
 `db@db.example`). Every node carries one or more **tags** — arbitrary atoms. No atom is
 special; a tag can name a role (`:db`, `:worker`), a capability (`:cache`), or a whole
-deployment (`:mainframe_cluster` here, `:staging_cluster` over in staging). You declare the
-map once, in config:
+deployment (`:mainframe_cluster`, with the worker off in another cloud as
+`:cloud_worker_lambda`). You declare the map once, in config:
 
 ```elixir
 # config/config.exs
@@ -20,7 +20,7 @@ config :nebula_api,
   nodes: [
     "api@api.example":       [:mainframe_cluster, :api, :cache],
     "db@db.example":         [:mainframe_cluster, :db, :cache],
-    "worker@worker.example": [:mainframe_cluster, :worker]
+    "worker@worker.example": [:cloud_worker_lambda, :worker]
   ]
 ```
 
@@ -149,8 +149,8 @@ will never start.
 **Zero runtime overhead.** A locally-resolved call is a direct function call — no routing
 table, no RPC serialization, just a couple of process-dictionary reads to check for an
 active routing context. Measured, that's **~60 ns** versus **~8 ns** for a plain call (see
-[Performance](#performance)) — free in any practical sense. The decision was made once, at
-compile time.
+[Performance](#performance)) — about **0.00005 ms** of overhead, free in any practical
+sense. The decision was made once, at compile time.
 
 > **"Compile per release" — the one mental shift.** NebulaAPI produces
 > different bytecode per node, so each release is its own build. For Elixir
@@ -216,7 +216,7 @@ nodes: [
 nodes: [
   "app@app.prod":    [:mainframe_cluster, :api, :cache],
   "worker@w1.prod":  [:mainframe_cluster, :worker],
-  "worker@w2.prod":  [:mainframe_cluster, :worker],
+  "worker@w2.prod":  [:alpha_cluster, :worker],
   "worker@w3.prod":  [:cloud_worker_lambda, :worker],
   "db@db.prod":      [:mainframe_cluster, :db, :cache]
 ]
@@ -449,12 +449,16 @@ that have the local implementation. This is what makes `call_on_node`
 and `call_on_nodes` work from anywhere — even a `&db` node can call
 other `&db` nodes remotely for quorum writes, load distribution, etc.
 
-The public router decides where to dispatch — the innermost explicit routing wins:
+The public router decides where a call goes, from the default outward — the more explicit
+you get, the more it wins. Take the same call, `MyApp.Cache.get(key)`:
 
-- A call carrying its own truthy `node_selector:` / `multicast:` opts routes itself —
-  even inside a block (a key set to `nil` / `false` opts back out to the default).
-- Inside a `call_on_node` / `call_on_nodes` block → remote.
-- Default → local on matching nodes, remote everywhere else.
+1. **Default** — `MyApp.Cache.get(key)` runs locally if this node serves the method,
+   otherwise a single remote (unicast).
+2. **Wrapped in a block** — the same call inside `call_on_nodes &cache do … end` routes per
+   the block instead.
+3. **Its own trailing opts win over the block** — `MyApp.Cache.get(key, multicast: true)`
+   routes itself, even inside a block; a routing key set to `nil` / `false` opts the call
+   back out to the default.
 
 ## `on_nebula_nodes` — conditional compilation
 
@@ -534,6 +538,16 @@ end
 call_on_nodes &db, strategy: :quorum, at_least: 2 do
   MyApp.Users.write_replica(user)
 end
+
+# A selector function over live node info — fan out only to nodes seen recently
+call_on_nodes fn nodes_info ->
+  cutoff = DateTime.add(DateTime.utc_now(), -30, :second)
+  nodes_info
+  |> Enum.filter(fn {_, i} -> i.last_seen_at && DateTime.compare(i.last_seen_at, cutoff) == :gt end)
+  |> Enum.map(&elem(&1, 0))
+end, strategy: :all do
+  MyApp.Cache.invalidate(:all)
+end
 ```
 
 ### `call_on_all_nodes` — broadcast
@@ -552,8 +566,12 @@ Results are always tagged per node — `{node, value}` on success,
 | Strategy | Behavior |
 |---|---|
 | `:all` | Wait for every node (or timeout). Returns a list of `{node, value}`. |
-| `:first` | Return the first response that counts as a success; `{:nebula_error, :no_success, results}` if none. |
-| `:quorum` | Wait for `at_least:` successes (a strict majority by default). Fails fast if the quorum becomes unreachable. |
+| `:first` | Return the first response that counts as a success (then stop waiting on the rest — the pending tasks are brutal-killed); `{:nebula_error, :no_success, results}` if none. |
+| `:quorum` | Wait for `at_least:` successes (a strict majority by default). The moment the quorum is reached it stops waiting on the rest (same brutal-kill as `:first`); fails fast if the quorum becomes unreachable. |
+
+> "Stops waiting" is exactly that: NebulaAPI kills the local tasks still awaiting a reply
+> and discards their late responses. A body that already started running on a remote node
+> isn't aborted — the RPC was already sent.
 
 `:first` and `:quorum` let you define what counts as a success with a `success:` (or
 `failure:`) predicate — by default, any node that responded counts:

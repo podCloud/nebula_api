@@ -142,6 +142,11 @@ for a node whose call failed at the transport level.
 
 In every case `value` is the unwrapped body value.
 
+Both `:first` and `:quorum` stop early: the moment the result is decided (a first success,
+or the quorum reached) NebulaAPI stops waiting on the rest — the pending local tasks are
+brutal-killed and their late replies discarded. A body already running on a remote node
+isn't aborted, though: the RPC was already sent.
+
 ### Defining "success": `success:` / `failure:`
 
 By default, **any worker that responded** counts as a success for `:first` and `:quorum` —
