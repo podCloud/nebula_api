@@ -6,11 +6,44 @@ zero-overhead distributed calls.
 Define your functions once. The compiler decides what runs where. Calls
 across nodes look and feel like local function calls.
 
+## The model in 30 seconds
+
+A NebulaAPI cluster is a set of **nodes** (each one an Erlang VM, e.g.
+`db@db.example`). Every node carries one or more **tags** — arbitrary atoms that
+describe what it's *for*: `:db`, `:worker`, `:cache`, whatever fits. You declare
+that map once, in config:
+
+```elixir
+# config/config.exs
+config :nebula_api,
+  nodes: [
+    "api@api.example":       [:cluster, :api],
+    "db@db.example":         [:cluster, :db],
+    "worker@worker.example": [:cluster, :worker]
+  ]
+```
+
+In your code you pick *where* things run with two sigils — by capability, or by
+name:
+
+- **`&tag`** — *any* node carrying that tag (picking by capability). `&db` reads
+  as "wherever the `:db` tag lives"; the `&` turns the tag atom `:db` into a
+  selector.
+- **`@node`** — one *specific* node, by its short name. `@worker` is the node
+  named `worker@…`.
+
+`!` negates either one: `!&legacy` is "every node *without* the `:legacy` tag",
+`!@backup` is "every node except `@backup`". These are **selectors** — they tell
+the compiler which nodes get the real code.
+
+Now write a function and tag it with the selector for where its body belongs:
+
 ```elixir
 defmodule MyApp.Users do
   use NebulaAPI
 
-  # The body compiles on &db nodes. Everywhere else, the same call is transparent RPC.
+  # `&db` → the body is compiled only on nodes carrying the :db tag.
+  # On every other node, the same call becomes transparent RPC to a :db node.
   defapi &db, find(id) do
     Repo.get!(User, id)
   end
@@ -21,9 +54,10 @@ MyApp.Users.find(42)
 #=> %User{id: 42, ...}
 ```
 
-On a `:db` node, `find/1` is a direct `Repo.get!`. On every other node, the same call
-dispatches over Erlang distribution to a `:db` node and hands you back the exact same
-value. The caller never knows — and never has to.
+On a node tagged `:db`, `find/1` is a direct `Repo.get!`. On every other node the
+same call dispatches over Erlang distribution to a `:db` node and hands back the
+identical value. The caller never knows which node actually ran it — and never
+has to.
 
 ## Why compile-time?
 
@@ -144,13 +178,11 @@ config :nebula_api,
   ]
 ```
 
-Each key is a full node name (`short@host`). Each value is a list of
-capability **tags** — arbitrary atoms that describe what the node can do.
-
-You target those nodes with **selectors**: `@node` picks a node by its name (short or
-full), and `&tag` picks every node carrying that capability — so `&db` means "any `:db`
-node". So `@db` matches `:"db@db.example"`, `@worker` matches `:"worker@worker.example"`,
-etc. When there's no ambiguity, short names are all you need.
+Each key is a full node name (`short@host`); each value is a list of capability
+**tags** (see [the model above](#the-model-in-30-seconds)). In selectors you can
+use the short name: `@db` matches `:"db@db.example"`, `@worker` matches
+`:"worker@worker.example"` — when there's no ambiguity, short names are all you
+need.
 
 ### 2. Compile with the target node name
 
@@ -248,8 +280,9 @@ MyApp.Users.find(42)
 
 ## Selectors
 
-Selectors tell the compiler which nodes should get the real
-implementation. Everything else gets a remote stub.
+Selectors tell the compiler which nodes get the real implementation. Every other node
+gets a *stub* in its place — a generated function that forwards the call over RPC to a
+node that does have the body.
 
 | Syntax | Meaning |
 |---|---|
@@ -259,12 +292,13 @@ implementation. Everything else gets a remote stub.
 | `!@node` | All nodes except this one |
 | `:*` | All nodes (local implementation everywhere) |
 
-Combine selectors with commas — **no brackets, ever**. This is the canonical NebulaAPI
-syntax, and it's what keeps the code readable:
+Combine selectors by **juxtaposing them with a space** — no commas between them, no
+brackets. This is the canonical NebulaAPI syntax, and it's what keeps the code readable
+(`&db !@backup` reads as "a `:db` node, but not `@backup`"):
 
 ```elixir
-# Nodes with &db tag, excluding @backup
-defapi &db, !@backup, run_migration(version) do
+# Nodes with the :db tag, excluding @backup
+defapi &db !@backup, run_migration(version) do
   Ecto.Migrator.run(Repo, :up, to: version)
 end
 
@@ -351,8 +385,13 @@ does only this can `use NebulaAPI.AST` — the lightest entry point, no `defapi`
 
 ## Runtime routing
 
-Sometimes you need to override the default routing at runtime — target
-a specific node, broadcast to many, or pick nodes based on load.
+The selector on a `defapi` is the *default* route. Sometimes you need to override it at
+runtime — send one call to a specific node, fan it out to several, or pick a node by load.
+Three macros wrap a block to do that, named after how far the call goes:
+
+- **`call_on_node`** — *unicast*: run on exactly one node.
+- **`call_on_nodes`** — *multicast*: run on every node a selector matches.
+- **`call_on_all_nodes`** — *broadcast*: run on every node that serves the method.
 
 ### `call_on_node` — unicast
 
