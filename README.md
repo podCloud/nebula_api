@@ -99,13 +99,15 @@ runtime router — it's a code generator that produces different bytecode
 for each node.
 
 **Smaller binaries.** Code that doesn't belong on a node doesn't exist in its binary — a
-`defapi` body is only emitted on matching nodes. [`bench/binary_size.exs`](bench/binary_size.exs)
-measures it on one module: the non-matching node's `.beam` is **~4.0 KB vs ~6.5 KB
-(38% smaller)**, because the body simply isn't there. Scale that to a gated dependency and
-it's megabytes, not kilobytes: a node that wraps Cachex in `on_nebula_nodes &cache` never
-references it, so you can keep the library out of that release entirely — ~440 KB of
-compiled `.beam` it never ships. Your web node doesn't carry FFmpeg bindings; your worker
-doesn't carry Phoenix routes.
+`defapi` body is only emitted on matching nodes ([`bench/binary_size.exs`](bench/binary_size.exs):
+a module's `.beam` is **~4.0 KB on a non-matching node vs ~6.5 KB, 38% smaller** — the body
+isn't there). Whole dependencies fall away the same way. The
+[runnable demo](https://github.com/podCloud/NebulaAPI/tree/main/demo) pins Cachex to its
+`db` node (`on_nebula_nodes @db` plus a conditional dep), so only that build carries Cachex
+and its dependency tree (~570 KB); every other node never compiles it and comes out
+**~38% smaller — ≈860 KB vs the db node's 1.4 MB** (measured, per-node `_build` from
+`mix compile`). Your web node doesn't carry FFmpeg bindings; your worker doesn't carry
+Phoenix routes.
 
 **No unnecessary deps.** Wrap a `use`, an `import`, or a child spec in `on_nebula_nodes` so
 it exists only where it belongs:
@@ -428,17 +430,19 @@ to negate it.
 
 **The short name is intentionally "many": that's a feature.** A short name matches *every*
 node that shares it, which is usually exactly what you want for a horizontally-scaled role.
-In the [runnable demo](https://github.com/podCloud/NebulaAPI/tree/main/demo), three nodes
-run the same `worker` release on three hosts:
+Picture three nodes running the same `worker` release on three hosts (as the
+[runnable demo](https://github.com/podCloud/NebulaAPI/tree/main/demo) does), each kitted out
+differently:
 
 ```elixir
-"worker@worker1.test": [:nebula, :worker],
-"worker@worker2.test": [:nebula, :worker],
-"worker@worker3.test": [:nebula, :worker]
+"worker@worker1.test": [:alpha_cluster, :gpu, :storage],
+"worker@worker2.test": [:beta_server, :llm],
+"worker@worker3.test": [:alpha_cluster, :vps]
 ```
 
-`@worker` therefore targets *all three* — every node whose release name is `worker`,
-across hosts. To pin exactly one, reach for its full name: `@:"worker@worker2.test"`.
+`@worker` targets *all three* — every node whose release name is `worker`, across hosts,
+whatever capability tags they happen to carry. To pin exactly one, reach for its full name:
+`@:"worker@worker2.test"`.
 
 ### What gets generated
 
