@@ -6,22 +6,6 @@ zero-overhead distributed calls.
 Define your functions once. The compiler decides what runs where. Calls
 across nodes look and feel like local function calls.
 
-First, declare your cluster as a map of nodes to capability **tags**:
-
-```elixir
-# config/config.exs
-config :nebula_api,
-  nodes: [
-    "api@api.example": [:cluster, :api],
-    "db@db.example": [:cluster, :db],
-    "worker@worker.example": [:cluster, :worker]
-  ]
-```
-
-You target those nodes with **selectors**: `@node` picks a node by its name (short or
-full), and `&tag` picks every node carrying that capability tag — so `&db` means "any
-`:db` node". Now define a function and declare where its body runs:
-
 ```elixir
 defmodule MyApp.Users do
   use NebulaAPI
@@ -37,8 +21,9 @@ MyApp.Users.find(42)
 #=> %User{id: 42, ...}
 ```
 
-On a node tagged `:db`, `find/1` is a direct `Repo.get!`. On every other node, the same
-call dispatches over Erlang distribution to a `&db` node. The caller never knows.
+On a `:db` node, `find/1` is a direct `Repo.get!`. On every other node, the same call
+dispatches over Erlang distribution to a `:db` node and hands you back the exact same
+value. The caller never knows — and never has to.
 
 ## Why compile-time?
 
@@ -50,10 +35,9 @@ for each node.
 in its binary. Your web node doesn't carry FFmpeg bindings. Your worker
 doesn't carry Phoenix routes.
 
-**No unnecessary deps.** Wrap a `use` or a child spec in `on_nebula_nodes` (conditional
-compilation, [below](#on_nebula_nodes--conditional-compilation)) to `use Ecto.Repo` or
-start a supervisor only where it belongs. Nodes that don't touch the database never load
-Ecto at all.
+**No unnecessary deps.** Wrap a `use` or a child spec in `on_nebula_nodes`
+(conditional compilation, below) to `use Ecto.Repo` or start a supervisor only where it
+belongs. Nodes that don't touch the database never load Ecto at all.
 
 **Compile-time safety.** Reference a tag or node that doesn't exist in
 your topology? `CompileError`. Typo in a node name? Caught before it
@@ -69,55 +53,6 @@ active routing context. The decision was made once, at compile time.
 > practice it's one extra `elixir --name node@host -S mix compile` per
 > release — a few seconds of CI, paid back many times over in smaller
 > binaries, fewer dependencies, and zero routing overhead.
-
-## Route business code to the right node — automatically
-
-Write your calls as plain business calls. NebulaAPI sends each one to the node that
-actually implements it — no `GenServer.call` to a named node, no RPC plumbing, no "which
-node am I on?":
-
-```elixir
-# A web request handler runs on the api node, but reads and encodes elsewhere:
-def show(conn, %{"id" => id}) do
-  user  = MyApp.Users.get(id)           # resolves on a &db node
-  thumb = MyApp.Media.thumbnail(user)   # resolves on a &worker node
-  render(conn, :show, user: user, thumb: thumb)
-end
-```
-
-Each `defapi` already knows where it lives. You write the *business* logic; the topology
-is a compile-time detail.
-
-## Reshape your topology without touching code
-
-This is why NebulaAPI exists: the flexibility of umbrella releases, **without rewriting
-code** every time you split a node out or stand up a new release. The same source ships as
-one node or many — you change config and which releases you build, nothing else.
-
-```elixir
-# dev — one node wears every hat, a single release, every call local
-nodes: ["dev@localhost": [:api, :db, :worker]]
-
-# staging — pull the database onto its own node
-nodes: [
-  "app@app.staging": [:api, :worker],
-  "db@db.staging":   [:db]
-]
-
-# prod — scale the workers out, keep one db
-nodes: [
-  "app@app.prod":    [:api],
-  "worker@w1.prod":  [:worker],
-  "worker@w2.prod":  [:worker],
-  "worker@w3.prod":  [:worker],
-  "db@db.prod":      [:db]
-]
-```
-
-Moving `:db` off the app node, or fanning `:worker` across three machines, is a config
-change and a rebuild — never a code change. The
-[runnable demo](https://github.com/podCloud/NebulaAPI/tree/main/demo) boots exactly this
-kind of multi-node cluster from one codebase.
 
 ## How it works
 
@@ -154,8 +89,36 @@ kind of multi-node cluster from one codebase.
 
 Same source, different bytecode. Each release is compiled with its
 target node name — the compiler reads `node()` to know who it's
-building for. For the full mechanics, see [Concepts](docs/concepts.md) and the
-[AST deep-dive](docs/deep-dive/ast-deep-dive.md).
+building for.
+
+## Reshape your topology without touching code
+
+This is why NebulaAPI exists: the flexibility of umbrella releases, **without rewriting
+code** every time you split a node out or stand up a new release. The same source ships as
+one node or many — you change config and which releases you build, nothing else.
+
+```elixir
+# dev — one node wears every hat, a single release, every call local
+nodes: ["dev@localhost": [:api, :db, :worker]]
+
+# staging — pull the database onto its own node
+nodes: [
+  "app@app.staging": [:api, :worker],
+  "db@db.staging":   [:db]
+]
+
+# prod — scale the workers out, keep one db
+nodes: [
+  "app@app.prod":    [:api],
+  "worker@w1.prod":  [:worker],
+  "worker@w2.prod":  [:worker],
+  "worker@w3.prod":  [:worker],
+  "db@db.prod":      [:db]
+]
+```
+
+Moving `:db` off the app node, or fanning `:worker` across three machines, is a config
+change and a rebuild — never a code change.
 
 ## Installation
 
@@ -168,9 +131,6 @@ end
 ```
 
 ## Quick start
-
-The four moving parts below are the whole setup; the full walkthrough is in
-**[Getting started](docs/guides/getting-started.md)**.
 
 ### 1. Define your cluster topology
 
@@ -185,12 +145,12 @@ config :nebula_api,
 ```
 
 Each key is a full node name (`short@host`). Each value is a list of
-capability tags — arbitrary atoms that describe what the node can do.
+capability **tags** — arbitrary atoms that describe what the node can do.
 
-Node selectors can use either the full name or the short name (the part
-before `@`). So `@db` matches `:"db@db.example"`, `@worker` matches
-`:"worker@worker.example"`, etc. When there's no ambiguity, short names
-are all you need. See [Configuration](docs/configuration.md) for every option.
+You target those nodes with **selectors**: `@node` picks a node by its name (short or
+full), and `&tag` picks every node carrying that capability — so `&db` means "any `:db`
+node". So `@db` matches `:"db@db.example"`, `@worker` matches `:"worker@worker.example"`,
+etc. When there's no ambiguity, short names are all you need.
 
 ### 2. Compile with the target node name
 
@@ -248,15 +208,14 @@ end
 
 `use NebulaAPI.Server` brings the `nebula_api_server/0` macro into scope (plus the
 `on_nebula_nodes` / `call_on_*` macros) — without the `defapi` bookkeeping, since the host
-module has none of its own. Use it on the module that wires the server; use `use NebulaAPI`
-on the modules that actually define `defapi` endpoints.
+module defines none of its own. Use it on the module that wires the server; use
+`use NebulaAPI` on the modules that actually define `defapi` endpoints.
 
 `nebula_api_server()` discovers the app's own modules that `use NebulaAPI` and starts a
 supervised GenServer worker for each one that has local methods on this node; each worker
-registers in `:pg` process groups for discovery across nodes. The set is discovered, never
-declared — and because the server lives in the app's own tree, its workers die with the
-app (so `:pg` never holds stale entries). See
-[Server and compiler](docs/server-and-compiler.md).
+registers in `:pg` process groups for discovery across nodes. No module list to maintain —
+and because the server lives in the app's own tree, its workers die with the app (so `:pg`
+never holds stale entries).
 
 #### Optional: guard against forgetting it
 
@@ -300,7 +259,8 @@ implementation. Everything else gets a remote stub.
 | `!@node` | All nodes except this one |
 | `:*` | All nodes (local implementation everywhere) |
 
-Combine selectors with commas:
+Combine selectors with commas — **no brackets, ever**. This is the canonical NebulaAPI
+syntax, and it's what keeps the code readable:
 
 ```elixir
 # Nodes with &db tag, excluding @backup
@@ -334,15 +294,14 @@ defapi @:"db@db.example", do_something() do ... end
 ```
 
 This keeps your code readable. `@db` and `@worker` are clear
-enough — the host part is infrastructure detail. The full selector grammar and every
-option live in the **[Macros reference](docs/macros-reference.md)**.
+enough — the host part is infrastructure detail.
 
 ### What gets generated
 
 For each `defapi`, the macro generates:
 
-1. **`__nbapi_remote_<name>/N`** — RPC dispatch via `APIServer`, on **every** node.
-2. **`<name>/N`** — the public router callers actually invoke.
+1. **`<name>/N`** — the public router callers actually invoke.
+2. **`__nbapi_remote_<name>/N`** — RPC dispatch via `APIServer`, on **every** node.
 3. **`__nbapi_local_<name>/N`** — the real body, on **matching nodes only**. Elsewhere
    nothing is emitted: the router goes remote there, so there's no stub to keep.
 
@@ -352,12 +311,11 @@ and `call_on_nodes` work from anywhere — even a `&db` node can call
 other `&db` nodes remotely for quorum writes, load distribution, etc.
 
 The public router decides where to dispatch — the innermost explicit routing wins:
-- Truthy `:node_selector` / `:multicast` opts on the call → remote, even inside a block
-  (the call routes itself; a key set to `nil`/`false` opts back out to the default)
-- Inside a `call_on_node`/`call_on_nodes` block → remote
-- Default → local on matching nodes, remote everywhere else
 
-The codegen, step by step, is in the [AST deep-dive](docs/deep-dive/ast-deep-dive.md).
+- A call carrying its own truthy `node_selector:` / `multicast:` opts routes itself —
+  even inside a block (a key set to `nil` / `false` opts back out to the default).
+- Inside a `call_on_node` / `call_on_nodes` block → remote.
+- Default → local on matching nodes, remote everywhere else.
 
 ## `on_nebula_nodes` — conditional compilation
 
@@ -379,7 +337,7 @@ end
 defmodule MyApp.Application do
   use NebulaAPI.AST
 
-  # Start FFmpeg pool only on worker nodes
+  # Start the FFmpeg pool only on worker nodes
   on_nebula_nodes &worker do
     def extra_children, do: [MyApp.TranscoderPool]
   else
@@ -388,15 +346,13 @@ defmodule MyApp.Application do
 end
 ```
 
-The non-matching branch is completely absent from the compiled bytecode. More patterns
-(nesting, a `defapi` inside `on_nebula_nodes`) are in
-**[Conditional compilation](docs/guides/conditional-compilation.md)**.
+The non-matching branch is completely absent from the compiled bytecode. A module that
+does only this can `use NebulaAPI.AST` — the lightest entry point, no `defapi` bookkeeping.
 
 ## Runtime routing
 
 Sometimes you need to override the default routing at runtime — target
-a specific node, broadcast to many, or pick nodes based on load. The full strategy and
-return-value reference is in **[Calling across nodes](docs/guides/calling-across-nodes.md)**.
+a specific node, broadcast to many, or pick nodes based on load.
 
 ### `call_on_node` — unicast
 
@@ -456,8 +412,14 @@ Results are always tagged per node — `{node, value}` on success,
 | `:quorum` | Wait for `at_least:` successes (a strict majority by default). Fails fast if the quorum becomes unreachable. |
 
 `:first` and `:quorum` let you define what counts as a success with a `success:` (or
-`failure:`) predicate. Full return-value tables, `at_least:`, and the predicates are in
-[Calling across nodes](docs/guides/calling-across-nodes.md).
+`failure:`) predicate — by default, any node that responded counts:
+
+```elixir
+# A write quorum that only accepts {:ok, _} replies
+call_on_nodes &replica, strategy: :quorum, success: &match?({:ok, _}, &1) do
+  MyApp.Store.write(key, value)
+end
+```
 
 ## Node info and intelligent routing
 
@@ -486,7 +448,7 @@ receive live runtime data about every node:
 
 A node whose worker just registered but isn't in the background snapshot yet still appears,
 with `runtime: nil` / `last_seen_at: nil` until the next refresh — so filter on
-`info.runtime` before reading through it (as the examples do).
+`info.runtime` before reading through it.
 
 ```elixir
 # Route to the node with the most headroom
@@ -514,7 +476,7 @@ end
 
 ## Return values
 
-NebulaAPI never wraps your return value. A `defapi` body returns exactly what it
+NebulaAPI **never wraps** your return value. A `defapi` body returns exactly what it
 computed — local or over RPC, the result is identical:
 
 ```elixir
@@ -538,9 +500,9 @@ create(%{})              #=> {:error, %Ecto.Changeset{...}}
 The one value the library *does* inject is `{:nebula_error, reason}` — a **library or
 transport** failure (a timeout, no worker available, a crashing body, a quorum that wasn't
 reached), never a business outcome. So any `:ok` / `:error` you ever see is **yours**, and
-you never have to guess whether an `{:error, _}` came from your code or the framework. The
-full contract — including how throws and exits are reported — is in
-**[Using `defapi`](docs/guides/using-defapi.md)**.
+you never have to guess whether an `{:error, _}` came from your code or the framework. An
+exception, throw or exit escaping a body is reported the same way — identically whether the
+body ran locally or remotely.
 
 ## Worked example: a 3-role cluster
 
@@ -646,7 +608,8 @@ node.
 
 If you've ever thought *"I'd love to use Cachex / a counter / a cron here, but
 its state is per-node, so now I need Redis / a shared DB / `:global` locks…"* —
-this is the escape hatch. The library stays exactly as it is. You add a wrapper.
+this is the escape hatch. The library stays exactly as it is. You pin it to one
+node and wrap it.
 
 ```elixir
 # Cachex runs only on the @cache node; every node shares one cache through the wrapper.
@@ -661,8 +624,13 @@ end
 Any node calls `MyApp.Cache.get/1`; it resolves locally on `@cache` and routes
 transparently everywhere else. One shared cache, no Redis. The same trick gives you
 cluster-wide rate limiters, counters, run-once-per-cluster schedulers, singleton
-coordinators, and feature-flag stores — with recipes (and an honest caveat on hot-path
-caching) in **[Wrapping single-node libraries](docs/guides/wrapping-libraries.md)**.
+coordinators, and feature-flag stores.
+
+> **An honest caveat.** This is great for values read often and invalidated rarely
+> (dynamic config, reference data). But for a hot path doing thousands of reads per second
+> per node, every read becomes an RPC round-trip — that's the **wrong** use, and a real
+> distributed cache (Redis, or `:mnesia`) stays better. NebulaAPI is the right tool when
+> the access pattern fits, not a universal replacement for a distributed cache.
 
 ## When NOT to use NebulaAPI
 
@@ -723,8 +691,6 @@ config :nebula_api,
   nodes_info_refresh_interval: 5_000
 ```
 
-Every option is documented in **[Configuration](docs/configuration.md)**.
-
 ## Architecture
 
 ```
@@ -753,21 +719,19 @@ Every option is documented in **[Configuration](docs/configuration.md)**.
 
 ## Documentation
 
-**Guides**
-- [Getting started](docs/guides/getting-started.md) — from zero to a working cross-node call
-- [Using `defapi`](docs/guides/using-defapi.md) — define, call, return values, error handling
-- [Conditional compilation](docs/guides/conditional-compilation.md) — `on_nebula_nodes`
-- [Calling across nodes](docs/guides/calling-across-nodes.md) — unicast, multicast, quorum, blocks
-- [Gotchas and process scope](docs/guides/gotchas-and-scope.md) — trailing opts, tasks, nesting, timeouts
+This README is the whole picture. When you want to go deeper:
 
-**Reference**
-- [Concepts](docs/concepts.md) — nodes, tags, selectors, the execution model
-- [Configuration](docs/configuration.md) — topology, `default_opts`, dev/test
+- [Concepts](docs/concepts.md) — nodes, tags, selectors, the execution model, return values
+- [Configuration](docs/configuration.md) — topology, `default_opts`, dev/test, validation
 - [Macros reference](docs/macros-reference.md) — every macro and option
 - [Server and compiler](docs/server-and-compiler.md) — workers, `:pg`, the `:nebula` compiler
-
-**Deep dive**
+- [Troubleshooting](docs/troubleshooting.md) — common compile-time and runtime errors
 - [AST deep-dive](docs/deep-dive/ast-deep-dive.md) — how the per-node code is generated
+
+Guides:
+
+- [Adding a NebulaAPI function](docs/guides/adding-nebula-api.md) — a step-by-step walkthrough
+- [Wrapping single-node libraries](docs/guides/wrapping-libraries.md) — Cachex, rate limiters, schedulers…
 
 ## License
 
