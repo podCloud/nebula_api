@@ -247,8 +247,8 @@ end
 # config/config.exs
 config :nebula_api,
   nodes: [
-    "api@api.example": [:alpha_cluster, :api],
-    "db@db.example": [:alpha_cluster, :db],
+    "api@api.example": [:mainframe_cluster, :api],
+    "db@db.example": [:mainframe_cluster, :db],
     "worker@worker.example": [:alpha_cluster, :worker]
   ]
 ```
@@ -569,9 +569,10 @@ Results are always tagged per node — `{node, value}` on success,
 | `:first` | Return the first response that counts as a success (then stop waiting on the rest — the pending tasks are brutal-killed); `{:nebula_error, :no_success, results}` if none. |
 | `:quorum` | Wait for `at_least:` successes (a strict majority by default). The moment the quorum is reached it stops waiting on the rest (same brutal-kill as `:first`); fails fast if the quorum becomes unreachable. |
 
-> "Stops waiting" is exactly that: NebulaAPI kills the local tasks still awaiting a reply
-> and discards their late responses. A body that already started running on a remote node
-> isn't aborted — the RPC was already sent.
+> "Stops waiting" is exactly that: once you have what you asked for (a first success, or
+> the quorum), the rest is just wasted waiting — so NebulaAPI kills the local tasks still
+> awaiting a reply and discards their late responses. A body that already started running on
+> a remote node isn't aborted — the RPC was already sent.
 
 `:first` and `:quorum` let you define what counts as a success with a `success:` (or
 `failure:`) predicate — by default, any node that responded counts:
