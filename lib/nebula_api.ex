@@ -43,13 +43,35 @@ defmodule NebulaAPI do
       NebulaAPI.Config.nodes()
       |> Keyword.keys()
 
+    self_node = Keyword.fetch!(opts, :self_node)
+
+    # No node name at compile time (node() is :nonode@nohost) means the name isn't SET — a
+    # different problem from an UNKNOWN name, so `allow_unknown_self_node` deliberately does
+    # NOT cover it (it's almost always a forgotten `--name`). Only an explicit nameless build
+    # is allowed, via `allow_nonode_nohost: true`.
+    if self_node == :nonode@nohost and not NebulaAPI.Config.config()[:allow_nonode_nohost] do
+      raise CompileError,
+        line: env.line,
+        file: env.file,
+        description: """
+        Error using NebulaAPI inside #{inspect(env.module)} — no node name set at compile time.
+
+        node() is :nonode@nohost: you compiled without `--name`. NebulaAPI bakes routing per
+        node, so it must know which node this is. Either:
+          - compile with `elixir --name node@host -S mix compile`
+            (or set `config :nebula_api, default_opts: [self_node: :"node@host"]` for dev/test), or
+          - set `config :nebula_api, allow_nonode_nohost: true` for a deliberate nameless,
+            generic build that serves nothing.
+
+        (allow_unknown_self_node does NOT apply here — the name isn't unknown, it's unset.)
+        """
+    end
+
     allow_unknown_self_node =
       opts
       |> Keyword.fetch!(:allow_unknown_self_node)
 
     unless allow_unknown_self_node do
-      self_node = opts |> Keyword.fetch!(:self_node)
-
       unknown_self_node =
         not (nodes_names
              |> Enum.member?(self_node))

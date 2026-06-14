@@ -143,5 +143,32 @@ defmodule NebulaAPI.ServerNodeCheckTest do
       Application.put_env(:nebula_api, :allow_nonode_nohost, true)
       assert NebulaAPI.Config.nodes()[:nonode@nohost] == []
     end
+
+    test "compiling as nonode@nohost without allow_nonode_nohost is a CompileError — even with allow_unknown_self_node" do
+      Application.put_env(:nebula_api, :nodes, [{:"db@db.example", [:db]}])
+      Application.put_env(:nebula_api, :allow_nonode_nohost, false)
+
+      assert_raise CompileError, ~r/no node name set/i, fn ->
+        Code.eval_string("""
+        defmodule NebulaAPI.ServerNodeCheckTest.NoName do
+          use NebulaAPI, self_node: :nonode@nohost, allow_unknown_self_node: true
+          defapi &db, f(), do: :ok
+        end
+        """)
+      end
+    end
+
+    test "compiling as nonode@nohost WITH allow_nonode_nohost compiles" do
+      Application.put_env(:nebula_api, :nodes, [{:"db@db.example", [:db]}])
+      Application.put_env(:nebula_api, :allow_nonode_nohost, true)
+
+      assert [{NebulaAPI.ServerNodeCheckTest.Nameless, _}] =
+               Code.compile_string("""
+               defmodule NebulaAPI.ServerNodeCheckTest.Nameless do
+                 use NebulaAPI, self_node: :nonode@nohost
+                 defapi &db, f(), do: :ok
+               end
+               """)
+    end
   end
 end

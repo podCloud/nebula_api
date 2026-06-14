@@ -25,9 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     it's fully inert (out of cluster). The generated routers consult a boot-set flag /
     `node()` so even locally-compiled bodies route remote in generic mode.
 - **`allow_nonode_nohost: true`** registers `nonode@nohost` as an empty, tagless node so a
-  nameless build compiles cleanly. `nonode@nohost` may **never** be listed in
-  `config :nebula_api, :nodes` directly (it's the reserved generic/out-of-cluster identity —
-  doing so raises); this flag is the only way to admit it, always empty.
+  nameless build compiles cleanly. Without it, compiling with no `--name` (so `node()` is
+  `:nonode@nohost`) is now a **CompileError** — a *missing* node name is distinct from an
+  *unknown* one, so `allow_unknown_self_node` deliberately does not cover it; you opt into a
+  nameless build explicitly. `nonode@nohost` may also **never** be listed in
+  `config :nebula_api, :nodes` directly (reserved identity — doing so raises); the flag is
+  the only way to admit it, always empty.
 
 ### Removed
 - **Breaking: the `:*` selector is gone.** To make a `defapi` body run on every node,
