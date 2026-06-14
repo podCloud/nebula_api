@@ -130,10 +130,19 @@ defmodule NebulaAPI.Server do
   # SERVE only when running as exactly the (real) node we were compiled for. Anything else is
   # either a deliberate generic node (mismatch set → noop: serves nothing, every call remote)
   # or a misconfiguration (no mismatch → refuse to boot, with an explanation).
+  def server_mode(compiled, current, _mismatch) when is_nil(compiled) do
+    # No recorded compiled node → we can't tell what this release was built for, so we can't
+    # verify the running node. Refuse rather than serve blindly (and possibly misroute).
+    {:exit,
+     """
+     NebulaAPI: this server has no recorded compiled node, so it can't verify which node it
+     is running as. Wire it with `nebula_api_server()` (which records the compile-time node)
+     and recompile — don't construct the child spec without `compiled_node:`.
+     """}
+  end
+
   def server_mode(compiled, current, mismatch) do
     cond do
-      # Older wiring (no recorded compiled node) — nothing to check, serve.
-      is_nil(compiled) -> :serve
       current == compiled and current != :nonode@nohost -> :serve
       mismatch -> {:noop, noop_warning(compiled, current)}
       true -> {:exit, exit_message(compiled, current)}

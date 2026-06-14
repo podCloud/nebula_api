@@ -18,9 +18,10 @@ defmodule NebulaAPI.ServerNodeCheckTest do
     end
   end
 
-  test "init serves under older wiring (no compiled_node recorded)" do
-    on_exit(fn -> NebulaAPI.APIServer.set_generic_mode(false) end)
-    assert {:ok, _} = Server.init(app_module: __MODULE__)
+  test "init refuses to start with no recorded compiled node" do
+    assert_raise RuntimeError, ~r/no recorded compiled node/i, fn ->
+      Server.init(app_module: __MODULE__)
+    end
   end
 
   # ── server_mode/3 — the full boot policy, pure and exhaustive ─────────────────────
@@ -77,8 +78,9 @@ defmodule NebulaAPI.ServerNodeCheckTest do
     end
   end
 
-  test "server_mode/3 — older wiring (compiled nil) always serves" do
-    assert Server.server_mode(nil, :anything@host, false) == :serve
+  test "server_mode/3 — no compiled node recorded → refuse to start" do
+    assert {:exit, msg} = Server.server_mode(nil, :anything@host, false)
+    assert msg =~ "no recorded compiled node"
   end
 
   # ── runtime flags ─────────────────────────────────────────────────────────────────
