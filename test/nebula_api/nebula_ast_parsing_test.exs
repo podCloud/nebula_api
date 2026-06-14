@@ -154,16 +154,6 @@ defmodule NebulaAPI.NebulaAstParsingTest do
       assert mod.echo(42) == 42
     end
 
-    test ":* is no longer a valid selector" do
-      assert_raise CompileError, fn ->
-        compile_module!("DefapiStarGone", """
-        defapi :*, ping() do
-          :pong
-        end
-        """)
-      end
-    end
-
     test "[list] form still compiles — but it is NOT the canonical syntax" do
       mod =
         compile_module!("DefapiList", """

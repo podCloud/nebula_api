@@ -494,13 +494,11 @@ defmodule NebulaAPI.APIServer do
     end
   end
 
-  # Note: We previously had a `defapi :*, node_health_data()` here, but it was removed
-  # because build_nodes_info/0 uses direct RPC calls to collect_node_health_data_local/0
-  # to avoid circular dependencies. The defapi version would cause:
-  # build_nodes_info -> call_on_all_nodes -> call_remote_method -> build_nodes_info
-  #
-  # If you need a public API endpoint for node health, use collect_node_health_data_local/0
-  # directly via RPC, or create a separate module that doesn't depend on build_nodes_info.
+  # Node health is collected via direct RPC to collect_node_health_data_local/0, never
+  # through a defapi endpoint: routing one would recurse
+  # (build_nodes_info -> call_on_all_nodes -> call_remote_method -> build_nodes_info).
+  # For a public node-health endpoint, call collect_node_health_data_local/0 over RPC from
+  # a module that does not depend on build_nodes_info.
 
   require NebulaAPI.Config
 

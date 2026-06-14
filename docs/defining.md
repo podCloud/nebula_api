@@ -77,9 +77,9 @@ defapi get_node_health() do
 end
 ```
 
-Omitting the selector entirely is how you say "run on every node" — there is no `:*`
-(removed in 0.5). The bracketed list form (`defapi [&db, !@backup], ...`) still compiles,
-but it is **not** the canonical syntax — prefer the space-juxtaposed form everywhere. A full
+Omitting the selector entirely is how you say "run on every node". The bracketed list form
+(`defapi [&db, !@backup], ...`) still compiles, but it is **not** the canonical syntax —
+prefer the space-juxtaposed form everywhere. A full
 node name with special characters goes in as an atom: `defapi @:"db@db.example", ...`.
 
 ### Short names

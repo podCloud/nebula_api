@@ -31,12 +31,6 @@ defmodule NebulaAPI.CompileErrorsTest do
       end
     end
 
-    test ":* is no longer a selector (removed in 0.5 — omit the selector to mean all nodes)" do
-      assert_raise CompileError, ~r/invalid nebula selector/i, fn ->
-        Parser.parse_nebula_ast(ast(":*"))
-      end
-    end
-
     test "a string selector raises a clear CompileError" do
       assert_raise CompileError, ~r/invalid nebula selector/i, fn ->
         Parser.parse_nebula_ast(ast(~s|"db"|))

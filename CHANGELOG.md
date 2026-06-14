@@ -33,11 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the only way to admit it, always empty.
 
 ### Removed
-- **Breaking: the `:*` selector is gone.** To make a `defapi` body run on every node,
-  **omit the selector entirely** — `defapi name(args) do ... end` — the same way
-  `call_on_nodes`/`call_on_all_nodes` with no selector means "everyone". `:*` was visually
-  unlike every other selector and added a special case; "no selector = all nodes" is the
-  natural reading. `defapi :*, f()` now raises a `CompileError`.
+- **The wildcard selector is gone.** To make a `defapi` body run on every node, **omit the
+  selector entirely** — `defapi name(args) do ... end` — the same way
+  `call_on_nodes`/`call_on_all_nodes` with no selector means "everyone". "No selector = all
+  nodes" is the natural reading, with no special-case selector to learn.
 
 ### Fixed
 - **Canonical space-juxtaposed multi-selectors now compile in `defapi` and
@@ -162,8 +161,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An empty selector list (`[]`) raises a clear `CompileError` everywhere a selector is
   accepted (`defapi`, `on_nebula_nodes`, `call_on_node`/`call_on_nodes`) — it used to
   silently select every **configured** node. `[]` selects no node, so nothing could ever
-  run: `:*` is the explicit "all nodes", omitting the selector is the explicit "no
-  restriction" in `call_on_*`.
+  run; to run on every node, omit the selector entirely (in `call_on_*`, that means "no
+  restriction").
 - The `call_on_*` macros validate their literal options at compile time: an option the
   mode can never consume (`strategy:`/`at_least:`/`success:`/`failure:` on the unicast
   `call_on_node`), an unknown key, a malformed literal value (`timeout: :infinity`,
