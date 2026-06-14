@@ -359,7 +359,8 @@ The compile-time `--name` and the runtime `RELEASE_NODE` **must match** — that
 contract: the routing was decided for `api@api.example` at build, so the release has to
 actually be `api@api.example` when it runs. NebulaAPI enforces it: if the running node
 differs from the one the release was compiled as, the server **crashes at boot** with a
-clear message rather than misrouting silently. (`RELEASE_NODE` defaults to
+clear message rather than misrouting silently — unless you opt into running it as a
+[generic node](#generic-nodes-serve-nothing-call-everything). (`RELEASE_NODE` defaults to
 `<release_name>@…` with short-name distribution, so set it explicitly to get the
 fully-qualified name.)
 
@@ -849,7 +850,7 @@ Being honest about the edges:
   what's actually connected. What it can't handle is a node whose *name* wasn't known at
   build time: an unbounded fleet of randomly-named pods has no compiled identity to route
   to — though a fixed, generic *caller* node is easy (see
-  [Compiling a generic node](#compiling-a-generic-client-node)). Scaling the count of *known* roles
+  [generic nodes](#generic-nodes-serve-nothing-call-everything)). Scaling the count of *known* roles
   is fine; minting brand-new node identities at
   runtime is not.
 - **Topologies whose roles change at runtime.** Adding a wholly new tag or node *name* to
@@ -901,42 +902,48 @@ config :nebula_api,
   nodes_info_refresh_interval: 5_000
 ```
 
-## Compiling a generic (client) node
+## Generic nodes: serve nothing, call everything
 
-Sometimes you want a node that only *calls* the cluster and serves nothing — a console, a
-control plane, a short-lived client whose runtime name you can't know at build time. Flip
-one setting and build it **without** `--name`:
+A release is normally tied to one node: it must run as the node it was compiled for (see
+[the boot policy](#4-compile-with-the-target-node-name)). A **generic node** is the
+exception — a node that serves nothing (no workers, registers nothing in `:pg`) and routes
+**every** `defapi` call remotely. Two ways to get one.
+
+**1. A nameless build (`allow_nonode_nohost`).** Set the flag and compile **without**
+`--name`, so `node()` is `nonode@nohost`:
 
 ```elixir
-# the client build's config
 config :nebula_api,
   nodes: [ ...the real cluster nodes... ],
   allow_nonode_nohost: true
 ```
-
 ```bash
 mix compile && mix release client   # no --name → node() is nonode@nohost
 ```
 
-`allow_nonode_nohost: true` registers `nonode@nohost` as an empty, tagless node, so a
-nameless build compiles cleanly (its `self_node` is now "known") instead of raising the
-usual unknown-node error. And `nebula_api_server()` turns into a **no-op** on this build: it
-starts no workers and logs once at boot —
+The flag registers `nonode@nohost` as an empty, tagless node so the build compiles cleanly.
+At boot `nebula_api_server()` is a no-op and every call routes remote. A `nonode@nohost` node
+is **not** distributed, though — it can't join a cluster (`Node.connect` is a no-op there),
+so it's **inert** (its remote calls reach no one). Think "safe nameless build", not "client
+that calls the cluster". (You don't list `nonode@nohost` in `:nodes` yourself — it's
+reserved; the flag is the only way to admit it.)
 
+**2. Any build, with `ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1`.** Boot an existing release
+under a node name that *isn't* the one it was compiled for. Normally that's refused (the boot
+policy); with the env var it boots as a generic node instead — no server, serves nothing,
+all calls remote. Under a **real** name it's distributed, so it *can* reach the cluster — a
+quick prod console that calls the cluster but serves nothing:
+
+```bash
+docker compose run --rm \
+  -e RELEASE_NODE=console@10.0.0.9 -e RELEASE_DISTRIBUTION=name \
+  -e ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1 \
+  worker bin/worker remote
 ```
-NebulaAPI: no API server started because we're on a generic nonode@nohost node —
-this build serves nothing, all defapi calls will be remote.
-```
 
-— so the node never registers in `:pg`, the cluster never routes to it, and every `defapi`
-call it makes goes out to whoever does serve it. Because it was compiled *nameless*, the
-[boot-time node check](#4-compile-with-the-target-node-name) skips it too, so you can boot
-this same release under **any** runtime name (`RELEASE_NODE=client-7@host`, whatever your
-scheduler hands out) to join the cluster. It's the one node whose runtime name doesn't have
-to be known when you build it.
-
-> Keep `allow_nonode_nohost: true` in the *client* build's config, not the shared cluster
-> config — your real, named nodes don't need it (and shouldn't carry a phantom node).
+(Point it at `nonode@nohost` instead and it boots the same way but stays inert/out of
+cluster.) Keep `allow_nonode_nohost` in the build that wants it, not the shared cluster
+config — your real nodes don't need it.
 
 ## But wait — how do the nodes actually connect?
 
