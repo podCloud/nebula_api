@@ -82,6 +82,28 @@ Omitting the selector entirely is how you say "run on every node". The bracketed
 prefer the space-juxtaposed form everywhere. A full
 node name with special characters goes in as an atom: `defapi @:"db@db.example", ...`.
 
+#### Combining selectors
+
+Juxtaposed selectors **narrow** — every combinator is an intersection:
+
+| Form | Matches |
+|------|---------|
+| `&a &b` | nodes carrying **both** `a` **and** `b` |
+| `@n &t` | node `n`, **and** only if it carries `t` |
+| `&t !&u` | nodes with `t`, **minus** those with `u` |
+| `!&a !&b` | nodes with **neither** `a` nor `b` |
+
+```elixir
+# Only the GPU-equipped workers (carry both :worker and :gpu):
+defapi &worker &gpu, quick_transcode(input, opts) do
+  GpuTranscoder.run(input, opts)
+end
+```
+
+To target nodes that have *either* of two capabilities, give both groups a shared tag in
+config (`:a_or_b`) and select that — union is a topology fact, expressed once where the
+topology lives, not at every call site.
+
 ### Short names
 
 In config, node names are full Erlang names (`short@host`); in selectors you can use just

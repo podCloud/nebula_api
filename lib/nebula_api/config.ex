@@ -141,11 +141,16 @@ defmodule NebulaAPI.Config do
     nodes
     |> Enum.filter(fn
       {_node_name, node_tags} when is_list(node_tags) ->
-        # keep node if ANY requested tag is present in node_tags
-        Enum.any?(tags, &(&1 in node_tags))
+        # Keep the node only if it carries ALL requested tags (intersection):
+        # `&a &b` means "a AND b". Union is expressed by giving both groups a
+        # shared tag in config, so the selector combinator is the narrowing one
+        # — consistent with `@n &t`, `&t !&u` and `!&a !&b`, which all narrow.
+        Enum.all?(tags, &(&1 in node_tags))
 
       {_node_name, node_tag} when is_atom(node_tag) ->
-        node_tag in tags
+        # A node with a single (atom) tag satisfies "all requested" only when
+        # the request is exactly that one tag.
+        Enum.all?(tags, &(&1 == node_tag))
     end)
   end
 
