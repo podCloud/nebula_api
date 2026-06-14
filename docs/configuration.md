@@ -120,6 +120,20 @@ not yet in the snapshot are still offered to selectors with `runtime: nil`.
 config :nebula_api, nodes_info_refresh_interval: 10_000
 ```
 
+### `allow_nonode_nohost`
+
+`false` by default. Set it to `true` in a build's config and `nonode@nohost` is registered
+as an empty, tagless node, so a release compiled **without** `--name` builds cleanly (its
+`self_node` is "known") instead of raising the unknown-node error. On such a build
+`nebula_api_server()` becomes a no-op — no workers, just a boot warning — so the node serves
+nothing and routes every `defapi` call remotely. It's the way to compile a generic *client*
+node whose runtime name isn't known at build time; keep it in the client build's config, not
+the shared cluster config.
+
+```elixir
+config :nebula_api, allow_nonode_nohost: true
+```
+
 ## Adding a node or a tag
 
 Just edit the `nodes` list — add a node, or add a tag to an existing one:

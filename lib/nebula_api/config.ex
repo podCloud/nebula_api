@@ -3,7 +3,8 @@ defmodule NebulaAPI.Config do
     nodes: [],
     default_opts: [],
     nodes_info_refresh_interval: 5_000,
-    default_timeout: 5_000
+    default_timeout: 5_000,
+    allow_nonode_nohost: false
   ]
 
   def config() do
@@ -12,7 +13,25 @@ defmodule NebulaAPI.Config do
   end
 
   def nodes() do
-    config()[:nodes]
+    base = config()[:nodes]
+
+    if config()[:allow_nonode_nohost] do
+      ensure_generic_node(base)
+    else
+      base
+    end
+  end
+
+  # `allow_nonode_nohost: true` makes a NAMELESS build (`node()` is `:nonode@nohost`,
+  # i.e. compiled without `--name`) a valid, tagless node: a generic client that matches
+  # no selector, serves nothing, and routes every `defapi` call remotely. Set it in the
+  # client/console build's config only. See NebulaAPI.Server for the matching server no-op.
+  defp ensure_generic_node(nodes) do
+    if Keyword.has_key?(nodes, :nonode@nohost) do
+      nodes
+    else
+      nodes ++ [{:nonode@nohost, []}]
+    end
   end
 
   def default_opts() do

@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Generic (client) node — `allow_nonode_nohost: true`.** Set this in a build's config and
+  `nonode@nohost` becomes a valid, empty, tagless node, so a release compiled **without**
+  `--name` builds cleanly instead of raising the unknown-node error. On such a build
+  `nebula_api_server()` is a **no-op** — it starts no workers and logs a one-line boot
+  warning — so the node registers nothing in `:pg`, serves nothing, and routes every
+  `defapi` call out to whoever does serve it. Combined with the boot guard skipping
+  nameless builds, it can run under any runtime name: the way to ship a pure caller /
+  console / short-lived client whose name isn't known at build time.
 - **Boot-time node-name guard.** `nebula_api_server()` records the node a release was
   *compiled* as; at boot `NebulaAPI.Server` crashes with a clear error if the *running* node
   differs — the compile-time `--name` and the runtime `RELEASE_NODE` must match, or every

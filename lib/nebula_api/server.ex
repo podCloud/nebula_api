@@ -71,9 +71,36 @@ defmodule NebulaAPI.Server do
     # verify_node!/1. Captured at macro-expansion time = the consumer's compile-time node.
     compiled_node = node()
 
-    quote do
-      NebulaAPI.Server.child_spec(app_module: __MODULE__, compiled_node: unquote(compiled_node))
+    if compiled_node == :nonode@nohost do
+      # Generic (client) build: compiled nameless, serves nothing. Even though an app may
+      # wire the server, start NO workers here — just warn at boot. Every defapi is remote.
+      quote do
+        NebulaAPI.Server.generic_noop_child_spec()
+      end
+    else
+      quote do
+        NebulaAPI.Server.child_spec(app_module: __MODULE__, compiled_node: unquote(compiled_node))
+      end
     end
+  end
+
+  @doc false
+  # Child spec for a generic nonode@nohost build: starts nothing (returns :ignore), just
+  # logs once at boot. No workers, so no local serving and no :pg registration.
+  def generic_noop_child_spec do
+    %{id: {__MODULE__, :generic_noop}, start: {__MODULE__, :start_generic_noop, []}}
+  end
+
+  @doc false
+  def start_generic_noop do
+    require Logger
+
+    Logger.warning(
+      "NebulaAPI: no API server started because we're on a generic nonode@nohost node — " <>
+        "this build serves nothing, all defapi calls will be remote."
+    )
+
+    :ignore
   end
 
   def child_spec(opts) do

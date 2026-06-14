@@ -904,28 +904,39 @@ config :nebula_api,
 ## Compiling a generic (client) node
 
 Sometimes you want a node that only *calls* the cluster and serves nothing — a console, a
-control plane, a short-lived client whose runtime name you can't know at build time. Build
-it as `nonode@nohost` (compile it **without** `--name`) and give it **no tags**:
+control plane, a short-lived client whose runtime name you can't know at build time. Flip
+one setting and build it **without** `--name`:
 
 ```elixir
+# the client build's config
 config :nebula_api,
-  nodes: [
-    # ... your real, named nodes ...
-    "nonode@nohost": []
-  ]
+  nodes: [ ...the real cluster nodes... ],
+  allow_nonode_nohost: true
 ```
 
 ```bash
-mix compile && mix release client   # no --name on compile → node() is nonode@nohost
+mix compile && mix release client   # no --name → node() is nonode@nohost
 ```
 
-With no tags it matches no `&tag` and no `@node`, so every `defapi` resolves to a remote
-call out to whichever node does serve it (only a selector-less `defapi`, which is local
-everywhere, stays local here). And because it was compiled *nameless*, the
-[boot-time node check](#4-compile-with-the-target-node-name) skips it — so you can boot this
-same release under **any** runtime name (`RELEASE_NODE=client-7@host`, whatever your
-scheduler hands out) to join the cluster and make calls. It's the one node whose runtime
-name doesn't have to be known when you build it — the closest thing to a "client".
+`allow_nonode_nohost: true` registers `nonode@nohost` as an empty, tagless node, so a
+nameless build compiles cleanly (its `self_node` is now "known") instead of raising the
+usual unknown-node error. And `nebula_api_server()` turns into a **no-op** on this build: it
+starts no workers and logs once at boot —
+
+```
+NebulaAPI: no API server started because we're on a generic nonode@nohost node —
+this build serves nothing, all defapi calls will be remote.
+```
+
+— so the node never registers in `:pg`, the cluster never routes to it, and every `defapi`
+call it makes goes out to whoever does serve it. Because it was compiled *nameless*, the
+[boot-time node check](#4-compile-with-the-target-node-name) skips it too, so you can boot
+this same release under **any** runtime name (`RELEASE_NODE=client-7@host`, whatever your
+scheduler hands out) to join the cluster. It's the one node whose runtime name doesn't have
+to be known when you build it.
+
+> Keep `allow_nonode_nohost: true` in the *client* build's config, not the shared cluster
+> config — your real, named nodes don't need it (and shouldn't carry a phantom node).
 
 ## But wait — how do the nodes actually connect?
 
