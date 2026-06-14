@@ -114,12 +114,10 @@ defmodule NebulaAPI.AST.Builder do
             NebulaAPI.APIServer.validate_call_opts!(__MODULE__, unquote(routing_opts_var))
           end
 
-          # A build running as the generic `nonode@nohost` serves nothing, so even a
-          # locally-compiled body routes remotely. `node()` is a cheap BIF that
-          # short-circuits on every real node (no further work on the hot path); only a
-          # nonode build consults the runtime-mismatch escape hatch, which — when set —
-          # lets a real build run as nonode and keep its baked-in local routing.
-          if node() == :nonode@nohost and not NebulaAPI.APIServer.runtime_mismatch_allowed?() do
+          # A generic node (running as nonode@nohost, or a mismatched build booted with the
+          # escape hatch) serves nothing, so even a locally-compiled body routes remotely.
+          # force_remote?/0 is a node()/persistent_term check, both set once at boot.
+          if NebulaAPI.APIServer.force_remote?() do
             unquote(remote_fn_name)(unquote_splicing(fn_arg_vars), unquote(routing_opts_var))
           else
             unquote(local_fn_name)(unquote_splicing(fn_arg_vars))

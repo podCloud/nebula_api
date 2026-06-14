@@ -1,87 +1,96 @@
 defmodule NebulaAPI.ServerNodeCheckTest do
-  # async: false — some tests mutate the global :nebula_api config (nodes, env vars).
+  # async: false — these mutate global state (the generic_mode persistent_term, the
+  # :nebula_api config, an env var), so they must not run alongside other tests.
   use ExUnit.Case, async: false
 
-  # The test VM runs distributed (started with --name), so node() is a real name.
-  # NebulaAPI.Server.init/1 crashes at boot when the release was compiled for a different
-  # real node — the compile-time --name and the runtime RELEASE_NODE must match.
+  alias NebulaAPI.Server
 
-  test "init crashes when compiled for a different (real) node" do
+  # ── init/1 end to end (the test VM runs as a real node, probe@127.0.0.1) ──────────
+
+  test "init serves when running as exactly the compiled node" do
+    on_exit(fn -> NebulaAPI.APIServer.set_generic_mode(false) end)
+    assert {:ok, _} = Server.init(app_module: __MODULE__, compiled_node: node())
+  end
+
+  test "init crashes when compiled for a different real node (no escape hatch)" do
     assert_raise RuntimeError, ~r/node mismatch/i, fn ->
-      NebulaAPI.Server.init(app_module: __MODULE__, compiled_node: :someone_else@host)
+      Server.init(app_module: __MODULE__, compiled_node: :someone_else@host)
     end
   end
 
-  test "init is happy when the running node matches the compiled node" do
-    assert {:ok, _} = NebulaAPI.Server.init(app_module: __MODULE__, compiled_node: node())
+  test "init serves under older wiring (no compiled_node recorded)" do
+    on_exit(fn -> NebulaAPI.APIServer.set_generic_mode(false) end)
+    assert {:ok, _} = Server.init(app_module: __MODULE__)
   end
 
-  test "no check when compiled_node is absent (older wiring)" do
-    assert {:ok, _} = NebulaAPI.Server.init(app_module: __MODULE__)
-  end
+  # ── server_mode/3 — the full boot policy, pure and exhaustive ─────────────────────
 
-  describe "generic nonode@nohost node" do
-    test "allow_nonode_nohost: true injects an empty nonode@nohost node" do
-      prev = Application.get_env(:nebula_api, :allow_nonode_nohost)
-      on_exit(fn -> Application.put_env(:nebula_api, :allow_nonode_nohost, prev) end)
-
-      Application.put_env(:nebula_api, :nodes, [{:"db@db.example", [:db]}])
-
-      Application.put_env(:nebula_api, :allow_nonode_nohost, false)
-      refute Keyword.has_key?(NebulaAPI.Config.nodes(), :nonode@nohost)
-
-      Application.put_env(:nebula_api, :allow_nonode_nohost, true)
-      assert NebulaAPI.Config.nodes()[:nonode@nohost] == []
-
-      Application.delete_env(:nebula_api, :nodes)
+  describe "server_mode/3 — compiled as a real node (worker@w1)" do
+    test "run as worker@w1 → serve" do
+      assert Server.server_mode(:worker@w1, :worker@w1, false) == :serve
+      assert Server.server_mode(:worker@w1, :worker@w1, true) == :serve
     end
 
-    test "generic_noop_action: run AS nonode → warn + start nothing" do
-      assert {:warn, msg} = NebulaAPI.Server.generic_noop_action(:nonode@nohost)
-      assert msg =~ "no API server started"
-      assert msg =~ "remote"
+    test "run as another real node, no env var → exit (mismatch)" do
+      assert {:exit, msg} = Server.server_mode(:worker@w1, :api@host, false)
+      assert msg =~ "node mismatch"
     end
 
-    test "generic_noop_action: a nameless build given a real name → crash" do
-      assert {:crash, msg} = NebulaAPI.Server.generic_noop_action(:api@host)
-      assert msg =~ "nameless"
+    test "run as another real node, env var → noop, serves nothing, calls remote" do
+      assert {:noop, msg} = Server.server_mode(:worker@w1, :api@host, true)
+      assert msg =~ "serves nothing"
+      assert msg =~ "remotely"
     end
 
-    test "start_generic_noop crashes in this (named) VM — a nameless build mustn't be named" do
-      # The test VM runs as probe@127.0.0.1 (a real name), so the no-op refuses to start.
-      assert_raise RuntimeError, ~r/nameless/i, fn -> NebulaAPI.Server.start_generic_noop() end
+    test "run as nonode@nohost, no env var → exit" do
+      assert {:exit, msg} = Server.server_mode(:worker@w1, :nonode@nohost, false)
+      assert msg =~ "nonode@nohost"
+      assert msg =~ "ALLOW_RUNTIME_NEBULA_NODE_MISMATCH"
+    end
+
+    test "run as nonode@nohost, env var → noop, inert" do
+      assert {:noop, msg} = Server.server_mode(:worker@w1, :nonode@nohost, true)
+      assert msg =~ "inert"
     end
   end
 
-  describe "node_check/3 — boot-time mismatch policy" do
-    alias NebulaAPI.Server
-
-    test "running as exactly the compiled node → ok" do
-      assert Server.node_check(:worker@w1, :worker@w1, false) == :ok
+  describe "server_mode/3 — compiled nameless (nonode@nohost, forgot --name)" do
+    test "run as a real node, no env var → exit, explains the nameless compile" do
+      assert {:exit, msg} = Server.server_mode(:nonode@nohost, :api@host, false)
+      assert msg =~ "WITHOUT a node name"
+      assert msg =~ "--name"
     end
 
-    test "a nameless build running as nonode@nohost → ok" do
-      assert Server.node_check(:nonode@nohost, :nonode@nohost, false) == :ok
+    test "run as a real node, env var → noop (serves nothing, remote)" do
+      assert {:noop, msg} = Server.server_mode(:nonode@nohost, :api@host, true)
+      assert msg =~ "serves nothing"
     end
 
-    test "a nameless build given a real name → refused (you're not 'someone' on the net)" do
-      assert {:error, :nonode@nohost, :api@host} =
-               Server.node_check(:nonode@nohost, :api@host, false)
+    test "run as nonode@nohost, no env var → exit, must opt in" do
+      assert {:exit, msg} = Server.server_mode(:nonode@nohost, :nonode@nohost, false)
+      assert msg =~ "ALLOW_RUNTIME_NEBULA_NODE_MISMATCH"
     end
 
-    test "real build run as nonode@nohost → refused by default" do
-      assert {:error, :worker@w1, :nonode@nohost} =
-               Server.node_check(:worker@w1, :nonode@nohost, false)
+    test "run as nonode@nohost, env var → noop, inert" do
+      assert {:noop, msg} = Server.server_mode(:nonode@nohost, :nonode@nohost, true)
+      assert msg =~ "inert"
     end
+  end
 
-    test "real build run as nonode@nohost → allowed with the escape hatch (quick console)" do
-      assert Server.node_check(:worker@w1, :nonode@nohost, true) == :ok
-    end
+  test "server_mode/3 — older wiring (compiled nil) always serves" do
+    assert Server.server_mode(nil, :anything@host, false) == :serve
+  end
 
-    test "real build run as ANOTHER real node → always refused, even with the escape hatch" do
-      assert {:error, :worker@w1, :api@host} =
-               Server.node_check(:worker@w1, :api@host, true)
-    end
+  # ── runtime flags ─────────────────────────────────────────────────────────────────
+
+  test "force_remote? follows the generic_mode flag (node() is real here)" do
+    on_exit(fn -> NebulaAPI.APIServer.set_generic_mode(false) end)
+
+    NebulaAPI.APIServer.set_generic_mode(false)
+    refute NebulaAPI.APIServer.force_remote?()
+
+    NebulaAPI.APIServer.set_generic_mode(true)
+    assert NebulaAPI.APIServer.force_remote?()
   end
 
   test "runtime_mismatch_allowed? reads ALLOW_RUNTIME_NEBULA_NODE_MISMATCH" do
@@ -98,5 +107,42 @@ defmodule NebulaAPI.ServerNodeCheckTest do
 
     System.delete_env("ALLOW_RUNTIME_NEBULA_NODE_MISMATCH")
     refute NebulaAPI.APIServer.runtime_mismatch_allowed?()
+  end
+
+  # ── config ──────────────────────────────────────────────────────────────────────
+
+  describe "nonode@nohost in config" do
+    setup do
+      prev = Application.get_env(:nebula_api, :nodes)
+      prev_flag = Application.get_env(:nebula_api, :allow_nonode_nohost)
+
+      on_exit(fn ->
+        if prev,
+          do: Application.put_env(:nebula_api, :nodes, prev),
+          else: Application.delete_env(:nebula_api, :nodes)
+
+        Application.put_env(:nebula_api, :allow_nonode_nohost, prev_flag)
+      end)
+
+      :ok
+    end
+
+    test "a manual nonode@nohost entry is rejected" do
+      Application.put_env(:nebula_api, :nodes, [{:nonode@nohost, [:db]}])
+
+      assert_raise ArgumentError, ~r/don't put `nonode@nohost`/, fn ->
+        NebulaAPI.Config.nodes()
+      end
+    end
+
+    test "allow_nonode_nohost: true injects an empty nonode@nohost node" do
+      Application.put_env(:nebula_api, :nodes, [{:"db@db.example", [:db]}])
+
+      Application.put_env(:nebula_api, :allow_nonode_nohost, false)
+      refute Keyword.has_key?(NebulaAPI.Config.nodes(), :nonode@nohost)
+
+      Application.put_env(:nebula_api, :allow_nonode_nohost, true)
+      assert NebulaAPI.Config.nodes()[:nonode@nohost] == []
+    end
   end
 end

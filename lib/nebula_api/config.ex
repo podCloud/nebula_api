@@ -14,23 +14,28 @@ defmodule NebulaAPI.Config do
 
   def nodes() do
     base = config()[:nodes]
+    forbid_manual_nonode!(base)
 
+    # `allow_nonode_nohost: true` makes a NAMELESS build (`node()` is `:nonode@nohost`,
+    # built without `--name`) a valid, EMPTY node — never with custom tags. It's a generic
+    # node that matches no selector, serves nothing, and routes every `defapi` call remotely.
     if config()[:allow_nonode_nohost] do
-      ensure_generic_node(base)
+      base ++ [{:nonode@nohost, []}]
     else
       base
     end
   end
 
-  # `allow_nonode_nohost: true` makes a NAMELESS build (`node()` is `:nonode@nohost`,
-  # i.e. compiled without `--name`) a valid, tagless node: a generic client that matches
-  # no selector, serves nothing, and routes every `defapi` call remotely. Set it in the
-  # client/console build's config only. See NebulaAPI.Server for the matching server no-op.
-  defp ensure_generic_node(nodes) do
+  # nonode@nohost is special — it's the generic/out-of-cluster identity, it must never carry
+  # tags or be addressable. You don't list it yourself; flip `allow_nonode_nohost: true` and
+  # it's added empty. A manual entry (with or without tags) is a configuration error.
+  defp forbid_manual_nonode!(nodes) do
     if Keyword.has_key?(nodes, :nonode@nohost) do
-      nodes
-    else
-      nodes ++ [{:nonode@nohost, []}]
+      raise ArgumentError, """
+      NebulaAPI: don't put `nonode@nohost` in `config :nebula_api, :nodes` — it's the
+      reserved generic/out-of-cluster identity and can't carry tags or be a target. To allow
+      a nameless build, set `config :nebula_api, allow_nonode_nohost: true` instead.
+      """
     end
   end
 

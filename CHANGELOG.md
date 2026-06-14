@@ -8,24 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Generic (client) node — `allow_nonode_nohost: true`.** Set this in a build's config and
-  `nonode@nohost` becomes a valid, empty, tagless node, so a release compiled **without**
-  `--name` builds cleanly instead of raising the unknown-node error. Such a build is a
-  generic host that serves nothing:
-  - `nebula_api_server()` is a **no-op** — no workers, just a one-line boot warning — so the
-    node registers nothing in `:pg`.
-  - the generated routers **force every call remote** when running as `nonode@nohost` (a
-    cheap `node()` check that short-circuits on real nodes), so even bodies that happen to
-    compile local don't run there.
-  - a nameless build **must run as `nonode@nohost`** — give it a real name and it crashes at
-    boot. It has no identity on the network.
-- **Boot-time node-name guard.** `nebula_api_server()` records the node a release was
-  *compiled* as; at boot `NebulaAPI.Server` crashes if the *running* node differs — the
-  compile-time `--name` and the runtime `RELEASE_NODE` must match, or every routing decision
-  baked into the release would be wrong. Running a real build as a *different real* node is
-  always refused. The one escape hatch, `ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1`, lets a real
-  build boot as `nonode@nohost` (and keep its baked-in local routing) — a quick prod console:
-  `docker compose run -e RELEASE_NODE=nonode@nohost -e ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1 worker iex`.
+- **Boot-time node policy.** NebulaAPI bakes routing in per node at compile time, so a
+  release must run as the node it was compiled for. `nebula_api_server()` records the
+  compile-time node; `NebulaAPI.Server` decides at boot (`server_mode/3`):
+  - **running as exactly the compiled (real) node → serves normally.** This is the only case
+    that starts workers and serves.
+  - **any other case refuses to boot** with an explicit message — a worker build run as
+    `api@host`, a nameless (`nonode@nohost`-compiled, *forgot `--name`?*) build run under a
+    real name, or anything run as `nonode@nohost` — *unless* the escape hatch is set.
+  - **`ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1`** turns the mismatch into a **generic node**:
+    `nebula_api_server()` becomes a no-op (no workers, a boot warning) and every `defapi`
+    call routes **remote** (the node serves nothing). Run as a real name it can still reach
+    the cluster (a quick prod console that calls but serves nothing); run as `nonode@nohost`
+    it's fully inert (out of cluster). The generated routers consult a boot-set flag /
+    `node()` so even locally-compiled bodies route remote in generic mode.
+- **`allow_nonode_nohost: true`** registers `nonode@nohost` as an empty, tagless node so a
+  nameless build compiles cleanly. `nonode@nohost` may **never** be listed in
+  `config :nebula_api, :nodes` directly (it's the reserved generic/out-of-cluster identity —
+  doing so raises); this flag is the only way to admit it, always empty.
 
 ### Removed
 - **Breaking: the `:*` selector is gone.** To make a `defapi` body run on every node,

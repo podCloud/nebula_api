@@ -66,61 +66,14 @@ defmodule NebulaAPI.Server do
     # app is compiled, that an app with local methods actually wired a server somewhere.
     Module.put_attribute(__CALLER__.module, :nebula_api_server_wired, true)
 
-    # Capture the node this release is being COMPILED as (the `--name` on `mix compile`).
-    # NebulaAPI bakes routing in per node, so at boot the running node MUST match — see
-    # verify_node!/1. Captured at macro-expansion time = the consumer's compile-time node.
+    # The node this release is being COMPILED as (the `--name` on `mix compile`). NebulaAPI
+    # bakes routing per node, so the running node must match — enforced at boot (server_mode/3,
+    # which also handles the generic-node and mismatch-escape-hatch cases).
     compiled_node = node()
 
-    if compiled_node == :nonode@nohost do
-      # Compiled nameless → a generic host. In dev that's `iex -S mix` (start with `--name`
-      # for a real node instead); in prod it's the deliberate client build. Either way: no
-      # workers, no serving, just a boot warning — every defapi call is remote.
-      quote do
-        NebulaAPI.Server.generic_noop_child_spec()
-      end
-    else
-      quote do
-        NebulaAPI.Server.child_spec(app_module: __MODULE__, compiled_node: unquote(compiled_node))
-      end
+    quote do
+      NebulaAPI.Server.child_spec(app_module: __MODULE__, compiled_node: unquote(compiled_node))
     end
-  end
-
-  @doc false
-  # Child spec for a generic nonode@nohost build: starts nothing (returns :ignore), just
-  # logs once at boot. No workers, so no local serving and no :pg registration.
-  def generic_noop_child_spec do
-    %{id: {__MODULE__, :generic_noop}, start: {__MODULE__, :start_generic_noop, []}}
-  end
-
-  @doc false
-  def start_generic_noop do
-    require Logger
-
-    case generic_noop_action(node()) do
-      {:warn, msg} ->
-        Logger.warning(msg)
-        :ignore
-
-      {:crash, msg} ->
-        raise msg
-    end
-  end
-
-  @doc false
-  # A nameless (generic) build must run as nonode@nohost. Running it as nonode → warn and
-  # start nothing. Running it under a real name → crash: a nameless build isn't "someone"
-  # on the network, so it must not pretend to be a real node.
-  def generic_noop_action(:nonode@nohost) do
-    {:warn,
-     "NebulaAPI: no API server started because we're on a generic nonode@nohost node — " <>
-       "this build serves nothing, all defapi calls will be remote."}
-  end
-
-  def generic_noop_action(other) do
-    {:crash,
-     "NebulaAPI: this release was compiled nameless (a generic nonode@nohost build) but is " <>
-       "running as #{inspect(other)}. A nameless build must run as nonode@nohost — it has no " <>
-       "identity on the network. Compile with --name to run as a real node."}
   end
 
   def child_spec(opts) do
@@ -137,61 +90,109 @@ defmodule NebulaAPI.Server do
 
   @impl true
   def init(opts) do
-    verify_node!(opts)
+    require Logger
 
-    children =
-      opts
-      |> Keyword.fetch!(:app_module)
-      |> app_modules()
-      |> servable_modules()
-      |> Enum.map(&worker_child_spec/1)
-
-    Supervisor.init(children, strategy: :one_for_one)
-  end
-
-  # NebulaAPI decides routing at COMPILE time, keyed on the node name. If a release built
-  # as `api@host` boots as some other node, every routing decision baked into it is wrong —
-  # so crash loudly at boot instead of misrouting silently. The compile-time `--name` and
-  # the runtime `RELEASE_NODE` must match.
-  #
-  # The check only fires when BOTH sides are real, distributed names and they differ: a
-  # `:nonode@nohost` on either side means dev/test (or a nameless build), where there's
-  # nothing meaningful to pin, so we skip it.
-  defp verify_node!(opts) do
     compiled = Keyword.get(opts, :compiled_node)
     current = node()
 
-    case node_check(compiled, current, NebulaAPI.APIServer.runtime_mismatch_allowed?()) do
-      :ok -> :ok
-      {:error, c, r} -> raise node_mismatch_error(c, r)
+    case server_mode(compiled, current, NebulaAPI.APIServer.runtime_mismatch_allowed?()) do
+      :serve ->
+        NebulaAPI.APIServer.set_generic_mode(false)
+
+        children =
+          opts
+          |> Keyword.fetch!(:app_module)
+          |> app_modules()
+          |> servable_modules()
+          |> Enum.map(&worker_child_spec/1)
+
+        Supervisor.init(children, strategy: :one_for_one)
+
+      {:noop, warning} ->
+        # Generic node: no workers, serves nothing. force_remote?/0 reads this so every
+        # locally-compiled body routes remote too.
+        NebulaAPI.APIServer.set_generic_mode(true)
+        Logger.warning(warning)
+        Supervisor.init([], strategy: :one_for_one)
+
+      {:exit, message} ->
+        raise message
     end
   end
 
   @doc false
-  # Pure decision (testable without a second VM):
-  def node_check(compiled, current, mismatch_allowed?) do
+  # The whole boot-time node policy, as a pure function (testable without a second VM).
+  #
+  #   compiled = the node this release was compiled as (nonode@nohost if built without --name)
+  #   current  = node() at boot
+  #   mismatch = ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1
+  #
+  # SERVE only when running as exactly the (real) node we were compiled for. Anything else is
+  # either a deliberate generic node (mismatch set → noop: serves nothing, every call remote)
+  # or a misconfiguration (no mismatch → refuse to boot, with an explanation).
+  def server_mode(compiled, current, mismatch) do
     cond do
-      is_nil(compiled) -> :ok
-      # Running as exactly the node it was compiled for — the happy path. (A nameless
-      # build must run as nonode@nohost: nonode == nonode lands here; a nameless build
-      # given a real name falls through and is refused — you're not "someone" on the net.)
-      current == compiled -> :ok
-      # Escape hatch, but ONLY for running a REAL build as the generic nonode@nohost
-      # (a quick prod console). A real build run as ANOTHER real node is incoherent and
-      # keeps crashing regardless of the env var.
-      current == :nonode@nohost and mismatch_allowed? -> :ok
-      true -> {:error, compiled, current}
+      # Older wiring (no recorded compiled node) — nothing to check, serve.
+      is_nil(compiled) -> :serve
+      current == compiled and current != :nonode@nohost -> :serve
+      mismatch -> {:noop, noop_warning(compiled, current)}
+      true -> {:exit, exit_message(compiled, current)}
     end
   end
 
-  defp node_mismatch_error(compiled, current) do
+  defp noop_warning(_compiled, :nonode@nohost) do
+    "NebulaAPI: running as nonode@nohost — generic node, no API server started. It serves " <>
+      "nothing and is disconnected from the cluster, so it makes no calls at all (inert)."
+  end
+
+  defp noop_warning(compiled, current) do
+    "NebulaAPI: running as #{inspect(current)}, which is not the node this release was " <>
+      "compiled for (#{inspect(compiled)}). Generic mode (ALLOW_RUNTIME_NEBULA_NODE_MISMATCH " <>
+      "is set): no API server started, this node serves nothing — every defapi call goes out " <>
+      "remotely to whoever does serve it."
+  end
+
+  defp exit_message(:nonode@nohost, :nonode@nohost) do
     """
-    NebulaAPI node mismatch — this release was compiled for #{inspect(compiled)} but is \
+    NebulaAPI: running as nonode@nohost.
+
+    This is a generic, out-of-cluster node — it serves nothing and can't make calls. If that
+    is what you want, start with ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1; otherwise give the
+    release a real node name (RELEASE_NODE=...).
+    """
+  end
+
+  defp exit_message(:nonode@nohost, current) do
+    """
+    NebulaAPI: this release was compiled WITHOUT a node name — node() was nonode@nohost at
+    compile time (did you forget --name on `mix compile`?) — but it is running as
+    #{inspect(current)}.
+
+    A nameless build has no routing baked in for #{inspect(current)} and refuses to boot.
+    Recompile with `--name #{current}` to run as that node, or set
+    ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1 to run it as a generic node that serves nothing.
+    """
+  end
+
+  defp exit_message(compiled, :nonode@nohost) do
+    """
+    NebulaAPI: this release was compiled for #{inspect(compiled)} but is running as
+    nonode@nohost (out of cluster).
+
+    Set ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1 to run it as a generic, inert node (serves
+    nothing, makes no calls), or give it its real name with RELEASE_NODE=#{compiled}.
+    """
+  end
+
+  defp exit_message(compiled, current) do
+    """
+    NebulaAPI node mismatch — this release was compiled for #{inspect(compiled)} but is
     running as #{inspect(current)}.
 
-    NebulaAPI bakes routing in per node at compile time, so a release MUST run as the node \
-    it was compiled for. Make the compile-time `--name` and the runtime `RELEASE_NODE` \
-    agree (and `RELEASE_DISTRIBUTION=name` for fully-qualified names).
+    NebulaAPI bakes routing in per node at compile time, so a release must run as the node it
+    was compiled for. Fix RELEASE_NODE (and RELEASE_DISTRIBUTION=name for fully-qualified
+    names), or set ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1 to run as a generic node that serves
+    nothing and routes every call remotely.
     """
   end
 

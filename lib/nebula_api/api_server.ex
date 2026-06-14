@@ -110,13 +110,28 @@ defmodule NebulaAPI.APIServer do
   end
 
   @doc false
-  # Escape hatch (env var `ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1`): lets a release compiled
-  # for a real node boot as `nonode@nohost` (a quick prod console) and keep its baked-in
-  # local routing, instead of crashing on the node mismatch and routing everything remote.
-  # It only ever relaxes the `nonode@nohost` case — a real build run as another real node
-  # still refuses to boot (see NebulaAPI.Server.verify_node!/1).
+  # Escape hatch (env var `ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1`): lets a release boot under
+  # a node name that doesn't match the one it was compiled for, as a generic node that serves
+  # nothing (no workers) and routes every call remotely. Without it, a node mismatch — or
+  # running as `nonode@nohost` — is a hard boot error. See NebulaAPI.Server.server_mode/3.
   def runtime_mismatch_allowed? do
     System.get_env("ALLOW_RUNTIME_NEBULA_NODE_MISMATCH") == "1"
+  end
+
+  @generic_mode_key {NebulaAPI, :generic_mode}
+
+  @doc false
+  # Set once at boot by NebulaAPI.Server: true when this node is in generic mode (serves
+  # nothing). The generated routers read it to force every call remote.
+  def set_generic_mode(bool) when is_boolean(bool) do
+    :persistent_term.put(@generic_mode_key, bool)
+  end
+
+  @doc false
+  # Consulted by every locally-resolved defapi call: a generic node (or any node running as
+  # nonode@nohost) routes the call remotely instead of running the local body.
+  def force_remote? do
+    node() == :nonode@nohost or :persistent_term.get(@generic_mode_key, false)
   end
 
   def register_local_method_worker(module, method, worker_pid) do
