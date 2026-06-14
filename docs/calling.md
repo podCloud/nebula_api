@@ -115,6 +115,16 @@ literal, an impossible combination like `at_least:` with a non-`:quorum` strateg
 predicate with `strategy: :all`). Dynamic values defer to runtime, raising the same
 `ArgumentError`.
 
+**The default quorum counts the nodes *currently serving the method*, not your configured
+replicas.** `n` is how many workers are connected and registered for the method right now, so
+`div(n, 2) + 1` shifts with the live set: 1 node → 1, 2 or 3 → 2, 4 or 5 → 3, 6 or 7 → 4, and
+so on. That means a single connected node *does* satisfy the default quorum (it's a majority
+of one), and two sides of a network partition can each reach "their" majority independently.
+When you need a quorum pinned to a fixed replica count — a real durability guarantee — pass
+`at_least:` explicitly (e.g. `at_least: 2` for 3 replicas); if fewer workers than that are
+reachable, the call fails fast with `:quorum_unreachable` rather than silently shrinking the
+quorum.
+
 ### `call_on_all_nodes` — broadcast
 
 The named alias of the selector-less `call_on_nodes` form: every node that **serves the

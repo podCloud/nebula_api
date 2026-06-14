@@ -107,10 +107,16 @@ Defaults applied by every `use NebulaAPI`:
 | Key | Type | Meaning |
 |-----|------|---------|
 | `self_node` | atom | The node to build for, when not starting the VM with `--name` (dev/test). |
-| `max_concurrent_calls` | positive integer or `:infinity` | Inherited cap on a module's concurrent remote calls; `1` gives strict serialization. |
+| `max_concurrent_calls` | positive integer or `:infinity` | Cap on how many calls a module's worker runs at once on this node; `1` gives strict serialization. |
 | `default_timeout` | positive integer (ms) | Inherited default remote-call timeout. |
 
 A module's own `use NebulaAPI, ...` options override these.
+
+`max_concurrent_calls` is a **server-side** cap: it bounds how many calls the module's worker
+executes concurrently *on the node serving them*, not how many a caller may have in flight.
+Calls over the cap **queue on the worker** until a slot frees — but the queue entry is tied to
+the caller's lifetime, so if a queued call times out (or the caller goes away) before a slot
+opens, it is dropped and **may never run**. `:infinity` (the default) means no cap.
 
 ```elixir
 config :nebula_api,
