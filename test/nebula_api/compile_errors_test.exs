@@ -25,9 +25,15 @@ defmodule NebulaAPI.CompileErrorsTest do
   end
 
   describe "invalid selectors (M5)" do
-    test "a selector that is neither @/&/!/list/:* raises a clear CompileError" do
+    test "a selector that is neither @/&/!/list raises a clear CompileError" do
       assert_raise CompileError, ~r/invalid nebula selector/i, fn ->
         Parser.parse_nebula_ast(ast("42"))
+      end
+    end
+
+    test ":* is no longer a selector (removed in 0.5 — omit the selector to mean all nodes)" do
+      assert_raise CompileError, ~r/invalid nebula selector/i, fn ->
+        Parser.parse_nebula_ast(ast(":*"))
       end
     end
 
@@ -60,8 +66,8 @@ defmodule NebulaAPI.CompileErrorsTest do
     # [] selects no node, so nothing could ever run — it used to silently
     # select every CONFIGURED node (the empty parse passed through every
     # Config filter). Now it fails the build everywhere a selector is
-    # accepted; :* says "all nodes", omitting the selector says "no
-    # restriction" in call_on_*.
+    # accepted. To run on every node, omit the selector entirely (defapi);
+    # in call_on_*, omitting the selector means "no restriction".
 
     test "the parser rejects [] directly" do
       assert_raise CompileError, ~r/empty nebula selector/i, fn ->

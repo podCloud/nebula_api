@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **Breaking: the `:*` selector is gone.** To make a `defapi` body run on every node,
+  **omit the selector entirely** — `defapi name(args) do ... end` — the same way
+  `call_on_nodes`/`call_on_all_nodes` with no selector means "everyone". `:*` was visually
+  unlike every other selector and added a special case; "no selector = all nodes" is the
+  natural reading. `defapi :*, f()` now raises a `CompileError`.
+
 ### Fixed
 - **Canonical space-juxtaposed multi-selectors now compile in `defapi` and
   `call_on_node` / `call_on_nodes`.** The canonical NebulaAPI syntax juxtaposes

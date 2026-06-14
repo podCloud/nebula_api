@@ -46,24 +46,26 @@ defmodule NebulaAPI.AST do
 
   ## Node Selectors
 
-  - `@node_name` - Specific node
-  - `&tag` - Nodes with tag
-  - `!@node_name` or `!&tag` - Negation
-  - `[...]` - List of selectors
-  - `:*` - ALL nodes (local implementation on every node)
+  Selectors are juxtaposed by a space (never commas, never a `[list]`):
+
+  - `@node` - specific node (short or full name)
+  - `&tag` - nodes with the tag
+  - `!@node` / `!&tag` - negation
+  - `@a &b` - combine by juxtaposition (e.g. `@worker &gpu`)
+  - *(no selector)* - the body runs on every node (local everywhere)
 
   ## Examples
 
-      defapi [@api], get_user(id) do
+      defapi @api, get_user(id) do
         Repo.get(User, id)
       end
 
-      defapi [&db, !@worker], find_podcast(slug) do
+      defapi &db !@worker, find_podcast(slug) do
         MyApp.Repo.find_one(:db, "records", %{identifier: slug})
       end
 
-      defapi :*, node_health_data() do
-        # Available on ALL nodes, each returns its own data
+      # No selector → available on every node, each returns its own data.
+      defapi get_node_health() do
         collect_runtime_info()
       end
   """
@@ -88,24 +90,32 @@ defmodule NebulaAPI.AST do
     end
   end
 
-  # Canonical multi-selector with a `do ... end` BLOCK — `defapi &db !@backup, get(id) do`.
-  # Here the block is a separate arg (arity 2); only the signature is folded into the
-  # chain, so peel_chain/1 returns it as the single absorbed item.
-  defmacro defapi(selectors_with_signature, do: do_fn) do
-    case peel_chain(selectors_with_signature) do
-      {nebula_ast, [fn_ast]} ->
-        expand_defapi(nebula_ast, fn_ast, do_fn, __CALLER__)
+  # Arity 2 covers two shapes:
+  #   * NO selector — `defapi name(args) do ... end` — the body runs on EVERY node
+  #     (the signature is arg0; there is no selector at all).
+  #   * a `do ... end` BLOCK multi-selector — `defapi &db !@backup, get(id) do` — where the
+  #     signature got folded into the selector chain (peel_chain/1 lifts it back out).
+  defmacro defapi(selector_or_signature, do: do_fn) do
+    if selector_head?(selector_or_signature) do
+      case peel_chain(selector_or_signature) do
+        {nebula_ast, [fn_ast]} ->
+          expand_defapi(nebula_ast, fn_ast, do_fn, __CALLER__)
 
-      {_clean, _} ->
-        raise CompileError,
-          line: __CALLER__.line,
-          file: __CALLER__.file,
-          description: """
-          defapi is missing a function signature.
+        {_clean, _} ->
+          raise CompileError,
+            line: __CALLER__.line,
+            file: __CALLER__.file,
+            description: """
+            defapi is missing a function signature.
 
-          Expected: defapi <selectors>, name(args) do ... end
-          Selectors are juxtaposed by a space, e.g. `defapi &db !@backup, get(id) do ... end`.
-          """
+            Expected: defapi <selectors>, name(args) do ... end — or omit the selectors
+            entirely to run on every node (`defapi name(args) do ... end`). Selectors are
+            juxtaposed by a space.
+            """
+      end
+    else
+      # No selector at all → the body is local on every node.
+      expand_defapi(:all, selector_or_signature, do_fn, __CALLER__)
     end
   end
 
@@ -116,35 +126,7 @@ defmodule NebulaAPI.AST do
   end
 
   defp expand_defapi(nebula_ast, fn_ast, do_fn, caller) do
-    parsed = nebula_ast |> NebulaAPI.AST.Parser.parse_nebula_ast()
-
-    # If all_nodes is true, skip execution node filtering
-    is_current_node =
-      if parsed.all_nodes do
-        true
-      else
-        execution_nodes = nebula_ast |> get_execution_nodes_from_nebula_ast!()
-
-        self_node =
-          case Module.get_attribute(caller.module, :nebula_api) do
-            nil ->
-              raise CompileError,
-                description: """
-                defapi used in #{inspect(caller.module)} without `use NebulaAPI`.
-
-                Only `use NebulaAPI` registers the bookkeeping defapi needs. Use it on
-                modules that define defapi endpoints — `use NebulaAPI.AST` is for
-                on_nebula_nodes / call_on_* only.
-                """
-
-            opts ->
-              Keyword.fetch!(opts, :self_node)
-          end
-
-        execution_nodes
-        |> Keyword.keys()
-        |> Enum.member?(self_node)
-      end
+    is_current_node = defapi_local?(nebula_ast, caller)
 
     fundef = fn_ast |> NebulaAPI.AST.Parser.parse_fundef_ast()
 
@@ -171,6 +153,45 @@ defmodule NebulaAPI.AST do
     e in CompileError ->
       raise %{e | line: caller.line, file: caller.file}
   end
+
+  # `:all` is the no-selector form — the body is local on every node.
+  defp defapi_local?(:all, caller) do
+    # Still require `use NebulaAPI` for the bookkeeping defapi relies on.
+    _ = fetch_self_node!(caller)
+    true
+  end
+
+  defp defapi_local?(nebula_ast, caller) do
+    self_node = fetch_self_node!(caller)
+
+    nebula_ast
+    |> get_execution_nodes_from_nebula_ast!()
+    |> Keyword.keys()
+    |> Enum.member?(self_node)
+  end
+
+  defp fetch_self_node!(caller) do
+    case Module.get_attribute(caller.module, :nebula_api) do
+      nil ->
+        raise CompileError,
+          description: """
+          defapi used in #{inspect(caller.module)} without `use NebulaAPI`.
+
+          Only `use NebulaAPI` registers the bookkeeping defapi needs. Use it on
+          modules that define defapi endpoints — `use NebulaAPI.AST` is for
+          on_nebula_nodes / call_on_* only.
+          """
+
+      opts ->
+        Keyword.fetch!(opts, :self_node)
+    end
+  end
+
+  # A selector chain head: `&tag`, `@node`, `!...`, or a `[...]` list. Anything else
+  # in selector position (a `name(args)` signature) means the no-selector form.
+  defp selector_head?({op, _, _}) when op in [:&, :@, :!], do: true
+  defp selector_head?(list) when is_list(list), do: true
+  defp selector_head?(_), do: false
 
   @doc """
   Conditional compilation based on node.
@@ -732,12 +753,12 @@ defmodule NebulaAPI.AST do
     {{name, meta, [clean_cont]}, absorbed ++ deeper}
   end
 
-  # Anything that isn't a selector chain head (a [list], :*, a function selector,
-  # a variable, a bare opts list): nothing to peel.
+  # Anything that isn't a selector chain head (a [list], a function selector,
+  # a variable, a bare opts list, a no-selector signature): nothing to peel.
   defp peel_chain(other), do: {other, []}
 
   # Only peel actual selector chain heads (@/&/!); leave function selectors,
-  # lists, :* and opts-only lists untouched.
+  # lists and opts-only lists untouched.
   defp maybe_peel_chain({op, _, _} = selector) when op in [:&, :@, :!], do: peel_chain(selector)
   defp maybe_peel_chain(selector), do: {selector, []}
 
@@ -774,7 +795,7 @@ defmodule NebulaAPI.AST do
   end
 
   # Build a selector function from either a Nebula AST expression or a function.
-  # The is_nebula_ast? guard already disambiguates: @/&/!/list/:* shapes are
+  # The is_nebula_ast? guard already disambiguates: @/&/!/list shapes are
   # nebula selectors (a function never has these shapes), so any parse or
   # validation failure behind it IS an invalid selector — fail at compile time,
   # at the call site. Node selectors are compile-time by design; runtime
@@ -826,7 +847,6 @@ defmodule NebulaAPI.AST do
   defp is_nebula_ast?({:&, _, _}), do: true
   defp is_nebula_ast?({:!, _, _}), do: true
   defp is_nebula_ast?(list) when is_list(list), do: true
-  defp is_nebula_ast?(:*), do: true
   defp is_nebula_ast?(_), do: false
 
   defp get_execution_nodes_from_nebula_ast!(ast) do

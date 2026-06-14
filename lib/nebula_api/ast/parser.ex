@@ -6,21 +6,21 @@ defmodule NebulaAPI.AST.Parser do
   end
 
   defp nebula_ast(ast) do
-    %{tags: [], not_tags: [], nodes: [], not_nodes: [], all_nodes: false, __unparsed: ast}
+    %{tags: [], not_tags: [], nodes: [], not_nodes: [], __unparsed: ast}
   end
 
   # [] selects no node, so nothing could ever run: reject it at compile time
   # everywhere a selector is accepted (defapi, on_nebula_nodes, call_on_*).
-  # "All nodes" is spelled :*; "no restriction" in call_on_node/call_on_nodes
-  # is spelled by omitting the selector entirely.
+  # To run on every node, omit the selector entirely — `defapi name(args) do`;
+  # likewise call_on_node/call_on_nodes with no selector means "no restriction".
   defp extract_nebula_config(%{__unparsed: []}) do
     raise CompileError,
       description: """
       Empty nebula selector: [] selects no node, so nothing could ever run.
 
-      Use :* to target all nodes, or list at least one @node / &tag. In
-      call_on_node / call_on_nodes, omit the selector entirely to mean
-      "no restriction".
+      To run on every node, omit the selector entirely — `defapi name(args) do ... end`.
+      Otherwise list at least one @node / &tag. In call_on_node / call_on_nodes,
+      omitting the selector means "no restriction".
       """
   end
 
@@ -32,12 +32,8 @@ defmodule NebulaAPI.AST.Parser do
         ast
         |> nebula_ast()
         |> extract_nebula_config()
-        |> Map.merge(config, fn
-          # Handle boolean fields (all_nodes) - use OR
-          _k, v1, v2 when is_boolean(v1) and is_boolean(v2) -> v1 or v2
-          # Handle list fields - concatenate
-          _k, v1, v2 -> v1 ++ v2
-        end)
+        # All fields are lists (tags/not_tags/nodes/not_nodes) — concatenate.
+        |> Map.merge(config, fn _k, v1, v2 -> v1 ++ v2 end)
     end)
     |> Map.delete(:__unparsed)
   end
@@ -86,11 +82,6 @@ defmodule NebulaAPI.AST.Parser do
     %{config | nodes: config.nodes ++ [node]} |> Map.delete(:__unparsed)
   end
 
-  # Handle :* marker for "all nodes"
-  defp extract_nebula_config(config = %{__unparsed: :*}) do
-    %{config | all_nodes: true} |> Map.delete(:__unparsed)
-  end
-
   # Anything else is not a valid selector: fail with a clear compile-time message
   # instead of an opaque FunctionClauseError from this module.
   defp extract_nebula_config(%{__unparsed: other}) do
@@ -103,8 +94,8 @@ defmodule NebulaAPI.AST.Parser do
         - &tag / !&tag            (capability tag)
         - @:"node@host"           (full node name as an atom)
         - [..]                    (a list combining the above)
-        - :*                      (all nodes)
 
+      To run on every node, omit the selector entirely (`defapi name(args) do ... end`).
       Dynamic selection (a variable, or a function receiving nodes_info) only
       works in call_on_node / call_on_nodes — defapi and on_nebula_nodes are
       resolved statically at compile time.

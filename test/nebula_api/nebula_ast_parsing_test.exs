@@ -134,15 +134,34 @@ defmodule NebulaAPI.NebulaAstParsingTest do
       assert mod.get(9) == {:got, 9}
     end
 
-    test ":* — every node gets a local copy" do
+    test "no selector — runs on every node (local everywhere)" do
       mod =
-        compile_module!("DefapiStar", """
-        defapi :*, ping() do
+        compile_module!("DefapiNoSelector", """
+        defapi ping() do
           :pong
         end
         """)
 
       assert mod.ping() == :pong
+    end
+
+    test "no selector, with args and inline do:" do
+      mod =
+        compile_module!("DefapiNoSelectorInline", """
+        defapi echo(x), do: x
+        """)
+
+      assert mod.echo(42) == 42
+    end
+
+    test ":* is no longer a valid selector" do
+      assert_raise CompileError, fn ->
+        compile_module!("DefapiStarGone", """
+        defapi :*, ping() do
+          :pong
+        end
+        """)
+      end
     end
 
     test "[list] form still compiles — but it is NOT the canonical syntax" do
