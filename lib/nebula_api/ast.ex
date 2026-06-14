@@ -274,15 +274,16 @@ defmodule NebulaAPI.AST do
   @doc """
   Unicast call - execute API calls on a specific node.
 
-  The selector can be either:
+  The selector must be written literally at the call site — one of:
   - A Nebula AST expression (like `@api`, `&db`)
-  - A function that receives nodes_info map and returns a single node atom
+  - A literal function that receives the nodes_info map and returns a single node atom
+  - Omitted (the options-only form, or a literal `nil`) — "no restriction": the call routes
+    to the first available worker, with the block's options still applying.
 
-  The selector may also be a runtime expression. When it evaluates to `nil`,
-  it means "no restriction": the call routes to the first available worker,
-  with the block's options still applying. Distinct from that, a selector
-  *function* that returns `nil` means "nothing matched" — the call fails with
-  `{:nebula_error, {:no_worker_on_node, nil}}`, it never widens the target.
+  A variable or computed selector is a compile error (branch in Elixir and write a separate
+  `call_on_*` per case). Distinct from omitting it, a selector *function* that returns `nil`
+  means "nothing matched" — the call fails with `{:nebula_error, {:no_worker_on_node, nil}}`,
+  it never widens the target.
 
   Inside the block, the innermost explicit routing wins: a call carrying its
   own truthy `node_selector:`/`multicast:` trailing opts routes itself (the
@@ -356,6 +357,7 @@ defmodule NebulaAPI.AST do
 
   defp do_call_on_node(selector_or_nebula_ast, opts, block, caller) do
     {selector_or_nebula_ast, opts} = absorb_trailing_opts(selector_or_nebula_ast, opts)
+    validate_literal_selector!(selector_or_nebula_ast, caller)
     validate_static_opts!(opts, :unicast, caller)
     selector = build_selector(selector_or_nebula_ast, :unicast, caller)
 
@@ -394,17 +396,18 @@ defmodule NebulaAPI.AST do
   @doc """
   Multicast call - execute API calls on multiple nodes.
 
-  The selector can be either:
+  The selector must be written literally at the call site — one of:
   - A Nebula AST expression (like `@api`, `&db`) - all matching nodes
-  - A function that receives nodes_info map and returns a list of node atoms
+  - A literal function that receives the nodes_info map and returns a list of node atoms
+  - Omitted (the options-only form, or a literal `nil`) — "no restriction": the call fans out
+    to every node serving the method (like `call_on_all_nodes`), with the block's options
+    still applying.
 
-  The selector may also be a runtime expression. When it evaluates to `nil`,
-  it means "no restriction": the call fans out to every node serving the
-  method (like `call_on_all_nodes`), with the block's options still applying.
-  Distinct from that, a selector *function* that returns `nil` or `[]` means
-  "nothing matched" — zero calls are made (`:all` returns `[]`, `:first`
-  returns `{:nebula_error, :no_success, []}`, `:quorum` fails
-  `:quorum_unreachable`); it never widens the target.
+  A variable or computed selector is a compile error (branch in Elixir and write a separate
+  `call_on_*` per case). Distinct from omitting it, a selector *function* that returns `nil`
+  or `[]` means "nothing matched" — zero calls are made (`:all` returns `[]`, `:first`
+  returns `{:nebula_error, :no_success, []}`, `:quorum` fails `:quorum_unreachable`); it never
+  widens the target.
 
   Inside the block, the innermost explicit routing wins: a call carrying its
   own truthy `node_selector:`/`multicast:` trailing opts routes itself (the
@@ -473,6 +476,7 @@ defmodule NebulaAPI.AST do
 
   defp do_call_on_nodes(selector_or_nebula_ast, opts, block, caller) do
     {selector_or_nebula_ast, opts} = absorb_trailing_opts(selector_or_nebula_ast, opts)
+    validate_literal_selector!(selector_or_nebula_ast, caller)
     validate_static_opts!(opts, :multicast, caller)
     opts = enforce_fn_selector_quorum!(selector_or_nebula_ast, opts, caller)
     selector = build_selector(selector_or_nebula_ast, :multicast, caller)
@@ -568,26 +572,17 @@ defmodule NebulaAPI.AST do
   # is the no-restriction form (the method's own configured set), a variable defers to
   # runtime (it may evaluate to nil), and an @/&/! selector is static.
   defp enforce_fn_selector_quorum!(selector, opts, caller) do
-    if match?({:fn, _, _}, selector) do
-      cond do
-        Keyword.get(opts, :quorum) == :configured ->
-          compile_error!(
-            caller,
-            "quorum: :configured can't be used with a function selector — a runtime " <>
-              "function has no static configured set to take a majority of. Use " <>
-              "quorum: :available (or at_least:) with a function selector."
-          )
-
-        Keyword.get(opts, :quorum) == nil and
-            static_value(opts, :strategy) == {:literal, :quorum} ->
-          Keyword.put(opts, :quorum, :available)
-
-        true ->
-          opts
-      end
-    else
-      opts
+    if match?({:fn, _, _}, selector) and static_value(opts, :strategy) == {:literal, :quorum} and
+         Keyword.get(opts, :quorum) != :available and not opt_present?(opts, :at_least) do
+      compile_error!(
+        caller,
+        "a function selector with strategy: :quorum can't use the :configured quorum (the " <>
+          "default) — a runtime function has no static configured set to take a majority of. " <>
+          "Pass quorum: :available, or at_least: n."
+      )
     end
+
+    opts
   end
 
   # Compile-time validation of the call_on_* block options. The macros receive
@@ -600,12 +595,20 @@ defmodule NebulaAPI.AST do
   # nil-means-"not set" convention applies. A whole-opts variable
   # (`call_on_node sel, my_opts do`) skips this entirely for the same reason.
   defp validate_static_opts!(opts, mode, caller) do
-    if Keyword.keyword?(opts) do
-      keys = opts |> Keyword.keys() |> Enum.uniq()
-      validate_static_keys!(keys, mode, caller)
-      validate_static_values!(opts, caller)
-      if mode == :multicast, do: validate_static_combos!(opts, caller)
+    unless Keyword.keyword?(opts) do
+      compile_error!(
+        caller,
+        "call_on_* options must be a literal keyword list (e.g. strategy: :quorum, " <>
+          "timeout: 100) — a variable or computed opts list isn't allowed. Individual " <>
+          "values may be dynamic (timeout: t), but the option keys must be visible at " <>
+          "compile time. Branch in Elixir and write a separate call_on_* per case."
+      )
     end
+
+    keys = opts |> Keyword.keys() |> Enum.uniq()
+    validate_static_keys!(keys, mode, caller)
+    validate_static_values!(opts, caller)
+    if mode == :multicast, do: validate_static_combos!(opts, caller)
 
     :ok
   end
@@ -676,6 +679,13 @@ defmodule NebulaAPI.AST do
     end
 
     case static_value(opts, :strategy) do
+      :dynamic ->
+        compile_error!(
+          caller,
+          "strategy: must be one of #{inspect(@valid_strategies)} given literally — " <>
+            "a runtime value isn't allowed (branch in Elixir and write a separate call_on_*)"
+        )
+
       {:literal, s} when not is_nil(s) and s not in @valid_strategies ->
         compile_error!(
           caller,
@@ -698,6 +708,13 @@ defmodule NebulaAPI.AST do
     end
 
     case static_value(opts, :quorum) do
+      :dynamic ->
+        compile_error!(
+          caller,
+          "quorum: must be one of #{inspect(@valid_quorum_modes)} given literally — " <>
+            "a runtime value isn't allowed (branch in Elixir and write a separate call_on_*)"
+        )
+
       {:literal, m} when not is_nil(m) and m not in @valid_quorum_modes ->
         compile_error!(
           caller,
@@ -865,6 +882,26 @@ defmodule NebulaAPI.AST do
           Malformed call_on_* call. Expected a do block, e.g.
           `call_on_nodes &db !@backup, strategy: :all do ... end` (selectors juxtaposed by a space).
           """
+    end
+  end
+
+  # Selectors must be written literally at the call site: a static nebula
+  # selector (@/&/!/list), a literal `fn`, or omitted (nil). A variable or any
+  # computed expression is refused — branch in plain Elixir and write a separate
+  # call_on_* per case. Keeping the selector statically visible is what lets the
+  # quorum denominator be decided at compile time (see enforce_fn_selector_quorum!).
+  defp validate_literal_selector!(selector, caller) do
+    cond do
+      is_nil(selector) -> :ok
+      is_nebula_ast?(selector) -> :ok
+      match?({:fn, _, _}, selector) -> :ok
+      true ->
+        compile_error!(
+          caller,
+          "call_on_* selectors must be written literally (a &tag/@node selector, a literal " <>
+            "fn, or none) — a variable or computed selector isn't allowed. Branch in Elixir " <>
+            "and write a separate call_on_* per case."
+        )
     end
   end
 

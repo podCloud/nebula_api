@@ -89,13 +89,13 @@ end)
 the target node in a fresh process, so calls *inside the body* route by their own defaults —
 the caller's block doesn't leak into them.
 
-## `nil` selector vs a selector that returns `nil`
+## No selector vs a selector function that returns `nil`
 
-The selector argument may be a runtime expression. The two `nil`s mean opposite things:
+Two things that look alike mean opposite things:
 
-- A selector expression that **evaluates to `nil`** means *"no restriction"*: unicast routes
-  to the first available worker; multicast fans out to every node serving the method. The
-  block's options still apply.
+- **Omitting the selector** (the options-only form, `call_on_node timeout: 100 do …`, or a
+  literal `nil`) means *"no restriction"*: unicast routes to the first available worker;
+  multicast fans out to every node serving the method. The block's options still apply.
 - A selector **function that returns `nil`** (or `[]`) means *"nothing matched"*: the call
   fails (`{:nebula_error, {:no_worker_on_node, nil}}` for unicast; `:all` returns `[]`,
   `:first` returns `{:nebula_error, :no_success, []}`, `:quorum` fails

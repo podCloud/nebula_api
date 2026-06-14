@@ -111,9 +111,11 @@ Selectors use the canonical space-juxtaposed syntax here too
 | `success` | `fn value -> boolean` | a worker that *responded* | what counts as success for `:first` / `:quorum` |
 | `failure` | `fn value -> boolean` | — | mirror of `success`; a matching value is a non-success |
 
-Everything statically visible is validated at compile time (an unknown key, a malformed
-literal, an impossible combination like `at_least:` with a non-`:quorum` strategy, or a
-predicate with `strategy: :all`). Dynamic values defer to runtime, raising the same
+The options must be a literal keyword list, and `strategy:`/`quorum:` literal atoms (a dynamic
+one is a compile error) — so every combination is statically visible and validated at compile
+time (an unknown key, a malformed literal, an impossible combination like `at_least:` with a
+non-`:quorum` strategy, or a predicate with `strategy: :all`). Other *values* may still be
+dynamic (`timeout: t`, `success: &pred/1`); those defer to runtime, raising the same
 `ArgumentError`.
 
 **What the default quorum is a majority *of*.** A quorum needs a fixed set to take a majority
@@ -131,8 +133,12 @@ Two ways out of the configured majority:
   is "most of whoever is up", not a durability quorum: under a partition each side can reach it.
 - **`at_least: n`** — an exact count, no majority arithmetic. Mutually exclusive with `quorum:`.
 
-A **function selector** chooses its set at runtime, so it has no static configured set: it forces
-`quorum: :available`, and `quorum: :configured` with a function selector is a compile error.
+A **function selector** chooses its set at runtime, so it has no static configured set. With
+`strategy: :quorum` it must therefore say how to count explicitly — `quorum: :available` or
+`at_least: n`; `:configured` (including the default) is a compile error, with no silent
+downgrade. (The selector itself must be written literally at the call site — a `&tag`/`@node`
+selector, a literal `fn`, or none. A variable or computed selector is a compile error too;
+branch in Elixir and write a separate `call_on_*` per case.)
 
 ### `call_on_all_nodes` — broadcast
 

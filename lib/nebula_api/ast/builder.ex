@@ -68,10 +68,12 @@ defmodule NebulaAPI.AST.Builder do
         # The method's CONFIGURED serving set (resolved from the defapi selector at
         # compile time, identical on every build) rides along as a hidden opt so a
         # quorum: :configured call knows its denominator without any runtime lookup.
+        # The stub's set is authoritative — Keyword.put overwrites any caller-supplied
+        # value, so a quorum can't be silently shrunk from the call site.
         NebulaAPI.APIServer.call_remote_method(
           __MODULE__,
           unquote(build_remote_function_call(fn_name, fn_args)),
-          Keyword.put_new(
+          Keyword.put(
             unquote(routing_opts_var),
             :__method_configured_nodes,
             unquote(serving_nodes)

@@ -57,23 +57,10 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
 
       alias NebulaAPI.GeneratedFunctionsTest.LocalOptsMod
 
-      def unicast(sel) do
-        call_on_node sel, timeout: 100 do
-          LocalOptsMod.echo(41)
-        end
-      end
-
-      # The bad timeout arrives through a VARIABLE: a literal one is rejected
-      # at compile time (see compile_errors_test), a dynamic one must keep
-      # raising through the runtime backstop.
-      def unicast_bad_timeout(sel, t) do
-        call_on_node sel, timeout: t do
-          LocalOptsMod.echo(41)
-        end
-      end
-
-      def quorum(sel) do
-        call_on_nodes sel, strategy: :quorum, at_least: 2, timeout: 100 do
+      # Literal fn selector (the only non-static selector still allowed): returns
+      # this node; no worker serves echo/1 → the no_worker_on_node shape.
+      def unicast_fn_self do
+        call_on_node fn _nodes_info -> node() end, timeout: 100 do
           LocalOptsMod.echo(41)
         end
       end
@@ -107,14 +94,6 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
       def all_nodes_alias do
         call_on_all_nodes timeout: 500 do
           LocalOptsMod.echo_served(41)
-        end
-      end
-
-      # A whole-opts variable is invisible to the static validation: the
-      # runtime backstop must still reject what it carries.
-      def unicast_dynamic_opts(opts) do
-        call_on_node nil, opts do
-          LocalOptsMod.echo(41)
         end
       end
 
@@ -309,29 +288,10 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
     # selector fell through to the default branch — the call ran locally and
     # every context opt was silently dropped.
 
-    test "call_on_node nil still routes through the context, opts applied" do
-      assert {:nebula_error, {:no_worker, _}} = CtxCaller.unicast(nil)
-    end
-
-    test "context opts are validated even with a nil selector" do
-      assert_raise ArgumentError, ~r/timeout/, fn ->
-        CtxCaller.unicast_bad_timeout(nil, :infinity)
-      end
-    end
-
-    test "call_on_nodes nil multicasts to every serving node, opts applied" do
-      # Zero workers serve echo/1, so a REAL multicast quorum is unreachable —
-      # before the fix this returned 41: a quorum write silently degraded to a
-      # local call.
-      assert {:nebula_error, :quorum_unreachable, %{workers: 0, required: 2}} =
-               CtxCaller.quorum(nil)
-    end
-
-    test "a non-nil selector keeps its meaning" do
+    test "a literal fn selector keeps its meaning" do
       target = node()
 
-      assert {:nebula_error, {:no_worker_on_node, ^target}} =
-               CtxCaller.unicast(fn _nodes_info -> target end)
+      assert {:nebula_error, {:no_worker_on_node, ^target}} = CtxCaller.unicast_fn_self()
     end
   end
 
@@ -360,15 +320,6 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
     test "options-only opts are validated like any call opts" do
       assert_raise ArgumentError, ~r/timeout/, fn ->
         CtxCaller.unicast_opts_only_bad_timeout(:infinity)
-      end
-    end
-
-    test "a dynamic opts list still hits the runtime backstop (unknown key)" do
-      # A whole-opts variable is invisible to the macro's static validation —
-      # the closed-set runtime check refuses it instead of silently routing
-      # with defaults.
-      assert_raise ArgumentError, ~r/unknown call option/, fn ->
-        CtxCaller.unicast_dynamic_opts(bogus: 1)
       end
     end
 

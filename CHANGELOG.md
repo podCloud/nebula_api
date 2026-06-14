@@ -19,9 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     config-derived and identical on every build.
   - `:available` — a majority of the connected workers (`div(present, 2) + 1`), the previous
     behaviour; "most of whoever is up", not a durability quorum.
-  - A **function selector** forces `:available` (no static set); `quorum: :configured` with a
-    function selector is a compile error. `at_least:` (an exact count) is mutually exclusive
-    with `quorum:`.
+  - A **function selector** with `strategy: :quorum` must state its count explicitly —
+    `quorum: :available` or `at_least: n`; `:configured` (the default) is a compile error, since
+    a runtime function has no static set to take a majority of (no silent downgrade). `at_least:`
+    (an exact count) is mutually exclusive with `quorum:`.
 - **Boot-time node policy.** NebulaAPI bakes routing in per node at compile time, so a
   release must run as the node it was compiled for. `nebula_api_server()` records the
   compile-time node; `NebulaAPI.Server` decides at boot (`server_mode/3`):
@@ -45,6 +46,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nameless build explicitly. `nonode@nohost` may also **never** be listed in
   `config :nebula_api, :nodes` directly (reserved identity — doing so raises); the flag is
   the only way to admit it, always empty.
+
+### Changed
+- **BREAKING: juxtaposed positive tags `&a &b` now mean intersection (AND), not union (OR).**
+  `&a &b` matches nodes carrying *both* tags, consistent with `@n &t`, `&t !&u` and `!&a !&b`
+  (all of which narrow). Express a union by giving both node groups a shared tag in config and
+  selecting that. A combination that matches no node is a `CompileError`
+  (`No nodes found for execution`), so an over-broad reliance on the old OR surfaces at build.
+- **BREAKING: `call_on_*` arguments must be literal at the call site.** The selector must be a
+  `&tag`/`@node` selector, a literal `fn`, or omitted; the options must be a literal keyword
+  list with literal `strategy:`/`quorum:` atoms (individual values like `timeout:` may still be
+  dynamic). A variable or computed selector or opts list is now a `CompileError` — branch in
+  plain Elixir and write a separate `call_on_*` per case. This removes the silent `:available`
+  downgrade for function selectors and makes the quorum denominator fully decidable at compile
+  time.
+- The method's configured quorum set (`:__method_configured_nodes`, baked into the generated
+  stub) is now authoritative: a caller can no longer override it from the call site to shrink a
+  quorum.
 
 ### Removed
 - **The wildcard selector is gone.** To make a `defapi` body run on every node, **omit the

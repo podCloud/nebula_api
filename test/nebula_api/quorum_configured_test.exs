@@ -86,11 +86,10 @@ defmodule NebulaAPI.QuorumConfiguredTest do
     end
   end
 
-  test "a function selector with strategy: :quorum defaults to :available (counts the chosen present workers)" do
-    # No explicit quorum: + a function selector → the macro forces :available, so
-    # the quorum is a majority of the workers the function picked that are present.
-    # The function returns nothing and nobody is present → required 1 > 0 present.
-    mod =
+  test "a function selector with strategy: :quorum needs an explicit quorum: :available or at_least:" do
+    # No silent downgrade: a runtime function has no static configured set, so
+    # the macro refuses :configured (the default) at compile time.
+    assert_raise CompileError, ~r/quorum: :available, or at_least/, fn ->
       compile!("QC_FnDefault", """
       defapi &replica, write(x), do: {:ok, x}
 
@@ -100,8 +99,38 @@ defmodule NebulaAPI.QuorumConfiguredTest do
         end
       end
       """)
+    end
+  end
 
-    assert {:nebula_error, :quorum_unreachable, %{workers: 0, required: 1}} = mod.run(:v)
+  test "a function selector with at_least: compiles and counts (no injected quorum conflict)" do
+    # I-3: at_least: is a valid escape; the macro must NOT inject quorum: :available
+    # (which would collide with at_least: at runtime). fn returns [] → 0 present,
+    # at_least 2 → required 2 > 0 → unreachable, no ArgumentError.
+    mod =
+      compile!("QC_FnAtLeast", """
+      defapi &replica, write(x), do: {:ok, x}
+
+      def run(x) do
+        call_on_nodes fn _info -> [] end, strategy: :quorum, at_least: 2 do
+          write(x)
+        end
+      end
+      """)
+
+    assert {:nebula_error, :quorum_unreachable, %{workers: 0, required: 2}} = mod.run(:v)
+  end
+
+  test "a caller can't shrink the quorum by passing __method_configured_nodes (builder uses put)" do
+    # M-1: 3 configured replicas → required 2. A spoofed set must be ignored;
+    # the generated stub's baked set always wins.
+    mod = compile!("QC_NoSpoof", "defapi &replica, write(x), do: {:ok, x}")
+
+    assert {:nebula_error, :quorum_unreachable, %{workers: 0, required: 2}} =
+             mod.write(:v,
+               multicast: true,
+               strategy: :quorum,
+               __method_configured_nodes: [:"probe@127.0.0.1"]
+             )
   end
 
   test "a direct :configured call without the method's set is a misuse and raises loud" do
