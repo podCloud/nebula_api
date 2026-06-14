@@ -270,6 +270,59 @@ transparent RPC everywhere else.
 If you'd rather replicate across several nodes (a quorum write, say), that's a
 [multicast call](#call_on_nodes--multicast), not a single-node wrapper.
 
+## Spawning a generic node: debug, or call anything remotely
+
+Sometimes you want a node that **serves nothing but can call everything** — a prod console,
+a remote shell, a one-off maintenance script. That's a [generic
+node](../README.md#generic-nodes-serve-nothing-call-everything): no workers, registers
+nothing in `:pg`, and every `defapi` call routes remote to whoever does serve it.
+
+The one hard requirement: it must be **distributed** — a real `name@host`. A
+`nonode@nohost` node is out of cluster (`Node.connect` is a no-op there), so it reaches no
+one; it's inert, useless for calling. Give it a name and the same cookie as the cluster, and
+it connects like any other node — it just never serves.
+
+**Best: a dedicated generic release.** Build one *for* this — compile with
+`allow_nonode_nohost: true` and **no** `--name`, so every `defapi` compiles as a pure remote
+stub (no local bodies, no server, the smallest possible binary):
+
+```elixir
+config :nebula_api, nodes: [ ...the real cluster... ], allow_nonode_nohost: true
+```
+```bash
+mix compile && mix release console   # no --name → a generic, server-less build
+```
+
+Then launch it under a real name. Because a nameless build given a name is a node mismatch
+(see [the boot policy](configuration.md#boot-time-node-policy)), you opt in with
+`ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1`:
+
+```bash
+docker compose run --rm \
+  -e RELEASE_NODE=console@10.0.0.9 -e RELEASE_DISTRIBUTION=name \
+  -e ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1 \
+  console bin/console remote
+```
+
+**Backup: repurpose any release.** No dedicated build on hand? Take whatever release you
+have (a `worker`, an `api`) and boot it under a name that isn't its compiled one, with the
+same env var. It still serves nothing and routes every call remote — you just carry the
+extra local bodies the build happens to contain:
+
+```bash
+docker compose run --rm \
+  -e RELEASE_NODE=console@10.0.0.9 -e RELEASE_DISTRIBUTION=name \
+  -e ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1 \
+  worker bin/worker remote
+```
+
+Either way, from the resulting shell every `defapi` call goes out over RPC:
+
+```elixir
+iex(console@10.0.0.9)> MyApp.Users.get(42)      # served on a :db node, reached remotely
+iex(console@10.0.0.9)> MyApp.Cache.invalidate(:all)
+```
+
 ## Next
 
 - [Gotchas](gotchas.md) — trailing opts, process scope, nesting, timeouts, common errors.

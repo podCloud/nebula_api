@@ -912,43 +912,36 @@ config :nebula_api,
 A release is normally tied to one node: it must run as the node it was compiled for (see
 [the boot policy](#4-compile-with-the-target-node-name)). A **generic node** is the
 exception — a node that serves nothing (no workers, registers nothing in `:pg`) and routes
-**every** `defapi` call remotely. Two ways to get one.
+**every** `defapi` call remotely. To actually reach the cluster it must be **distributed** (a
+real `name@host`); a `nonode@nohost` build can't join a cluster (`Node.connect` is a no-op
+there), so it stays **inert** — safe, but it calls no one. Two ways to get one:
 
-**1. A nameless build (`allow_nonode_nohost`).** Set the flag and compile **without**
-`--name`, so `node()` is `nonode@nohost`:
+**1. A dedicated server-less build (`allow_nonode_nohost`).** Set the flag and compile
+**without** `--name`, so `node()` is `nonode@nohost` and every `defapi` compiles as a pure
+remote stub — no local bodies, no server, the smallest binary:
 
 ```elixir
-config :nebula_api,
-  nodes: [ ...the real cluster nodes... ],
-  allow_nonode_nohost: true
+config :nebula_api, nodes: [ ...the real cluster nodes... ], allow_nonode_nohost: true
 ```
 ```bash
-mix compile && mix release client   # no --name → node() is nonode@nohost
+mix compile && mix release console   # no --name → a generic, server-less build
 ```
 
-The flag registers `nonode@nohost` as an empty, tagless node so the build compiles cleanly.
-At boot `nebula_api_server()` is a no-op and every call routes remote. A `nonode@nohost` node
-is **not** distributed, though — it can't join a cluster (`Node.connect` is a no-op there),
-so it's **inert** (its remote calls reach no one). Think "safe nameless build", not "client
-that calls the cluster". (You don't list `nonode@nohost` in `:nodes` yourself — it's
-reserved; the flag is the only way to admit it.)
+The flag registers `nonode@nohost` as an empty, tagless node so the build compiles cleanly
+(you can't list it in `:nodes` yourself — it's reserved; the flag is the only way to admit
+it). Run it as `nonode@nohost` and it's inert; launch it under a **real** name to make it a
+connected, calls-everything client.
 
-**2. Any build, with `ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1`.** Boot an existing release
-under a node name that *isn't* the one it was compiled for. Normally that's refused (the boot
-policy); with the env var it boots as a generic node instead — no server, serves nothing,
-all calls remote. Under a **real** name it's distributed, so it *can* reach the cluster — a
-quick prod console that calls the cluster but serves nothing:
+**2. Any build, repurposed.** No dedicated build on hand? Boot an existing release (a
+`worker`, an `api`) under a node name that *isn't* the one it was compiled for. It serves
+nothing and routes every call remote just the same — you only carry the extra local bodies
+that build happens to contain.
 
-```bash
-docker compose run --rm \
-  -e RELEASE_NODE=console@10.0.0.9 -e RELEASE_DISTRIBUTION=name \
-  -e ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1 \
-  worker bin/worker remote
-```
-
-(Point it at `nonode@nohost` instead and it boots the same way but stays inert/out of
-cluster.) Keep `allow_nonode_nohost` in the build that wants it, not the shared cluster
-config — your real nodes don't need it.
+Either way, launching under a name that isn't the compiled one is a node mismatch, so you opt
+in with `ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1` (keep `allow_nonode_nohost` in the build that
+wants it, not the shared cluster config). The operational recipe — a prod console, a debug
+shell — is in
+[Calling → spawning a generic node](docs/calling.md#spawning-a-generic-node-debug-or-call-anything-remotely).
 
 ## But wait — how do the nodes actually connect?
 
@@ -1016,7 +1009,7 @@ meet each theme:
 
 1. [Configuration](docs/configuration.md) — nodes, tags, topology, compile-per-node, dev/test, validation
 2. [Defining APIs](docs/defining.md) — the three `use` macros, `defapi`, selectors, return values, `on_nebula_nodes`, wiring the server
-3. [Calling across nodes](docs/calling.md) — calling endpoints, `call_on_*`, multicast strategies, node-info routing, wrapping single-node libraries
+3. [Calling across nodes](docs/calling.md) — calling endpoints, `call_on_*`, multicast strategies, node-info routing, wrapping single-node libraries, spawning a generic node
 4. [Gotchas and troubleshooting](docs/gotchas.md) — trailing opts, process scope, the `nil`-selector distinction, common errors
 
 Deep dive:
