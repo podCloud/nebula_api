@@ -452,9 +452,13 @@ end
 ### Inspect a parsed selector
 
 ```elixir
-NebulaAPI.AST.Parser.parse_nebula_ast(quote do: &db !@backup)
-# => %{tags: [:db], not_tags: [], nodes: [], not_nodes: [:backup]}
+NebulaAPI.AST.Parser.parse_nebula_ast(Code.string_to_quoted!("&db !@backup"))
+# => %{nodes: [], tags: [:db], not_tags: [], not_nodes: [:backup]}
 ```
+
+Parse the selector from source (`Code.string_to_quoted!/1`), not `quote do: &db !@backup`:
+`quote` tags the identifiers with a macro context (`{:backup, _, Elixir}`), while the parser
+matches bare source identifiers (`{:backup, _, nil}`) — the form `defapi` actually receives.
 
 ### Check execution nodes
 
