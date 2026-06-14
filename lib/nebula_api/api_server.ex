@@ -162,8 +162,10 @@ defmodule NebulaAPI.APIServer do
   - `:quorum` - (`:quorum` strategy only) which set the default majority is taken over:
     `:configured` (the default) = the configured nodes serving the method that match the
     selector, `div(set, 2) + 1`, connected or not; `:available` = the connected workers,
-    `div(present, 2) + 1`. A function selector forces `:available`. Mutually exclusive with
-    `:at_least`.
+    `div(present, 2) + 1`. A function selector has no static configured set, so with
+    `strategy: :quorum` it must declare `quorum: :available` or `at_least:` — the
+    `:configured` default is a compile error there, never silently downgraded. Mutually
+    exclusive with `:at_least`.
   - `:at_least` - Positive integer: an exact number of successes required by the `:quorum`
     strategy, overriding the `quorum:` majority. Mutually exclusive with `:quorum`.
   - `:success` - (`:first`/`:quorum` only) predicate `fn value -> boolean` defining
