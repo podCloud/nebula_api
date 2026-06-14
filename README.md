@@ -581,8 +581,9 @@ call_on_nodes &worker, strategy: :first do
   MyApp.Jobs.transcode(file, opts)
 end
 
-# Quorum: at least 2 nodes must succeed (a strict majority by default)
-call_on_nodes &db, strategy: :quorum, at_least: 2 do
+# Quorum: a strict majority of the configured &db nodes must succeed (the default).
+# A single live node out of three configured refuses — that's the point of a quorum.
+call_on_nodes &db, strategy: :quorum do
   MyApp.Users.write_replica(user)
 end
 
@@ -614,7 +615,7 @@ Results are always tagged per node — `{node, value}` on success,
 |---|---|
 | `:all` | Wait for every node (or timeout). Returns a list of `{node, value}`. |
 | `:first` | Return the first response that counts as a success (then stop waiting on the rest — the pending tasks are brutal-killed); `{:nebula_error, :no_success, results}` if none. |
-| `:quorum` | Wait for `at_least:` successes (a strict majority by default). The moment the quorum is reached it stops waiting on the rest (same brutal-kill as `:first`); fails fast if the quorum becomes unreachable. |
+| `:quorum` | Wait for a strict majority of the quorum set, or an exact `at_least:` count. The set is the **configured** nodes serving the method (`quorum: :configured`, the default — connected or not, so a single live node can't pass a 3-node quorum) or the connected workers (`quorum: :available`). The moment the quorum is reached it stops waiting on the rest (same brutal-kill as `:first`); fails fast (`:quorum_unreachable`) when the live set can't reach it. |
 
 > "Stops waiting" is exactly that: once you have what you asked for (a first success, or
 > the quorum), the rest is just wasted waiting — so NebulaAPI kills the local tasks still

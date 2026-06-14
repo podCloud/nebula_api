@@ -85,14 +85,62 @@ defmodule NebulaAPI.MulticastStrategiesTest do
   end
 
   describe "quorum validation" do
-    test "without at_least: the quorum defaults to a strict majority" do
-      # 0 workers, no at_least: → required = div(0, 2) + 1 = 1. The fail-fast
-      # :quorum_unreachable exposes the resolved requirement, so this exercises
-      # the actual default through the public API (not a re-derivation of the
-      # arithmetic).
-      opts = [multicast: true, strategy: :quorum, timeout: 100]
+    test "without at_least: nor quorum: the default is a strict majority of the configured set" do
+      # No quorum: key → the default mode is :configured. With the method's set
+      # (3 nodes) injected and none present, required = div(3, 2) + 1 = 2. The
+      # fail-fast :quorum_unreachable exposes the resolved requirement, so this
+      # exercises the actual default through the public API.
+      opts = [
+        multicast: true,
+        strategy: :quorum,
+        __method_configured_nodes: [:a@h, :b@h, :c@h],
+        timeout: 100
+      ]
+
+      result = APIServer.call_remote_method(NonExistentModule, {:test_fn}, opts)
+      assert {:nebula_error, :quorum_unreachable, %{workers: 0, required: 2}} = result
+    end
+
+    test "quorum: :configured counts the method's configured serving set, not the present workers" do
+      # The method is configured to be served by 3 nodes, but none is connected.
+      # The default quorum is a majority of those 3 (= 2), not of the 0 present —
+      # so the call refuses up front (a single live node could not be a quorum).
+      opts = [
+        multicast: true,
+        strategy: :quorum,
+        quorum: :configured,
+        __method_configured_nodes: [:a@h, :b@h, :c@h],
+        timeout: 100
+      ]
+
+      result = APIServer.call_remote_method(NonExistentModule, {:test_fn}, opts)
+      assert {:nebula_error, :quorum_unreachable, %{workers: 0, required: 2}} = result
+    end
+
+    test "quorum: :available counts the present workers even when the configured set is known" do
+      opts = [
+        multicast: true,
+        strategy: :quorum,
+        quorum: :available,
+        __method_configured_nodes: [:a@h, :b@h, :c@h],
+        timeout: 100
+      ]
+
       result = APIServer.call_remote_method(NonExistentModule, {:test_fn}, opts)
       assert {:nebula_error, :quorum_unreachable, %{workers: 0, required: 1}} = result
+    end
+
+    test "an explicit at_least: overrides the configured-set default" do
+      opts = [
+        multicast: true,
+        strategy: :quorum,
+        __method_configured_nodes: [:a@h, :b@h, :c@h, :d@h, :e@h],
+        at_least: 4,
+        timeout: 100
+      ]
+
+      result = APIServer.call_remote_method(NonExistentModule, {:test_fn}, opts)
+      assert {:nebula_error, :quorum_unreachable, %{workers: 0, required: 4}} = result
     end
   end
 end

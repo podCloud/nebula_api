@@ -266,15 +266,22 @@ would trigger an "is never used" compiler warning in every consumer module).
 
 ### Remote function
 
-`build_remote_function/1` is generated on **every** node. It dispatches through the
+`build_remote_function/2` is generated on **every** node. It dispatches through the
 APIServer and threads routing options. Whatever `call_remote_method/3` returns is passed
 straight back to the caller — no re-wrapping, no `is_list` branching. A programming error
 (an invalid call option, validated up front) is re-raised so it crashes loud at the call
-site; only a genuine runtime exception becomes `{:nebula_error, exception}`:
+site; only a genuine runtime exception becomes `{:nebula_error, exception}`. It also injects
+the method's **configured serving set** (the selector resolved over the topology at compile
+time, identical on every build) as a hidden `:__method_configured_nodes` opt, so a
+`quorum: :configured` call knows its denominator without any runtime lookup:
 
 ```elixir
 defp __nbapi_remote_get(id, nebula_routing_opts) do
-  NebulaAPI.APIServer.call_remote_method(__MODULE__, {:get, id}, nebula_routing_opts)
+  NebulaAPI.APIServer.call_remote_method(
+    __MODULE__,
+    {:get, id},
+    Keyword.put_new(nebula_routing_opts, :__method_configured_nodes, [:"db@db.example"])
+  )
 rescue
   e in ArgumentError -> reraise(e, __STACKTRACE__)
   e -> {:nebula_error, e}

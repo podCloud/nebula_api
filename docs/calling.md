@@ -88,13 +88,13 @@ call_on_nodes &worker, strategy: :first do
   MyApp.Jobs.transcode(file, opts)
 end
 
-# Quorum: at least 2 successes (a strict majority by default)
-call_on_nodes &db, strategy: :quorum, at_least: 2 do
+# Quorum: a strict majority of the configured &db nodes (the default — see below)
+call_on_nodes &db, strategy: :quorum do
   MyApp.Users.write_replica(user)
 end
 
-# Options only — no selector: every node serving the method.
-call_on_nodes strategy: :quorum, at_least: 2 do
+# An exact count instead of a majority
+call_on_nodes &db, strategy: :quorum, at_least: 2 do
   MyApp.Users.write_replica(user)
 end
 ```
@@ -106,7 +106,8 @@ Selectors use the canonical space-juxtaposed syntax here too
 |--------|------|---------|--|
 | `timeout` | positive integer (ms) — `:infinity` rejected | 5000 | |
 | `strategy` | atom | `:all` | `:all` / `:first` / `:quorum` |
-| `at_least` | positive integer | `div(n, 2) + 1` (strict majority) | for `:quorum` — successes required |
+| `quorum` | `:configured` / `:available` | `:configured` | for `:quorum` — which set the majority is taken over (see below) |
+| `at_least` | positive integer | — | for `:quorum` — exact successes required; **mutually exclusive with `quorum:`** |
 | `success` | `fn value -> boolean` | a worker that *responded* | what counts as success for `:first` / `:quorum` |
 | `failure` | `fn value -> boolean` | — | mirror of `success`; a matching value is a non-success |
 
@@ -115,15 +116,23 @@ literal, an impossible combination like `at_least:` with a non-`:quorum` strateg
 predicate with `strategy: :all`). Dynamic values defer to runtime, raising the same
 `ArgumentError`.
 
-**The default quorum counts the nodes *currently serving the method*, not your configured
-replicas.** `n` is how many workers are connected and registered for the method right now, so
-`div(n, 2) + 1` shifts with the live set: 1 node → 1, 2 or 3 → 2, 4 or 5 → 3, 6 or 7 → 4, and
-so on. That means a single connected node *does* satisfy the default quorum (it's a majority
-of one), and two sides of a network partition can each reach "their" majority independently.
-When you need a quorum pinned to a fixed replica count — a real durability guarantee — pass
-`at_least:` explicitly (e.g. `at_least: 2` for 3 replicas); if fewer workers than that are
-reachable, the call fails fast with `:quorum_unreachable` rather than silently shrinking the
-quorum.
+**What the default quorum is a majority *of*.** A quorum needs a fixed set to take a majority
+of — otherwise two sides of a network partition could each reach "their" quorum and split-brain.
+So by default (`quorum: :configured`) the denominator is the **configured** nodes that serve the
+method and match the selector — connected or not — *not* whoever happens to be up. The call
+still only runs on the live workers, but the requirement is `div(set, 2) + 1` of the configured
+set, and if fewer workers than that are reachable it fails fast with `:quorum_unreachable`
+instead of silently shrinking the quorum. So `call_on_nodes &db, strategy: :quorum` over three
+configured `&db` nodes always needs 2 — a single live node refuses, which is the point.
+
+Two ways out of the configured majority:
+
+- **`quorum: :available`** — a majority of the *connected* workers (`div(present, 2) + 1`). This
+  is "most of whoever is up", not a durability quorum: under a partition each side can reach it.
+- **`at_least: n`** — an exact count, no majority arithmetic. Mutually exclusive with `quorum:`.
+
+A **function selector** chooses its set at runtime, so it has no static configured set: it forces
+`quorum: :available`, and `quorum: :configured` with a function selector is a compile error.
 
 ### `call_on_all_nodes` — broadcast
 

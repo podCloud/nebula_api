@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`quorum:` mode — the default quorum is now a majority of the *configured* set, not the
+  connected workers.** A quorum needs a fixed set to take a majority of (otherwise two sides
+  of a partition each reach "their" quorum). On `strategy: :quorum`, a new `quorum:` option
+  picks the denominator:
+  - `:configured` (**the default**) — the configured nodes serving the method that match the
+    selector, connected or not. `call_on_nodes &db, strategy: :quorum` over three configured
+    `&db` nodes needs 2, so a single live node refuses (`:quorum_unreachable`). The method's
+    configured serving set is baked into its generated remote stub (`:__method_configured_nodes`),
+    config-derived and identical on every build.
+  - `:available` — a majority of the connected workers (`div(present, 2) + 1`), the previous
+    behaviour; "most of whoever is up", not a durability quorum.
+  - A **function selector** forces `:available` (no static set); `quorum: :configured` with a
+    function selector is a compile error. `at_least:` (an exact count) is mutually exclusive
+    with `quorum:`.
 - **Boot-time node policy.** NebulaAPI bakes routing in per node at compile time, so a
   release must run as the node it was compiled for. `nebula_api_server()` records the
   compile-time node; `NebulaAPI.Server` decides at boot (`server_mode/3`):

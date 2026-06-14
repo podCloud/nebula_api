@@ -53,7 +53,7 @@ defmodule NebulaAPI.AST.Builder do
   Builds the remote call function.
   This is always generated and calls the remote method via APIServer.
   """
-  def build_remote_function(%{name: fn_name, args: fn_args}) do
+  def build_remote_function(%{name: fn_name, args: fn_args}, serving_nodes) do
     remote_fn_name = :"__nbapi_remote_#{fn_name}"
     # Use a hygienic variable bound to this module's context — cannot clash with any
     # user-defined parameter, even one named `nebula_routing_opts`
@@ -65,10 +65,17 @@ defmodule NebulaAPI.AST.Builder do
       defp unquote(build_private_function_signature(remote_fn_name, fn_args_with_routing_opts)) do
         # Pass the result through untouched: the worker already returned the body's
         # raw value (unicast) or the transport layer tagged it (multicast / errors).
+        # The method's CONFIGURED serving set (resolved from the defapi selector at
+        # compile time, identical on every build) rides along as a hidden opt so a
+        # quorum: :configured call knows its denominator without any runtime lookup.
         NebulaAPI.APIServer.call_remote_method(
           __MODULE__,
           unquote(build_remote_function_call(fn_name, fn_args)),
-          unquote(routing_opts_var)
+          Keyword.put_new(
+            unquote(routing_opts_var),
+            :__method_configured_nodes,
+            unquote(serving_nodes)
+          )
         )
       rescue
         # Programming errors (bad call opts, validated up front by

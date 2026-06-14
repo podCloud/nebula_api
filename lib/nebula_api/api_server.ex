@@ -19,12 +19,14 @@ defmodule NebulaAPI.APIServer do
   - `:first` - Return the first response that counts as a success (see the
     `:success`/`:failure` options) as a single `{node, value}`. If no response
     qualifies: `{:nebula_error, :no_success, results}` (never a bare list).
-  - `:quorum` - Wait for N successes — `at_least:` workers, or a strict majority of the
-    targeted workers by default. Reached: the list of collected `{node, value}` responses.
-    Not reached:
+  - `:quorum` - Wait for N successes. N is `at_least:` when given, otherwise a strict majority
+    of the quorum set chosen by `quorum:`: `:configured` (the default) = the configured nodes
+    serving the method that match the selector (connected or not); `:available` = the connected
+    workers. Reached: the list of collected `{node, value}` responses. Not reached:
     `{:nebula_error, :quorum_not_reached, results}` or `{:nebula_error, :quorum_timeout, results}`.
-    Impossible quorum (required > available workers): `{:nebula_error, :quorum_unreachable,
-    %{workers: n, required: m}}` — returned before any call is made.
+    Impossible quorum (required > available workers — including a `:configured` majority no live
+    set can reach): `{:nebula_error, :quorum_unreachable, %{workers: n, required: m}}` — returned
+    before any call is made.
 
   ## Node Info Cache
 
@@ -157,9 +159,13 @@ defmodule NebulaAPI.APIServer do
     up front, like every other malformed call opt.
   - `:multicast` - If true, calls multiple nodes and returns a list of results
   - `:strategy` - Multicast strategy: `:all`, `:first`, `:quorum` (default: `:all`)
-  - `:at_least` - Positive integer: number of successes required by the `:quorum`
-    strategy. Default (when absent): a strict majority of the targeted workers,
-    `div(workers, 2) + 1`.
+  - `:quorum` - (`:quorum` strategy only) which set the default majority is taken over:
+    `:configured` (the default) = the configured nodes serving the method that match the
+    selector, `div(set, 2) + 1`, connected or not; `:available` = the connected workers,
+    `div(present, 2) + 1`. A function selector forces `:available`. Mutually exclusive with
+    `:at_least`.
+  - `:at_least` - Positive integer: an exact number of successes required by the `:quorum`
+    strategy, overriding the `quorum:` majority. Mutually exclusive with `:quorum`.
   - `:success` - (`:first`/`:quorum` only) predicate `fn value -> boolean` defining
     what counts as a business success. Default: any worker that replied counts
     (a `{:nebula_error, _}` never does). Mutually exclusive with `:failure`.
@@ -538,6 +544,8 @@ defmodule NebulaAPI.APIServer do
     validate_strategy_opts!(opts, multicast)
     validate_predicate_opts!(opts, multicast, strategy)
     validate_quorum_opts!(opts, multicast, strategy)
+    validate_quorum_mode_opts!(opts, multicast, strategy)
+    validate_configured_set!(opts, multicast, strategy)
     validate_selector_opt!(opts)
 
     timeout = resolve_timeout(module, opts)
@@ -552,7 +560,8 @@ defmodule NebulaAPI.APIServer do
     :strategy,
     :at_least,
     :success,
-    :failure
+    :failure,
+    :quorum
   ]
 
   # The set of call opts is closed, so an unknown KEY is as much a programming
@@ -561,7 +570,10 @@ defmodule NebulaAPI.APIServer do
   # the call would run with defaults the caller never chose — for a quorum,
   # that's a durability requirement quietly replaced by the majority default.
   defp validate_known_opts!(opts) do
-    case Keyword.keys(opts) |> Enum.uniq() |> Kernel.--(@valid_call_opts) do
+    user_keys =
+      opts |> Keyword.keys() |> Enum.reject(&internal_opt?/1) |> Enum.uniq()
+
+    case user_keys -- @valid_call_opts do
       [] ->
         :ok
 
@@ -570,6 +582,64 @@ defmodule NebulaAPI.APIServer do
               "unknown call option(s): #{inspect(unknown)} — " <>
                 "valid options are #{inspect(@valid_call_opts)}"
     end
+  end
+
+  # Opts injected by generated code (e.g. __method_configured_nodes:, the method's
+  # configured serving set baked into its remote stub for the :configured quorum).
+  # Never typed by users, so they bypass the closed-set check on user keys.
+  defp internal_opt?(key), do: key |> Atom.to_string() |> String.starts_with?("__")
+
+  @valid_quorum_modes [:configured, :available]
+
+  # The quorum: mode picks the quorum's denominator (see do_multicast_call/6):
+  # :configured (default) = majority of the configured nodes serving the method
+  # that match the selector; :available = majority of the connected workers.
+  # nil means "not set" (the default applies), same convention as every other opt.
+  defp validate_quorum_mode_opts!(opts, multicast, strategy) do
+    case Keyword.get(opts, :quorum) do
+      nil ->
+        :ok
+
+      mode when mode not in @valid_quorum_modes ->
+        raise ArgumentError,
+              "quorum: must be one of #{inspect(@valid_quorum_modes)}, got: #{inspect(mode)}"
+
+      _mode ->
+        unless multicast and strategy == :quorum do
+          raise ArgumentError,
+                "quorum: only applies to the :quorum strategy " <>
+                  "(multicast: true, strategy: :quorum) — it would be ignored here"
+        end
+
+        if Keyword.get(opts, :at_least) != nil do
+          raise ArgumentError,
+                "at_least: and quorum: are mutually exclusive — at_least: asks for a " <>
+                  "precise count, quorum: for a majority of a set"
+        end
+
+        :ok
+    end
+  end
+
+  # quorum: :configured (the default, when neither at_least: nor quorum: :available is
+  # given) needs the method's configured serving set. The generated remote stub injects
+  # it on every call, so a real defapi call always carries it; reaching this without it
+  # means a hand-rolled call_remote_method/3 — refuse loud, up front, instead of silently
+  # falling back to the present workers and weakening the quorum behind the caller's back.
+  defp validate_configured_set!(opts, multicast, strategy) do
+    needs_configured_set? =
+      multicast and strategy == :quorum and
+        Keyword.get(opts, :at_least) == nil and
+        (Keyword.get(opts, :quorum) || :configured) == :configured
+
+    if needs_configured_set? and Keyword.get(opts, :__method_configured_nodes) == nil do
+      raise ArgumentError,
+            "quorum: :configured needs the method's configured node set — normally injected " <>
+              "by the generated stub. Call the defapi function (or wrap it in call_on_*), not " <>
+              "APIServer.call_remote_method/3 directly; or pass quorum: :available / at_least:."
+    end
+
+    :ok
   end
 
   # Like every other call opt, the selector's FORM is a programming error when
@@ -737,13 +807,15 @@ defmodule NebulaAPI.APIServer do
         # Filter to only nodes with workers. A selector may return duplicates:
         # a node must count ONCE — toward the quorum especially, where two
         # replies from the same node are one confirmation, not two.
+        selected_nodes = Enum.uniq(selected_nodes)
+
         target_workers =
           selected_nodes
-          |> Enum.uniq()
           |> Enum.filter(&Map.has_key?(workers_by_node, &1))
           |> Enum.map(fn node -> {node, workers_by_node[node]} end)
 
-        do_multicast_call(target_workers, fn_call, timeout, strategy, opts)
+        configured_denom = configured_denominator(opts, selected_nodes)
+        do_multicast_call(target_workers, fn_call, timeout, strategy, configured_denom, opts)
 
       {:error, reason} ->
         {:nebula_error, reason}
@@ -808,43 +880,85 @@ defmodule NebulaAPI.APIServer do
       |> Enum.map(fn worker -> {node(worker), worker} end)
       |> Enum.uniq_by(fn {n, _} -> n end)
 
-    do_multicast_call(target_workers, fn_call, timeout, strategy, opts)
+    configured_denom = configured_denominator(opts, nil)
+    do_multicast_call(target_workers, fn_call, timeout, strategy, configured_denom, opts)
   end
 
-  defp do_multicast_call(target_workers, fn_call, timeout, :quorum, opts) do
-    worker_count = length(target_workers)
-    required = resolve_quorum_required(opts, worker_count)
+  defp do_multicast_call(target_workers, fn_call, timeout, :quorum, configured_denom, opts) do
+    present = length(target_workers)
+    required = resolve_quorum_required(opts, present, configured_denom)
 
     # Fail fast: an arithmetically impossible quorum makes zero calls — for a
     # write quorum, no partial non-quorate write is even attempted. No silent
     # clamping: asking for 3 confirmations and "reaching quorum" with 2 would
-    # be a durability guarantee lowered behind the caller's back.
-    if required > worker_count do
-      {:nebula_error, :quorum_unreachable, %{workers: worker_count, required: required}}
+    # be a durability guarantee lowered behind the caller's back. With
+    # quorum: :configured this is also what refuses a single live node when the
+    # configured set needs a majority it cannot reach.
+    if required > present do
+      {:nebula_error, :quorum_unreachable, %{workers: present, required: required}}
     else
       do_multicast_quorum(target_workers, fn_call, timeout, required, opts)
     end
   end
 
   # :first never returns a bare list: with nobody to ask there is no success.
-  defp do_multicast_call([], _fn_call, _timeout, :first, _opts) do
+  defp do_multicast_call([], _fn_call, _timeout, :first, _denom, _opts) do
     {:nebula_error, :no_success, []}
   end
 
-  defp do_multicast_call([], _fn_call, _timeout, _strategy, _opts) do
+  defp do_multicast_call([], _fn_call, _timeout, _strategy, _denom, _opts) do
     []
   end
 
-  defp do_multicast_call(target_workers, fn_call, timeout, strategy, opts) do
+  defp do_multicast_call(target_workers, fn_call, timeout, strategy, _denom, opts) do
     case strategy do
       :first -> do_multicast_first(target_workers, fn_call, timeout, opts)
       _all -> do_multicast_all(target_workers, fn_call, timeout)
     end
   end
 
-  # at_least: explicit worker count > majority of the targeted workers.
-  defp resolve_quorum_required(opts, worker_count) do
-    Keyword.get(opts, :at_least) || div(worker_count, 2) + 1
+  # The quorum requirement. An explicit at_least: wins (a precise count). Otherwise
+  # a strict majority of the ADDRESSED set, chosen by quorum::
+  #   :available             -> the connected workers (present),
+  #   :configured (default)  -> the configured nodes serving the method that match
+  #                             the selector (configured_denom).
+  # For :configured, configured_denom is guaranteed non-nil here: validate_configured_set!
+  # refuses the call up front (loud) when the set is missing, rather than silently
+  # falling back to the present workers and weakening the quorum.
+  defp resolve_quorum_required(opts, present, configured_denom) do
+    case Keyword.get(opts, :at_least) do
+      n when is_integer(n) ->
+        n
+
+      _ ->
+        denom =
+          case Keyword.get(opts, :quorum) || :configured do
+            :available -> present
+            :configured -> configured_denom
+          end
+
+        div(denom, 2) + 1
+    end
+  end
+
+  # The size of the configured set the call addresses, for quorum: :configured.
+  # __method_configured_nodes is the method's configured serving set, injected by
+  # its generated remote stub. With a selector we intersect (nodes that serve the
+  # method AND match the selector); without one it is the whole serving set. nil
+  # when the stub didn't inject it (direct calls / test doubles).
+  defp configured_denominator(opts, selected_nodes) do
+    case Keyword.get(opts, :__method_configured_nodes) do
+      nil ->
+        nil
+
+      configured ->
+        configured = MapSet.new(configured)
+
+        case selected_nodes do
+          nil -> MapSet.size(configured)
+          list -> MapSet.intersection(MapSet.new(list), configured) |> MapSet.size()
+        end
+    end
   end
 
   # Validating the RESOLVED value covers both the per-call timeout: option and

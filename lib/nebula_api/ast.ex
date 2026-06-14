@@ -128,6 +128,11 @@ defmodule NebulaAPI.AST do
   defp expand_defapi(nebula_ast, fn_ast, do_fn, caller) do
     is_current_node = defapi_local?(nebula_ast, caller)
 
+    # The CONFIGURED nodes that serve this method (the selector resolved over the
+    # topology, or every node for the no-selector form). Baked into the remote stub
+    # so a quorum: :configured call knows its denominator — same on every build.
+    serving_nodes = defapi_serving_nodes(nebula_ast)
+
     fundef = fn_ast |> NebulaAPI.AST.Parser.parse_fundef_ast()
 
     # Register method as local or remote
@@ -146,12 +151,23 @@ defmodule NebulaAPI.AST do
     # nothing elsewhere).
     quote do
       unquote(NebulaAPI.AST.Builder.build_local_function(fundef, do_fn, is_current_node))
-      unquote(NebulaAPI.AST.Builder.build_remote_function(fundef))
+      unquote(NebulaAPI.AST.Builder.build_remote_function(fundef, serving_nodes))
       unquote(NebulaAPI.AST.Builder.build_public_function(fundef, is_current_node))
     end
   rescue
     e in CompileError ->
       raise %{e | line: caller.line, file: caller.file}
+  end
+
+  # The configured node names that serve this method: the no-selector form runs
+  # everywhere, otherwise the selector resolved over the topology. Compile-time and
+  # config-derived, so identical on every build.
+  defp defapi_serving_nodes(:all), do: NebulaAPI.Config.nodes() |> Keyword.keys()
+
+  defp defapi_serving_nodes(nebula_ast) do
+    nebula_ast
+    |> get_execution_nodes_from_nebula_ast!()
+    |> Keyword.keys()
   end
 
   # `:all` is the no-selector form — the body is local on every node.
@@ -458,6 +474,7 @@ defmodule NebulaAPI.AST do
   defp do_call_on_nodes(selector_or_nebula_ast, opts, block, caller) do
     {selector_or_nebula_ast, opts} = absorb_trailing_opts(selector_or_nebula_ast, opts)
     validate_static_opts!(opts, :multicast, caller)
+    opts = enforce_fn_selector_quorum!(selector_or_nebula_ast, opts, caller)
     selector = build_selector(selector_or_nebula_ast, :multicast, caller)
 
     quote do
@@ -539,9 +556,39 @@ defmodule NebulaAPI.AST do
   end
 
   @unicast_block_opts [:timeout]
-  @multicast_only_opts [:strategy, :at_least, :success, :failure]
+  @multicast_only_opts [:strategy, :at_least, :success, :failure, :quorum]
   @multicast_block_opts @unicast_block_opts ++ @multicast_only_opts
   @valid_strategies [:all, :first, :quorum]
+  @valid_quorum_modes [:configured, :available]
+
+  # A literal `fn … end` selector picks its set dynamically, so quorum: :configured
+  # (a majority of a STATIC configured set) has nothing to count — refuse it at compile
+  # time. With no quorum: given, force :available, the only mode such a selector can
+  # honour. Only an anonymous-function literal is decided here: a nil/omitted selector
+  # is the no-restriction form (the method's own configured set), a variable defers to
+  # runtime (it may evaluate to nil), and an @/&/! selector is static.
+  defp enforce_fn_selector_quorum!(selector, opts, caller) do
+    if match?({:fn, _, _}, selector) do
+      cond do
+        Keyword.get(opts, :quorum) == :configured ->
+          compile_error!(
+            caller,
+            "quorum: :configured can't be used with a function selector — a runtime " <>
+              "function has no static configured set to take a majority of. Use " <>
+              "quorum: :available (or at_least:) with a function selector."
+          )
+
+        Keyword.get(opts, :quorum) == nil and
+            static_value(opts, :strategy) == {:literal, :quorum} ->
+          Keyword.put(opts, :quorum, :available)
+
+        true ->
+          opts
+      end
+    else
+      opts
+    end
+  end
 
   # Compile-time validation of the call_on_* block options. The macros receive
   # literal keyword lists, so anything statically decidable fails the build at
@@ -650,6 +697,17 @@ defmodule NebulaAPI.AST do
         :ok
     end
 
+    case static_value(opts, :quorum) do
+      {:literal, m} when not is_nil(m) and m not in @valid_quorum_modes ->
+        compile_error!(
+          caller,
+          "quorum: must be one of #{inspect(@valid_quorum_modes)}, got: #{inspect(m)}"
+        )
+
+      _ ->
+        :ok
+    end
+
     # No literal can ever be a 1-arity function, so a non-nil literal
     # predicate is always wrong; nil keeps meaning "not set". Real predicates
     # (fn / & captures) are AST, classified :dynamic — the runtime backstop
@@ -691,6 +749,22 @@ defmodule NebulaAPI.AST do
         caller,
         "at_least: only applies to the :quorum strategy — this block resolves to " <>
           "#{inspect(strategy_static)}"
+      )
+    end
+
+    if opt_present?(opts, :quorum) and strategy_static not in [:quorum, :unknown] do
+      compile_error!(
+        caller,
+        "quorum: only applies to the :quorum strategy — this block resolves to " <>
+          "#{inspect(strategy_static)}"
+      )
+    end
+
+    if opt_present?(opts, :quorum) and opt_present?(opts, :at_least) do
+      compile_error!(
+        caller,
+        "at_least: and quorum: are mutually exclusive — at_least: asks for a precise " <>
+          "count, quorum: for a majority of a set"
       )
     end
 
@@ -826,15 +900,12 @@ defmodule NebulaAPI.AST do
           end
 
         :multicast ->
-          # For multicast, return all matching nodes
+          # Return the CONFIGURED matching set, not just the present ones. Routing
+          # still intersects with the live workers downstream (call_selected_workers),
+          # so who actually gets called is unchanged — but a quorum: :configured call
+          # can now count the configured set (its denominator), connected or not.
           quote do
-            fn nodes_info ->
-              target_nodes = unquote(target_node_names)
-
-              nodes_info
-              |> Map.keys()
-              |> Enum.filter(fn node -> node in target_nodes end)
-            end
+            fn _nodes_info -> unquote(target_node_names) end
           end
       end
     else

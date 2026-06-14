@@ -120,6 +120,9 @@ defmodule NebulaAPI.CallOptionsTest do
           APIServer.call_remote_method(NoSuchMod, {:work},
             multicast: true,
             strategy: strategy,
+            # :quorum defaults to :configured, which needs the method's set
+            # (normally injected by the stub); ignored by :all / :first.
+            __method_configured_nodes: [:n1@h, :n2@h],
             timeout: 100
           )
 
@@ -253,6 +256,79 @@ defmodule NebulaAPI.CallOptionsTest do
                  at_least: 1,
                  success: &match?({:ok, _}, &1),
                  node_selector: fn _nodes_info -> [] end,
+                 timeout: 100
+               )
+    end
+  end
+
+  describe "quorum: option" do
+    alias NebulaAPI.APIServer
+
+    test "quorum: :configured is a valid option with strategy: :quorum" do
+      # No worker serves the method, so the only failure left is the quorum's
+      # own contract — never an unknown-key or invalid-value refusal. The set is
+      # what the generated stub injects.
+      assert {:nebula_error, :quorum_unreachable, _} =
+               APIServer.call_remote_method(NoSuchMod, {:work},
+                 multicast: true,
+                 strategy: :quorum,
+                 quorum: :configured,
+                 __method_configured_nodes: [:a@h, :b@h, :c@h],
+                 timeout: 100
+               )
+    end
+
+    test "quorum: :available is a valid option with strategy: :quorum" do
+      assert {:nebula_error, :quorum_unreachable, _} =
+               APIServer.call_remote_method(NoSuchMod, {:work},
+                 multicast: true,
+                 strategy: :quorum,
+                 quorum: :available,
+                 timeout: 100
+               )
+    end
+
+    test "an unknown quorum: value raises ArgumentError up front" do
+      assert_raise ArgumentError, ~r/quorum/, fn ->
+        APIServer.call_remote_method(NoSuchMod, {:work},
+          multicast: true,
+          strategy: :quorum,
+          quorum: :bogus,
+          timeout: 100
+        )
+      end
+    end
+
+    test "quorum: only applies to the :quorum strategy" do
+      assert_raise ArgumentError, ~r/quorum:/, fn ->
+        APIServer.call_remote_method(NoSuchMod, {:work},
+          multicast: true,
+          strategy: :all,
+          quorum: :configured,
+          timeout: 100
+        )
+      end
+    end
+
+    test "at_least: and quorum: are mutually exclusive" do
+      assert_raise ArgumentError, ~r/at_least.*quorum|quorum.*at_least|mutually exclusive/, fn ->
+        APIServer.call_remote_method(NoSuchMod, {:work},
+          multicast: true,
+          strategy: :quorum,
+          at_least: 2,
+          quorum: :configured,
+          timeout: 100
+        )
+      end
+    end
+
+    test "quorum: nil means 'not set' — falls back to the default (:configured)" do
+      assert {:nebula_error, :quorum_unreachable, _} =
+               APIServer.call_remote_method(NoSuchMod, {:work},
+                 multicast: true,
+                 strategy: :quorum,
+                 quorum: nil,
+                 __method_configured_nodes: [:a@h, :b@h, :c@h],
                  timeout: 100
                )
     end
