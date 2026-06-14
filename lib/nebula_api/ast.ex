@@ -893,6 +893,18 @@ defmodule NebulaAPI.AST do
   defp validate_literal_selector!(selector, caller) do
     cond do
       is_nil(selector) -> :ok
+      # A function capture (`&fun/1`) shares the `&` head with a `&tag` selector but
+      # wraps a `/` (the arity) — catch it here with a clear message instead of letting
+      # it mangle through the tag parser into a confusing "unknown tag". A real selector
+      # function is written as a literal `fn nodes_info -> ... end`.
+      match?({:&, _, [{:/, _, _}]}, selector) ->
+        compile_error!(
+          caller,
+          "a function capture (&fun/1) isn't a valid call_on_* selector — write the " <>
+            "selector function as a literal `fn nodes_info -> ... end`, or use a " <>
+            "&tag / @node selector."
+        )
+
       is_nebula_ast?(selector) -> :ok
       match?({:fn, _, _}, selector) -> :ok
       true ->

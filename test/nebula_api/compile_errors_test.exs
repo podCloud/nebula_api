@@ -48,6 +48,17 @@ defmodule NebulaAPI.CompileErrorsTest do
 
       assert err.description =~ "call_on_node"
     end
+
+    test "a function capture (&fun/1) in call_on_* gets a clear message, not a mangled tag" do
+      # &fun/1 shares the `&` head with a &tag selector; without the dedicated
+      # check it peels into the tag parser and dies on a confusing "unknown tag".
+      err =
+        assert_raise CompileError, ~r/function capture/i, fn ->
+          eval_block("call_on_nodes &foo/1, strategy: :all")
+        end
+
+      assert err.description =~ "fn nodes_info"
+    end
   end
 
   describe "empty selector list ([])" do
