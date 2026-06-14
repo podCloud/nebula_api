@@ -199,7 +199,9 @@ consumer's concern.
 
 ```elixir
 Logger.configure(level: :debug)
-# [debug] Will do remote execution on MyApp.Users with fn_call: {:get, "abc"}
+# [debug]   Will do remote execution on MyApp.Users
+#   with fn_call : {:get, "abc"}
+#   opts: []
 ```
 
 ## See also
