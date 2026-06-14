@@ -239,6 +239,12 @@ If you compile on a node not in `nodes` (and didn't set `allow_unknown_self_node
 `use NebulaAPI` raises a `CompileError` telling you the `self_node` it saw and the
 configured nodes.
 
+`allow_unknown_self_node` is a per-module **`use` option**, not a config key — set it on the
+module being compiled (`use NebulaAPI, allow_unknown_self_node: true`), for throwaway compiles
+where the building node legitimately isn't part of the topology. It does **not** silence a
+*missing* node name (`nonode@nohost`), which is a separate case — see
+[No node name](#no-node-name) and [`allow_nonode_nohost`](#allow_nonode_nohost).
+
 ### No node name
 
 If you compile without `--name` (so `node()` is `nonode@nohost`) and haven't set
