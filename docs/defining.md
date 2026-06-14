@@ -51,7 +51,7 @@ a generated function that forwards the call over RPC to a node that does have th
 | `!&tag` | nodes without this tag |
 | `@node` | this node (short or full name) |
 | `!@node` | all nodes except this one |
-| `:*` | every node (local everywhere) |
+| *(no selector)* | every node — the body is local everywhere |
 
 **Combine selectors by juxtaposing them with a space — no commas between them, no
 brackets.** This is the canonical NebulaAPI syntax, and it is what keeps call sites
@@ -71,15 +71,16 @@ defapi @worker, transcode(input, opts) do
   |> FFmpex.execute()
 end
 
-# every node gets its own local copy
-defapi :*, health() do
+# No selector → the body is local on every node, each returning its own data
+defapi get_node_health() do
   %{node: node(), uptime: :erlang.statistics(:wall_clock) |> elem(0)}
 end
 ```
 
-The bracketed list form (`defapi [&db, !@backup], ...`) still compiles, but it is **not**
-the canonical syntax — prefer the space-juxtaposed form everywhere. A full node name with
-special characters goes in as an atom: `defapi @:"db@db.example", ...`.
+Omitting the selector entirely is how you say "run on every node" — there is no `:*`
+(removed in 0.5). The bracketed list form (`defapi [&db, !@backup], ...`) still compiles,
+but it is **not** the canonical syntax — prefer the space-juxtaposed form everywhere. A full
+node name with special characters goes in as an atom: `defapi @:"db@db.example", ...`.
 
 ### Short names
 
@@ -100,7 +101,7 @@ Signatures take simple variables and defaults only:
 ```elixir
 defapi &db, get(id), do: Repo.get(User, id)
 defapi &db, list(filters \\ []), do: Repo.all(query(filters))
-defapi :*, health(), do: %{node: node()}
+defapi get_node_health(), do: %{node: node()}
 ```
 
 Pattern-matched arguments — atoms, maps, lists, tuples — are rejected with a
