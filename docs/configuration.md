@@ -199,14 +199,16 @@ NebulaAPI catches topology mistakes when you build, not when you ship.
 defapi @nope, f() do ... end
 ```
 ```
-Unknown nodes in defapi call:
-  - @nope
+Unknown nodes in defapi call :
+	- @nope
 
-Available nodes:
-  - @api
-  - @"api@api.example"
-  - @db
-  - @worker
+Available nodes :
+	- @api
+	- @:"api@api.example"
+	- @db
+	- @:"db@db.example"
+	- @worker
+	- @:"worker@worker.example"
 ```
 
 ### Unknown tag
@@ -215,14 +217,14 @@ Available nodes:
 defapi &nope, f() do ... end
 ```
 ```
-Unknown tags in defapi call:
-  - &nope
+Unknown tags in defapi call :
+	- &nope
 
-Available tags:
-  - &api
-  - &cluster
-  - &db
-  - &worker
+Available tags :
+	- &api
+	- &cluster
+	- &db
+	- &worker
 ```
 
 ### Unknown `self_node`

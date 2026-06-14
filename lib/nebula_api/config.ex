@@ -121,7 +121,7 @@ defmodule NebulaAPI.Config do
 
         Available nodes :
         #{all_nodes_names |> Enum.map(fn name -> if name |> String.contains?("@") do
-            "\t- @\"#{name}\""
+            "\t- @:\"#{name}\""
           else
             "\t- @#{name}"
           end end) |> Enum.join("\n")}

@@ -130,9 +130,18 @@ stops — no silent RPC into the void:
 
 ```elixir
 defapi @nope, f() do ... end
-# ** (CompileError) Unknown nodes in defapi call:
-#      - @nope
-#    Available nodes: @api, @db, @worker
+```
+```
+** (CompileError) Unknown nodes in defapi call :
+	- @nope
+
+Available nodes :
+	- @api
+	- @:"api@api.example"
+	- @db
+	- @:"db@db.example"
+	- @worker
+	- @:"worker@worker.example"
 ```
 
 The `:nebula` compiler goes one further: an app with `defapi` modules but no
