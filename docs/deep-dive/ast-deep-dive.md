@@ -121,11 +121,13 @@ multi-selector form compiles even though the macro is `defapi/2` in that case.
 ### Example Parsing
 
 ```elixir
-# Input AST
-[
-  {:&, [], [{:db, [], nil}]},
-  {:!, [], [{:@, [], [{:backup, [], nil}]}]}
-]
+# Input AST — the canonical space-juxtaposed chain for `&db !@backup`:
+# each selector carries the next as its single (rest) argument.
+{:&, [], [
+  {:db, [], [
+    {:!, [], [{:@, [], [{:backup, [], nil}]}]}
+  ]}
+]}
 
 # After parsing
 %{
