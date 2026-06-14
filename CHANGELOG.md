@@ -13,9 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compile-time node; `NebulaAPI.Server` decides at boot (`server_mode/3`):
   - **running as exactly the compiled (real) node → serves normally.** This is the only case
     that starts workers and serves.
+  - **compiled nameless AND running nameless** (`nonode@nohost` both sides) → a noop generic
+    node, no escape hatch needed (it's the deliberate nameless build running as intended).
   - **any other case refuses to boot** with an explicit message — a worker build run as
-    `api@host`, a nameless (`nonode@nohost`-compiled, *forgot `--name`?*) build run under a
-    real name, or anything run as `nonode@nohost` — *unless* the escape hatch is set.
+    `api@host`, a nameless (*forgot `--name`?*) build run under a real name, or a real build
+    run as `nonode@nohost` — *unless* the escape hatch is set.
   - **`ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1`** turns the mismatch into a **generic node**:
     `nebula_api_server()` becomes a no-op (no workers, a boot warning) and every `defapi`
     call routes **remote** (the node serves nothing). Run as a real name it can still reach

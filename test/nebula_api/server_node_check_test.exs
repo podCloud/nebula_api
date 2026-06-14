@@ -67,14 +67,11 @@ defmodule NebulaAPI.ServerNodeCheckTest do
       assert msg =~ "serves nothing"
     end
 
-    test "run as nonode@nohost, no env var → exit, must opt in" do
-      assert {:exit, msg} = Server.server_mode(:nonode@nohost, :nonode@nohost, false)
-      assert msg =~ "ALLOW_RUNTIME_NEBULA_NODE_MISMATCH"
-    end
-
-    test "run as nonode@nohost, env var → noop, inert" do
-      assert {:noop, msg} = Server.server_mode(:nonode@nohost, :nonode@nohost, true)
+    test "run as nonode@nohost → noop, inert, NO env var needed (built nameless on purpose)" do
+      assert {:noop, msg} = Server.server_mode(:nonode@nohost, :nonode@nohost, false)
       assert msg =~ "inert"
+      # still a noop with the env var on, of course
+      assert {:noop, _} = Server.server_mode(:nonode@nohost, :nonode@nohost, true)
     end
   end
 

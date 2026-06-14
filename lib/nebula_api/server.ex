@@ -130,7 +130,7 @@ defmodule NebulaAPI.Server do
   # SERVE only when running as exactly the (real) node we were compiled for. Anything else is
   # either a deliberate generic node (mismatch set → noop: serves nothing, every call remote)
   # or a misconfiguration (no mismatch → refuse to boot, with an explanation).
-  def server_mode(compiled, current, _mismatch) when is_nil(compiled) do
+  def server_mode(compiled, _current, _mismatch) when is_nil(compiled) do
     # No recorded compiled node → we can't tell what this release was built for, so we can't
     # verify the running node. Refuse rather than serve blindly (and possibly misroute).
     {:exit,
@@ -143,9 +143,21 @@ defmodule NebulaAPI.Server do
 
   def server_mode(compiled, current, mismatch) do
     cond do
-      current == compiled and current != :nonode@nohost -> :serve
-      mismatch -> {:noop, noop_warning(compiled, current)}
-      true -> {:exit, exit_message(compiled, current)}
+      # Deliberately compiled nameless AND running nameless — exactly as intended, no escape
+      # hatch needed. It's still inert (nonode can't serve or reach a cluster), just a noop.
+      compiled == :nonode@nohost and current == :nonode@nohost ->
+        {:noop, noop_warning(compiled, current)}
+
+      # Running as exactly the (real) node we were compiled for — the one serving case.
+      current == compiled ->
+        :serve
+
+      # Any other mismatch: opt into a generic node, or refuse.
+      mismatch ->
+        {:noop, noop_warning(compiled, current)}
+
+      true ->
+        {:exit, exit_message(compiled, current)}
     end
   end
 
@@ -159,16 +171,6 @@ defmodule NebulaAPI.Server do
       "compiled for (#{inspect(compiled)}). Generic mode (ALLOW_RUNTIME_NEBULA_NODE_MISMATCH " <>
       "is set): no API server started, this node serves nothing — every defapi call goes out " <>
       "remotely to whoever does serve it."
-  end
-
-  defp exit_message(:nonode@nohost, :nonode@nohost) do
-    """
-    NebulaAPI: running as nonode@nohost.
-
-    This is a generic, out-of-cluster node — it serves nothing and can't make calls. If that
-    is what you want, start with ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1; otherwise give the
-    release a real node name (RELEASE_NODE=...).
-    """
   end
 
   defp exit_message(:nonode@nohost, current) do
