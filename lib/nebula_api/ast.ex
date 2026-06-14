@@ -567,8 +567,8 @@ defmodule NebulaAPI.AST do
 
   # A literal `fn … end` selector picks its set dynamically, so quorum: :configured
   # (a majority of a STATIC configured set) has nothing to count — refuse it at compile
-  # time. With no quorum: given, force :available, the only mode such a selector can
-  # honour. Only an anonymous-function literal is decided here: a nil/omitted selector
+  # time, with no silent downgrade: the call must say how to count, quorum: :available
+  # or at_least: n. Only an anonymous-function literal is decided here: a nil/omitted selector
   # is the no-restriction form (the method's own configured set), a variable defers to
   # runtime (it may evaluate to nil), and an @/&/! selector is static.
   defp enforce_fn_selector_quorum!(selector, opts, caller) do
