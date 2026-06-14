@@ -357,8 +357,11 @@ RELEASE_DISTRIBUTION=name RELEASE_NODE=api@api.example bin/api start
 
 The compile-time `--name` and the runtime `RELEASE_NODE` **must match** — that's the whole
 contract: the routing was decided for `api@api.example` at build, so the release has to
-actually be `api@api.example` when it runs. (`RELEASE_NODE` defaults to `<release_name>@…`
-with short-name distribution, so set it explicitly to get the fully-qualified name.)
+actually be `api@api.example` when it runs. NebulaAPI enforces it: if the running node
+differs from the one the release was compiled as, the server **crashes at boot** with a
+clear message rather than misrouting silently. (`RELEASE_NODE` defaults to
+`<release_name>@…` with short-name distribution, so set it explicitly to get the
+fully-qualified name.)
 
 In dev/test, you typically don't start the VM with `--name`. Use
 `default_opts` to tell the compiler which node to pretend to be:

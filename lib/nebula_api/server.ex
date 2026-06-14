@@ -66,8 +66,13 @@ defmodule NebulaAPI.Server do
     # app is compiled, that an app with local methods actually wired a server somewhere.
     Module.put_attribute(__CALLER__.module, :nebula_api_server_wired, true)
 
+    # Capture the node this release is being COMPILED as (the `--name` on `mix compile`).
+    # NebulaAPI bakes routing in per node, so at boot the running node MUST match — see
+    # verify_node!/1. Captured at macro-expansion time = the consumer's compile-time node.
+    compiled_node = node()
+
     quote do
-      NebulaAPI.Server.child_spec(app_module: __MODULE__)
+      NebulaAPI.Server.child_spec(app_module: __MODULE__, compiled_node: unquote(compiled_node))
     end
   end
 
@@ -85,6 +90,8 @@ defmodule NebulaAPI.Server do
 
   @impl true
   def init(opts) do
+    verify_node!(opts)
+
     children =
       opts
       |> Keyword.fetch!(:app_module)
@@ -93,6 +100,38 @@ defmodule NebulaAPI.Server do
       |> Enum.map(&worker_child_spec/1)
 
     Supervisor.init(children, strategy: :one_for_one)
+  end
+
+  # NebulaAPI decides routing at COMPILE time, keyed on the node name. If a release built
+  # as `api@host` boots as some other node, every routing decision baked into it is wrong —
+  # so crash loudly at boot instead of misrouting silently. The compile-time `--name` and
+  # the runtime `RELEASE_NODE` must match.
+  #
+  # The check only fires when BOTH sides are real, distributed names and they differ: a
+  # `:nonode@nohost` on either side means dev/test (or a nameless build), where there's
+  # nothing meaningful to pin, so we skip it.
+  defp verify_node!(opts) do
+    compiled = Keyword.get(opts, :compiled_node)
+    current = node()
+
+    cond do
+      is_nil(compiled) -> :ok
+      compiled == :nonode@nohost -> :ok
+      current == :nonode@nohost -> :ok
+      current == compiled -> :ok
+      true -> raise node_mismatch_error(compiled, current)
+    end
+  end
+
+  defp node_mismatch_error(compiled, current) do
+    """
+    NebulaAPI node mismatch — this release was compiled for #{inspect(compiled)} but is \
+    running as #{inspect(current)}.
+
+    NebulaAPI bakes routing in per node at compile time, so a release MUST run as the node \
+    it was compiled for. Make the compile-time `--name` and the runtime `RELEASE_NODE` \
+    agree (and `RELEASE_DISTRIBUTION=name` for fully-qualified names).
+    """
   end
 
   # All modules of the OTP app that `app_module` belongs to. `get_application/1`

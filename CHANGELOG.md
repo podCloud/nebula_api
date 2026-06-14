@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Boot-time node-name guard.** `nebula_api_server()` records the node a release was
+  *compiled* as; at boot `NebulaAPI.Server` crashes with a clear error if the *running* node
+  differs — the compile-time `--name` and the runtime `RELEASE_NODE` must match, or every
+  routing decision baked into the release would be wrong. The check only fires when both
+  names are real, distributed names that differ; a `:nonode@nohost` on either side (dev,
+  tests, nameless builds) is skipped, so it never gets in the way locally.
+
 ### Removed
 - **Breaking: the `:*` selector is gone.** To make a `defapi` body run on every node,
   **omit the selector entirely** — `defapi name(args) do ... end` — the same way
