@@ -273,14 +273,16 @@ straight back to the caller — no re-wrapping, no `is_list` branching. A progra
 site; only a genuine runtime exception becomes `{:nebula_error, exception}`. It also injects
 the method's **configured serving set** (the selector resolved over the topology at compile
 time, identical on every build) as a hidden `:__method_configured_nodes` opt, so a
-`quorum: :configured` call knows its denominator without any runtime lookup:
+`quorum: :configured` call knows its denominator without any runtime lookup. The stub's
+set is authoritative — `Keyword.put` (not `put_new`) overwrites any caller-supplied value,
+so a quorum can't be silently shrunk from the call site:
 
 ```elixir
 defp __nbapi_remote_get(id, nebula_routing_opts) do
   NebulaAPI.APIServer.call_remote_method(
     __MODULE__,
     {:get, id},
-    Keyword.put_new(nebula_routing_opts, :__method_configured_nodes, [:"db@db.example"])
+    Keyword.put(nebula_routing_opts, :__method_configured_nodes, [:"db@db.example"])
   )
 rescue
   e in ArgumentError -> reraise(e, __STACKTRACE__)
