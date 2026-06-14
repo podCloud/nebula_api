@@ -849,7 +849,7 @@ Being honest about the edges:
   what's actually connected. What it can't handle is a node whose *name* wasn't known at
   build time: an unbounded fleet of randomly-named pods has no compiled identity to route
   to — though a fixed, generic *caller* node is easy (see
-  [Compiling a generic node](#compiling-a-generic-node)). Scaling the count of *known* roles
+  [Compiling a generic node](#compiling-a-generic-client-node)). Scaling the count of *known* roles
   is fine; minting brand-new node identities at
   runtime is not.
 - **Topologies whose roles change at runtime.** Adding a wholly new tag or node *name* to
@@ -901,25 +901,31 @@ config :nebula_api,
   nodes_info_refresh_interval: 5_000
 ```
 
-## Compiling a generic node
+## Compiling a generic (client) node
 
-Add a node with **no tags** and you get a pure caller — every `defapi` resolves remote on
-it, because it matches no `&tag` and no `@other`:
+Sometimes you want a node that only *calls* the cluster and serves nothing — a console, a
+control plane, a short-lived client whose runtime name you can't know at build time. Build
+it as `nonode@nohost` (compile it **without** `--name`) and give it **no tags**:
 
 ```elixir
 config :nebula_api,
   nodes: [
-    # ... your real nodes ...
-    "generic@anyhost.localhost": []
+    # ... your real, named nodes ...
+    "nonode@nohost": []
   ]
 ```
 
-Compile a release as `generic@anyhost.localhost` and it serves nothing: every call is RPC
-out to whichever node does serve it. The only bodies that stay local on it are a
-selector-less `defapi` (local on every node by definition) and `defapi @generic` (targeted
-at it by name). Handy for a control plane, a console, or any node that should only *call*
-the cluster — and the closest thing to a "client" node when you can't know every caller's
-name at build time.
+```bash
+mix compile && mix release client   # no --name on compile → node() is nonode@nohost
+```
+
+With no tags it matches no `&tag` and no `@node`, so every `defapi` resolves to a remote
+call out to whichever node does serve it (only a selector-less `defapi`, which is local
+everywhere, stays local here). And because it was compiled *nameless*, the
+[boot-time node check](#4-compile-with-the-target-node-name) skips it — so you can boot this
+same release under **any** runtime name (`RELEASE_NODE=client-7@host`, whatever your
+scheduler hands out) to join the cluster and make calls. It's the one node whose runtime
+name doesn't have to be known when you build it — the closest thing to a "client".
 
 ## But wait — how do the nodes actually connect?
 
