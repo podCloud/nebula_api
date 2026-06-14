@@ -215,6 +215,11 @@ blocks the module's other calls.
 app stops or crashes its workers go down with it and `:pg` drops their entries — no stale
 routing targets.
 
+**On a generic node** (a nameless `nonode@nohost` build, or any release booted with
+`ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1`), `nebula_api_server()` is a no-op: it logs a warning,
+starts no workers, and serves nothing — every `defapi` call routes remote. See
+[Configuration → boot-time node policy](configuration.md#boot-time-node-policy).
+
 ### Guard against forgetting it — the `:nebula` compiler
 
 Forgetting `nebula_api_server()` in an app that has `defapi` modules means workers that

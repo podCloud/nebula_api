@@ -48,22 +48,25 @@ supervision tree, which discovers its `defapi` modules and starts the workers. S
 ## Compile with the target node name
 
 NebulaAPI decides routing at compile time, so the compiler has to know *which* node it is
-building for. It reads `node()`:
+building for — it reads `node()`. Compile each release with its own `--name`:
 
 ```bash
-elixir --name api@api.example -S mix compile
+elixir --name api@api.example -S mix compile && mix release api
 ```
 
-Each release is compiled separately, with its own node name:
+Forget `--name` and the build stops with a `CompileError`: `node()` would be
+`nonode@nohost`, and a *missing* node name is distinct from an *unknown* one — so
+`allow_unknown_self_node` does **not** cover it. (Opt into a nameless build with
+[`allow_nonode_nohost`](#allow_nonode_nohost).)
+
+Build each release in its own stage:
 
 ```dockerfile
-# Build for the api node
-ENV RELEASE_NODE=api@api.example
-RUN elixir --name ${RELEASE_NODE} -S mix compile && mix release api
+# api release — compiled as node api@api.example
+RUN elixir --name api@api.example -S mix compile && mix release api
 
-# Build for the worker (separate stage)
-ENV RELEASE_NODE=worker@worker.example
-RUN elixir --name ${RELEASE_NODE} -S mix compile && mix release worker
+# worker release — separate stage
+RUN elixir --name worker@worker.example -S mix compile && mix release worker
 ```
 
 ### dev/test: `self_node` instead of `--name`
@@ -78,6 +81,24 @@ config :nebula_api,
 ```
 
 In production, prefer the real `--name` (then `node()` is authoritative).
+
+## Boot-time node policy
+
+Compile-time and runtime node names must agree: a release bakes its routing for the node it
+was compiled as, so it must **run** as that node. The runtime node name comes from Mix
+release's `RELEASE_NODE` + `RELEASE_DISTRIBUTION=name`
+([docs](https://hexdocs.pm/mix/Mix.Tasks.Release.html#module-environment-variables)). At boot
+`NebulaAPI.Server` enforces the match:
+
+- **Running as exactly the compiled node** → serves normally — the only case that starts
+  workers.
+- **Running as anything else** → refuses to boot, with an explicit message: a worker build
+  run as `api@host`, a build compiled without `--name` run under a real name, or a real build
+  run as `nonode@nohost`. The escape hatch `ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1` boots it
+  instead as a [generic node](../README.md#generic-nodes-serve-nothing-call-everything): no
+  server, serves nothing, every call routes remote.
+- **Compiled nameless and run as `nonode@nohost`** → a generic, inert node — no escape hatch
+  needed (it's running exactly as built; see [`allow_nonode_nohost`](#allow_nonode_nohost)).
 
 ## `default_opts`
 
@@ -122,13 +143,16 @@ config :nebula_api, nodes_info_refresh_interval: 10_000
 
 ### `allow_nonode_nohost`
 
-`false` by default. Set it to `true` in a build's config and `nonode@nohost` is registered
-as an empty, tagless node, so a release compiled **without** `--name` builds cleanly (its
-`self_node` is "known") instead of raising the unknown-node error. On such a build
-`nebula_api_server()` becomes a no-op — no workers, just a boot warning — so the node serves
-nothing and routes every `defapi` call remotely. It's the way to compile a generic *client*
-node whose runtime name isn't known at build time; keep it in the client build's config, not
-the shared cluster config.
+`false` by default. Set it to `true` and `nonode@nohost` is registered as an empty, tagless
+node, so a release compiled **without** `--name` builds (its `self_node` is admitted). Such a
+build runs as `nonode@nohost`: `nebula_api_server()` is a no-op (no workers, a boot warning),
+it serves nothing, and every `defapi` call routes remote. `nonode@nohost` isn't distributed,
+so it's **inert** — out of cluster. It's a *generic node*; see
+[the boot-time node policy](#boot-time-node-policy) and the README's
+[Generic nodes](../README.md#generic-nodes-serve-nothing-call-everything).
+
+You may **not** list `nonode@nohost` in `nodes` yourself — it's the reserved generic identity
+and can't carry tags (doing so raises). This flag is the only way to admit it, always empty.
 
 ```elixir
 config :nebula_api, allow_nonode_nohost: true
@@ -206,6 +230,14 @@ Available tags:
 If you compile on a node not in `nodes` (and didn't set `allow_unknown_self_node: true`),
 `use NebulaAPI` raises a `CompileError` telling you the `self_node` it saw and the
 configured nodes.
+
+### No node name
+
+If you compile without `--name` (so `node()` is `nonode@nohost`) and haven't set
+[`allow_nonode_nohost: true`](#allow_nonode_nohost), `use NebulaAPI` raises a `CompileError`:
+the name isn't *unknown*, it's *unset*, so `allow_unknown_self_node` does **not** silence it.
+It's almost always a forgotten `--name`. See
+[Compile with the target node name](#compile-with-the-target-node-name).
 
 ## Testing
 

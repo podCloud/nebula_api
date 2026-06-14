@@ -335,6 +335,11 @@ flag on `mix compile`:
 elixir --name api@api.example -S mix compile && mix release api
 ```
 
+Forget `--name` and the build stops with a clear `CompileError` (`node()` would be
+`nonode@nohost` — the name isn't *unknown*, it's *unset*, so `allow_unknown_self_node`
+won't paper over it). Set `allow_nonode_nohost: true` if you really mean a nameless
+[generic build](#generic-nodes-serve-nothing-call-everything).
+
 Build each release in its own stage, pinning the compile-time node name:
 
 ```dockerfile

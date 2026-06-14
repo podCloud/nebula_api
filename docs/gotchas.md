@@ -142,6 +142,17 @@ supervisor (see [Defining APIs](defining.md#wire-the-server-into-the-supervision
 
 ## Runtime errors
 
+### Refuses to boot — "node mismatch"
+
+A release bakes its routing for the node it was compiled as, so it must **run** as that node.
+If `NebulaAPI.Server` boots and `node()` doesn't match the compiled node, it raises and the
+app won't start: a worker build launched as `api@host`, a real build launched as
+`nonode@nohost` (forgot `RELEASE_DISTRIBUTION=name` / `RELEASE_NODE`), or a nameless build
+given a real name. The runtime node comes from Mix release's `RELEASE_NODE` +
+`RELEASE_DISTRIBUTION=name` — set both. For a deliberate generic console, boot with
+`ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1` (serves nothing, every call routes remote). See
+[Configuration → boot-time node policy](configuration.md#boot-time-node-policy).
+
 ### `{:nebula_error, {:no_worker, ...}}`
 
 No worker is reachable for a method. `{:nebula_error, {:no_worker_on_node, node}}` means a
