@@ -72,8 +72,9 @@ defmodule NebulaAPI.Server do
     compiled_node = node()
 
     if compiled_node == :nonode@nohost do
-      # Generic (client) build: compiled nameless, serves nothing. Even though an app may
-      # wire the server, start NO workers here — just warn at boot. Every defapi is remote.
+      # Compiled nameless → a generic host. In dev that's `iex -S mix` (start with `--name`
+      # for a real node instead); in prod it's the deliberate client build. Either way: no
+      # workers, no serving, just a boot warning — every defapi call is remote.
       quote do
         NebulaAPI.Server.generic_noop_child_spec()
       end
@@ -95,12 +96,31 @@ defmodule NebulaAPI.Server do
   def start_generic_noop do
     require Logger
 
-    Logger.warning(
-      "NebulaAPI: no API server started because we're on a generic nonode@nohost node — " <>
-        "this build serves nothing, all defapi calls will be remote."
-    )
+    case generic_noop_action(node()) do
+      {:warn, msg} ->
+        Logger.warning(msg)
+        :ignore
 
-    :ignore
+      {:crash, msg} ->
+        raise msg
+    end
+  end
+
+  @doc false
+  # A nameless (generic) build must run as nonode@nohost. Running it as nonode → warn and
+  # start nothing. Running it under a real name → crash: a nameless build isn't "someone"
+  # on the network, so it must not pretend to be a real node.
+  def generic_noop_action(:nonode@nohost) do
+    {:warn,
+     "NebulaAPI: no API server started because we're on a generic nonode@nohost node — " <>
+       "this build serves nothing, all defapi calls will be remote."}
+  end
+
+  def generic_noop_action(other) do
+    {:crash,
+     "NebulaAPI: this release was compiled nameless (a generic nonode@nohost build) but is " <>
+       "running as #{inspect(other)}. A nameless build must run as nonode@nohost — it has no " <>
+       "identity on the network. Compile with --name to run as a real node."}
   end
 
   def child_spec(opts) do
@@ -141,12 +161,26 @@ defmodule NebulaAPI.Server do
     compiled = Keyword.get(opts, :compiled_node)
     current = node()
 
+    case node_check(compiled, current, NebulaAPI.APIServer.runtime_mismatch_allowed?()) do
+      :ok -> :ok
+      {:error, c, r} -> raise node_mismatch_error(c, r)
+    end
+  end
+
+  @doc false
+  # Pure decision (testable without a second VM):
+  def node_check(compiled, current, mismatch_allowed?) do
     cond do
       is_nil(compiled) -> :ok
-      compiled == :nonode@nohost -> :ok
-      current == :nonode@nohost -> :ok
+      # Running as exactly the node it was compiled for — the happy path. (A nameless
+      # build must run as nonode@nohost: nonode == nonode lands here; a nameless build
+      # given a real name falls through and is refused — you're not "someone" on the net.)
       current == compiled -> :ok
-      true -> raise node_mismatch_error(compiled, current)
+      # Escape hatch, but ONLY for running a REAL build as the generic nonode@nohost
+      # (a quick prod console). A real build run as ANOTHER real node is incoherent and
+      # keeps crashing regardless of the env var.
+      current == :nonode@nohost and mismatch_allowed? -> :ok
+      true -> {:error, compiled, current}
     end
   end
 

@@ -109,6 +109,16 @@ defmodule NebulaAPI.APIServer do
     |> List.flatten()
   end
 
+  @doc false
+  # Escape hatch (env var `ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1`): lets a release compiled
+  # for a real node boot as `nonode@nohost` (a quick prod console) and keep its baked-in
+  # local routing, instead of crashing on the node mismatch and routing everything remote.
+  # It only ever relaxes the `nonode@nohost` case — a real build run as another real node
+  # still refuses to boot (see NebulaAPI.Server.verify_node!/1).
+  def runtime_mismatch_allowed? do
+    System.get_env("ALLOW_RUNTIME_NEBULA_NODE_MISMATCH") == "1"
+  end
+
   def register_local_method_worker(module, method, worker_pid) do
     Logger.debug("[#{node()}] registering local method #{inspect({module, method, worker_pid})}")
     :ok = :pg.join(:pg_nebula_api, {module, method}, worker_pid)
