@@ -92,11 +92,11 @@ call_on_nodes &cache !@db do
 end
 ```
 
-## Why compile-time?
+## What you get from compile-time
 
 NebulaAPI resolves all routing decisions at compile time. This is not a
 runtime router — it's a code generator that produces different bytecode
-for each node.
+for each node. That buys you four things:
 
 **No unnecessary deps.** Wrap a `use`, an `import`, or a child spec in `on_nebula_nodes` so
 it exists only where it belongs:
@@ -166,6 +166,14 @@ sense. The decision was made once, at compile time.
 
 ## How it works
 
+Same source, different bytecode. Each release is compiled with its target node name (the
+compiler reads `node()`), so a `&db` body is **real code** on a node that has `:db` and an
+**RPC stub** everywhere else — the stub routes through `:pg` process groups to a node that
+does have the body.
+
+<details>
+<summary>📊 Diagram</summary>
+
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    Source code (same)                    │
@@ -197,9 +205,7 @@ sense. The decision was made once, at compile time.
                         └─────────────┘
 ```
 
-Same source, different bytecode. Each release is compiled with its
-target node name — the compiler reads `node()` to know who it's
-building for.
+</details>
 
 ## Reshape your topology without touching code
 
@@ -387,7 +393,7 @@ node that does have the body.
 | `!&tag` | Nodes without this tag |
 | `@node` | Specific node (short or full name) |
 | `!@node` | All nodes except this one |
-| `:*` | All nodes (local implementation everywhere) |
+| *(no selector)* | Every node — the body is local everywhere |
 
 Combine selectors by **juxtaposing them with a space** — no commas between them, no
 brackets. This is the canonical NebulaAPI syntax, and it's what keeps the code readable
@@ -407,8 +413,8 @@ defapi @worker, transcode(input, opts) do
   |> FFmpex.execute()
 end
 
-# Every node gets its own local copy
-defapi :*, health_check() do
+# No selector → the body is local on every node, each returning its own data
+defapi get_node_health() do
   %{node: node(), uptime: :erlang.statistics(:wall_clock) |> elem(0)}
 end
 ```
@@ -470,12 +476,13 @@ the more explicit you get, the more it wins. Take the same call, `MyApp.Cache.ge
    routes itself, even inside a block; a routing key set to `nil` / `false` opts the call
    back out to the default.
 
-**Default unicast goes to the first connected node that serves the method — never the
-others.** Routing reads the live `:pg` membership and calls the first registered worker for
-that method; that's the only node that runs it. No fan-out, no load-balancing by default.
-Membership is live, though: if that node drops, `:pg` removes it, so the next call simply
-lands on whoever is first among the nodes still connected. (Want several nodes at once, a
-specific one, a random one, or a load-aware pick? That's [runtime routing](#runtime-routing).)
+**Default unicast goes to the first node on the `:pg` list that serves the method — never
+the others.** Concretely that's the first node serving the API that connected to NebulaAPI
+(joined the method's `:pg` group); that's the only node that runs the call. No fan-out, no
+load-balancing by default. Membership is live, though: if that node drops, `:pg` removes it,
+so the next call simply lands on whoever is now first among the nodes still connected. (Want
+several nodes at once, a specific one, a random one, or a load-aware pick? That's
+[runtime routing](#runtime-routing).)
 
 ## `on_nebula_nodes` — conditional compilation
 
@@ -689,6 +696,39 @@ you never have to guess whether an `{:error, _}` came from your code or the fram
 exception, throw or exit escaping a body is reported the same way — identically whether the
 body ran locally or remotely.
 
+## Wrap any single-node library
+
+Here's the pattern that tends to click: **NebulaAPI turns any single-node
+library into a cluster-wide one without touching the library.** No fork, no
+monkey-patch — just a few lines of `defapi` that delegate to it on a chosen
+node.
+
+If you've ever thought *"I'd love to use Cachex / a counter / a cron here, but
+its state is per-node, so now I need Redis / a shared DB / `:global` locks…"* —
+this is the escape hatch. The library stays exactly as it is. You pin it to one
+node and wrap it.
+
+```elixir
+# Cachex runs only on the @cache node; every node shares one cache through the wrapper.
+defmodule MyApp.Cache do
+  use NebulaAPI
+
+  defapi @cache, get(key),        do: Cachex.get(:app_cache, key)
+  defapi @cache, put(key, value), do: Cachex.put(:app_cache, key, value)
+end
+```
+
+Any node calls `MyApp.Cache.get/1`; it resolves locally on `@cache` and routes
+transparently everywhere else. One shared cache, no Redis. The same trick gives you
+cluster-wide rate limiters, counters, run-once-per-cluster schedulers, singleton
+coordinators, and feature-flag stores.
+
+> **An honest caveat.** This is great for values read often and invalidated rarely
+> (dynamic config, reference data). But for a hot path doing thousands of reads per second
+> per node, every read becomes an RPC round-trip — that's the **wrong** use, and a real
+> distributed cache (Redis, or `:mnesia`) stays better. NebulaAPI is the right tool when
+> the access pattern fits, not a universal replacement for a distributed cache.
+
 ## Worked example: a 3-role cluster
 
 Three nodes, three roles — an API front, a database node, and a worker:
@@ -793,39 +833,6 @@ defmodule MyAppWeb.UserController do
 end
 ```
 
-## Wrap any single-node library
-
-Here's the pattern that tends to click: **NebulaAPI turns any single-node
-library into a cluster-wide one without touching the library.** No fork, no
-monkey-patch — just a few lines of `defapi` that delegate to it on a chosen
-node.
-
-If you've ever thought *"I'd love to use Cachex / a counter / a cron here, but
-its state is per-node, so now I need Redis / a shared DB / `:global` locks…"* —
-this is the escape hatch. The library stays exactly as it is. You pin it to one
-node and wrap it.
-
-```elixir
-# Cachex runs only on the @cache node; every node shares one cache through the wrapper.
-defmodule MyApp.Cache do
-  use NebulaAPI
-
-  defapi @cache, get(key),        do: Cachex.get(:app_cache, key)
-  defapi @cache, put(key, value), do: Cachex.put(:app_cache, key, value)
-end
-```
-
-Any node calls `MyApp.Cache.get/1`; it resolves locally on `@cache` and routes
-transparently everywhere else. One shared cache, no Redis. The same trick gives you
-cluster-wide rate limiters, counters, run-once-per-cluster schedulers, singleton
-coordinators, and feature-flag stores.
-
-> **An honest caveat.** This is great for values read often and invalidated rarely
-> (dynamic config, reference data). But for a hot path doing thousands of reads per second
-> per node, every read becomes an RPC round-trip — that's the **wrong** use, and a real
-> distributed cache (Redis, or `:mnesia`) stays better. NebulaAPI is the right tool when
-> the access pattern fits, not a universal replacement for a distributed cache.
-
 ## When NOT to use NebulaAPI
 
 Being honest about the edges:
@@ -905,12 +912,44 @@ config :nebula_api,
 ```
 
 Compile a release as `generic@anyhost.localhost` and it serves nothing: every call is RPC
-out to whichever node does serve it. The only bodies that stay local on it are `defapi :*`
-(local everywhere by definition) and `defapi @generic` (targeted at it by name). Handy for a
-control plane, a console, or any node that should only *call* the cluster — and the closest
-thing to a "client" node when you can't know every caller's name at build time.
+out to whichever node does serve it. The only bodies that stay local on it are a
+selector-less `defapi` (local on every node by definition) and `defapi @generic` (targeted
+at it by name). Handy for a control plane, a console, or any node that should only *call*
+the cluster — and the closest thing to a "client" node when you can't know every caller's
+name at build time.
+
+## But wait — how do the nodes actually connect?
+
+NebulaAPI decides *what code goes where*; it does **not** form the Erlang cluster. That's
+deliberate — clustering is your call, and the library stays agnostic. All it needs is that
+the nodes are connected Erlang nodes (so `:pg` syncs and distribution RPC flows); *how* they
+find each other is entirely up to you. Anything that ends up calling `Node.connect/1` works:
+
+- **[libcluster](https://hex.pm/packages/libcluster)** — the usual answer. Pick a strategy
+  for your environment: `Gossip` on a flat network, `Kubernetes` / `Kubernetes.DNS` on k8s,
+  `EpmdDNS` behind a headless service, or a static `Epmd` list for a fixed fleet. Point its
+  topology at the same node names you put in `config :nebula_api, :nodes`. (The
+  [runnable demo](https://github.com/podCloud/NebulaAPI/tree/main/demo) does exactly this
+  with libcluster's `Epmd` strategy over a Docker network.)
+- **Plain epmd + `Node.connect/1`** — for a handful of known hosts, a few `Node.connect`
+  calls at boot (or `-kernel sync_nodes_mandatory ...` in `vm.args`) are enough.
+- **Anything else** — a custom strategy, a service-discovery hook, manual connects from a
+  release `env.sh`. NebulaAPI never looks; it only ever reads `node()` and `:pg`.
+
+Two practical notes: share the **same cookie** across the cluster, and use **long names**
+(`name@host`, `RELEASE_DISTRIBUTION=name`) so the running node names match what you compiled
+for. Once the nodes are connected, NebulaAPI's workers register in `:pg` and routing just
+works.
 
 ## Architecture
+
+Two halves: a **compile-time** code generator (`AST.Parser` / `AST.Builder` / `Config`,
+which fail the build on an unknown tag or node) and a small **runtime** layer
+(`NebulaAPI.Server` per app starting a `Worker` per locally-served module, `APIServer`
+holding the `:pg` routing and the node-info ETS cache).
+
+<details>
+<summary>📊 Diagram</summary>
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -935,6 +974,8 @@ thing to a "client" node when you can't know every caller's name at build time.
 │  :pg groups         worker discovery across nodes     │
 └─────────────────────────────────────────────────────┘
 ```
+
+</details>
 
 ## Documentation
 
