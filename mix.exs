@@ -1,7 +1,7 @@
 defmodule NebulaAPI.MixProject do
   use Mix.Project
 
-  @version "0.5.0"
+  @version "0.5.1"
   @source_url "https://github.com/podCloud/NebulaAPI"
 
   def project do
@@ -56,11 +56,13 @@ defmodule NebulaAPI.MixProject do
         "docs/defining.md",
         "docs/calling.md",
         "docs/gotchas.md",
-        "docs/deep-dive/ast-deep-dive.md"
+        "docs/deep-dive/ast-deep-dive.md",
+        {"ABOUT-LLMS.md", title: "About LLMs"}
       ],
       groups_for_extras: [
         Guides: ~r/docs\/(configuration|defining|calling|gotchas)\.md/,
-        "Deep dive": ~r/docs\/deep-dive\//
+        "Deep dive": ~r/docs\/deep-dive\//,
+        Project: ~r/ABOUT-LLMS/
       ]
     ]
   end

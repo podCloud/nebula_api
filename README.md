@@ -267,7 +267,7 @@ Or track the repo directly (e.g. for an unreleased fix):
 ```elixir
 def deps do
   [
-    {:nebula_api, git: "git@github.com:podCloud/NebulaAPI.git", tag: "v0.5.0"}
+    {:nebula_api, git: "git@github.com:podCloud/NebulaAPI.git", tag: "v0.5.1"}
   ]
 end
 ```
@@ -1045,6 +1045,8 @@ meet each theme:
 Deep dive:
 
 - [AST deep-dive](docs/deep-dive/ast-deep-dive.md) — how the per-node code is generated
+
+See also [About LLMs](ABOUT-LLMS.md) — how (and how much) LLMs were used to build this library.
 
 ## License
 

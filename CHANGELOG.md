@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-06-15
+
+### Documentation
+- Added `ABOUT-LLMS.md` — a transparency note on how LLMs were (and were not) used in this
+  project: the concept and first version are human (first committed March 2024), LLMs assist
+  with code generation, automated review, and docs under human architectural direction, and
+  no version reaches `main` without human validation. Published to the docs.
+
 ## [0.5.0] - 2026-06-15
 
 ### Added
