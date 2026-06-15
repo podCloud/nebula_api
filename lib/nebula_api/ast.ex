@@ -19,7 +19,10 @@ defmodule NebulaAPI.AST do
                opts
                |> Keyword.validate!(
                  only: [
+                   defapi: 1,
+                   defapi: 2,
                    defapi: 3,
+                   on_nebula_nodes: 1,
                    on_nebula_nodes: 2,
                    call_on_node: 1,
                    call_on_node: 2,
@@ -43,62 +46,97 @@ defmodule NebulaAPI.AST do
 
   ## Node Selectors
 
-  - `@node_name` - Specific node
-  - `&tag` - Nodes with tag
-  - `!@node_name` or `!&tag` - Negation
-  - `[...]` - List of selectors
-  - `:*` - ALL nodes (local implementation on every node)
+  Selectors are juxtaposed by a space (never commas, never a `[list]`):
+
+  - `@node` - specific node (short or full name)
+  - `&tag` - nodes with the tag
+  - `!@node` / `!&tag` - negation
+  - `@a &b` - combine by juxtaposition (e.g. `@worker &gpu`)
+  - *(no selector)* - the body runs on every node (local everywhere)
 
   ## Examples
 
-      defapi [@api], get_user(id) do
+      defapi @api, get_user(id) do
         Repo.get(User, id)
       end
 
-      defapi [&db, !@worker], find_podcast(slug) do
+      defapi &db !@worker, find_podcast(slug) do
         MyApp.Repo.find_one(:db, "records", %{identifier: slug})
       end
 
-      defapi :*, node_health_data() do
-        # Available on ALL nodes, each returns its own data
+      # No selector → available on every node, each returns its own data.
+      defapi get_node_health() do
         collect_runtime_info()
       end
   """
-  defmacro defapi(nebula_ast, fn_ast, do: do_fn) do
-    parsed = nebula_ast |> NebulaAPI.AST.Parser.parse_nebula_ast()
+  # Canonical multi-selector with an INLINE `do:` — `defapi &db !@backup, get(id), do: ...`.
+  # Paren-less parsing folds the continuation selector, the signature AND the `[do: ...]`
+  # all into the chain, so the call arrives at arity 1. peel_chain/1 lifts the whole
+  # absorbed tail back out: [signature, [do: body]].
+  defmacro defapi(selectors_signature_and_do) do
+    case peel_chain(selectors_signature_and_do) do
+      {nebula_ast, [fn_ast, [do: do_fn]]} ->
+        expand_defapi(nebula_ast, fn_ast, do_fn, __CALLER__)
 
-    # If all_nodes is true, skip execution node filtering
-    is_current_node =
-      if parsed.all_nodes do
-        true
-      else
-        execution_nodes = nebula_ast |> get_execution_nodes_from_nebula_ast!()
+      _ ->
+        raise CompileError,
+          line: __CALLER__.line,
+          file: __CALLER__.file,
+          description: """
+          Malformed defapi. Expected: defapi <selectors>, name(args) do ... end
+          (or the inline `, do:` form). Selectors are juxtaposed by a space, e.g.
+          `defapi &db !@backup, get(id) do ... end`.
+          """
+    end
+  end
 
-        self_node =
-          case Module.get_attribute(__CALLER__.module, :nebula_api) do
-            nil ->
-              raise CompileError,
-                description: """
-                defapi used in #{inspect(__CALLER__.module)} without `use NebulaAPI`.
+  # Arity 2 covers two shapes:
+  #   * NO selector — `defapi name(args) do ... end` — the body runs on EVERY node
+  #     (the signature is arg0; there is no selector at all).
+  #   * a `do ... end` BLOCK multi-selector — `defapi &db !@backup, get(id) do` — where the
+  #     signature got folded into the selector chain (peel_chain/1 lifts it back out).
+  defmacro defapi(selector_or_signature, do: do_fn) do
+    if selector_head?(selector_or_signature) do
+      case peel_chain(selector_or_signature) do
+        {nebula_ast, [fn_ast]} ->
+          expand_defapi(nebula_ast, fn_ast, do_fn, __CALLER__)
 
-                Only `use NebulaAPI` registers the bookkeeping defapi needs. Use it on
-                modules that define defapi endpoints — `use NebulaAPI.AST` is for
-                on_nebula_nodes / call_on_* only.
-                """
+        {_clean, _} ->
+          raise CompileError,
+            line: __CALLER__.line,
+            file: __CALLER__.file,
+            description: """
+            defapi is missing a function signature.
 
-            opts ->
-              Keyword.fetch!(opts, :self_node)
-          end
-
-        execution_nodes
-        |> Keyword.keys()
-        |> Enum.member?(self_node)
+            Expected: defapi <selectors>, name(args) do ... end — or omit the selectors
+            entirely to run on every node (`defapi name(args) do ... end`). Selectors are
+            juxtaposed by a space.
+            """
       end
+    else
+      # No selector at all → the body is local on every node.
+      expand_defapi(:all, selector_or_signature, do_fn, __CALLER__)
+    end
+  end
+
+  # Single selector (or the tolerated [list] form): selector and signature are
+  # already two distinct arguments — nothing absorbed, nothing to peel.
+  defmacro defapi(nebula_ast, fn_ast, do: do_fn) do
+    expand_defapi(nebula_ast, fn_ast, do_fn, __CALLER__)
+  end
+
+  defp expand_defapi(nebula_ast, fn_ast, do_fn, caller) do
+    is_current_node = defapi_local?(nebula_ast, caller)
+
+    # The CONFIGURED nodes that serve this method (the selector resolved over the
+    # topology, or every node for the no-selector form). Baked into the remote stub
+    # so a quorum: :configured call knows its denominator — same on every build.
+    serving_nodes = defapi_serving_nodes(nebula_ast)
 
     fundef = fn_ast |> NebulaAPI.AST.Parser.parse_fundef_ast()
 
     # Register method as local or remote
-    __CALLER__.module
+    caller.module
     |> Module.put_attribute(
       if is_current_node do
         :nebula_local_api_methods
@@ -113,13 +151,63 @@ defmodule NebulaAPI.AST do
     # nothing elsewhere).
     quote do
       unquote(NebulaAPI.AST.Builder.build_local_function(fundef, do_fn, is_current_node))
-      unquote(NebulaAPI.AST.Builder.build_remote_function(fundef))
+      unquote(NebulaAPI.AST.Builder.build_remote_function(fundef, serving_nodes))
       unquote(NebulaAPI.AST.Builder.build_public_function(fundef, is_current_node))
     end
   rescue
     e in CompileError ->
-      raise %{e | line: __CALLER__.line, file: __CALLER__.file}
+      raise %{e | line: caller.line, file: caller.file}
   end
+
+  # The configured node names that serve this method: the no-selector form runs
+  # everywhere, otherwise the selector resolved over the topology. Compile-time and
+  # config-derived, so identical on every build.
+  defp defapi_serving_nodes(:all), do: NebulaAPI.Config.nodes() |> Keyword.keys()
+
+  defp defapi_serving_nodes(nebula_ast) do
+    nebula_ast
+    |> get_execution_nodes_from_nebula_ast!()
+    |> Keyword.keys()
+  end
+
+  # `:all` is the no-selector form — the body is local on every node.
+  defp defapi_local?(:all, caller) do
+    # Still require `use NebulaAPI` for the bookkeeping defapi relies on.
+    _ = fetch_self_node!(caller)
+    true
+  end
+
+  defp defapi_local?(nebula_ast, caller) do
+    self_node = fetch_self_node!(caller)
+
+    nebula_ast
+    |> get_execution_nodes_from_nebula_ast!()
+    |> Keyword.keys()
+    |> Enum.member?(self_node)
+  end
+
+  defp fetch_self_node!(caller) do
+    case Module.get_attribute(caller.module, :nebula_api) do
+      nil ->
+        raise CompileError,
+          description: """
+          defapi used in #{inspect(caller.module)} without `use NebulaAPI`.
+
+          Only `use NebulaAPI` registers the bookkeeping defapi needs. Use it on
+          modules that define defapi endpoints — `use NebulaAPI.AST` is for
+          on_nebula_nodes / call_on_* only.
+          """
+
+      opts ->
+        Keyword.fetch!(opts, :self_node)
+    end
+  end
+
+  # A selector chain head: `&tag`, `@node`, `!...`, or a `[...]` list. Anything else
+  # in selector position (a `name(args)` signature) means the no-selector form.
+  defp selector_head?({op, _, _}) when op in [:&, :@, :!], do: true
+  defp selector_head?(list) when is_list(list), do: true
+  defp selector_head?(_), do: false
 
   @doc """
   Conditional compilation based on node.
@@ -141,10 +229,33 @@ defmodule NebulaAPI.AST do
       end
   """
   defmacro on_nebula_nodes(nebula_ast, opts) do
+    expand_on_nebula_nodes(nebula_ast, opts, __CALLER__)
+  end
+
+  # Inline form: `on_nebula_nodes &db !@backup, do: ..., else: ...` — the multi-selector
+  # chain, the do: AND the else: all fold into one arity-1 arg. peel_chain/1 lifts the
+  # do:/else: kwlist back out.
+  defmacro on_nebula_nodes(selectors_and_opts) do
+    case peel_chain(selectors_and_opts) do
+      {nebula_ast, [opts]} when is_list(opts) ->
+        expand_on_nebula_nodes(nebula_ast, opts, __CALLER__)
+
+      _ ->
+        raise CompileError,
+          line: __CALLER__.line,
+          file: __CALLER__.file,
+          description: """
+          Malformed on_nebula_nodes. Expected: on_nebula_nodes <selectors> do ... [else ...] end
+          (or the inline `, do:` / `, else:` form). Selectors are juxtaposed by a space.
+          """
+    end
+  end
+
+  defp expand_on_nebula_nodes(nebula_ast, opts, caller) do
     execution_nodes = nebula_ast |> get_execution_nodes_from_nebula_ast!()
 
     self_node =
-      case __CALLER__.module do
+      case caller.module do
         nil -> node()
         mod -> Module.get_attribute(mod, :nebula_api, []) |> Keyword.get(:self_node, node())
       end
@@ -154,24 +265,25 @@ defmodule NebulaAPI.AST do
       |> Keyword.keys()
       |> Enum.member?(self_node)
 
-    if(is_current_node, do: opts |> Keyword.get(:do), else: opts |> Keyword.get(:else))
+    if(is_current_node, do: Keyword.get(opts, :do), else: Keyword.get(opts, :else))
   rescue
     e in CompileError ->
-      raise %{e | line: __CALLER__.line, file: __CALLER__.file}
+      raise %{e | line: caller.line, file: caller.file}
   end
 
   @doc """
   Unicast call - execute API calls on a specific node.
 
-  The selector can be either:
+  The selector must be written literally at the call site — one of:
   - A Nebula AST expression (like `@api`, `&db`)
-  - A function that receives nodes_info map and returns a single node atom
+  - A literal function that receives the nodes_info map and returns a single node atom
+  - Omitted (the options-only form, or a literal `nil`) — "no restriction": the call routes
+    to the first available worker, with the block's options still applying.
 
-  The selector may also be a runtime expression. When it evaluates to `nil`,
-  it means "no restriction": the call routes to the first available worker,
-  with the block's options still applying. Distinct from that, a selector
-  *function* that returns `nil` means "nothing matched" — the call fails with
-  `{:nebula_error, {:no_worker_on_node, nil}}`, it never widens the target.
+  A variable or computed selector is a compile error (branch in Elixir and write a separate
+  `call_on_*` per case). Distinct from omitting it, a selector *function* that returns `nil`
+  means "nothing matched" — the call fails with `{:nebula_error, {:no_worker_on_node, nil}}`,
+  it never widens the target.
 
   Inside the block, the innermost explicit routing wins: a call carrying its
   own truthy `node_selector:`/`multicast:` trailing opts routes itself (the
@@ -212,6 +324,14 @@ defmodule NebulaAPI.AST do
     do_call_on_node(nil, opts, block, __CALLER__)
   end
 
+  # Inline `do:` with a multi-selector chain — `call_on_node @a !@b, do: ...` folds the
+  # chain, the opts AND the do into one arity-1, non-list arg (a plain opts list is the
+  # options-only clause above). Lift them back out.
+  defmacro call_on_node(selectors_opts_and_do) when not is_list(selectors_opts_and_do) do
+    {selector, opts, block} = unwrap_inline_chain_call!(selectors_opts_and_do, __CALLER__)
+    do_call_on_node(selector, opts, block, __CALLER__)
+  end
+
   defmacro call_on_node(selector_or_nebula_ast, opts_or_block)
 
   # A literal keyword list in selector position is the options-only form too
@@ -236,6 +356,8 @@ defmodule NebulaAPI.AST do
   end
 
   defp do_call_on_node(selector_or_nebula_ast, opts, block, caller) do
+    {selector_or_nebula_ast, opts} = absorb_trailing_opts(selector_or_nebula_ast, opts)
+    validate_literal_selector!(selector_or_nebula_ast, caller)
     validate_static_opts!(opts, :unicast, caller)
     selector = build_selector(selector_or_nebula_ast, :unicast, caller)
 
@@ -274,17 +396,18 @@ defmodule NebulaAPI.AST do
   @doc """
   Multicast call - execute API calls on multiple nodes.
 
-  The selector can be either:
+  The selector must be written literally at the call site — one of:
   - A Nebula AST expression (like `@api`, `&db`) - all matching nodes
-  - A function that receives nodes_info map and returns a list of node atoms
+  - A literal function that receives the nodes_info map and returns a list of node atoms
+  - Omitted (the options-only form, or a literal `nil`) — "no restriction": the call fans out
+    to every node serving the method (like `call_on_all_nodes`), with the block's options
+    still applying.
 
-  The selector may also be a runtime expression. When it evaluates to `nil`,
-  it means "no restriction": the call fans out to every node serving the
-  method (like `call_on_all_nodes`), with the block's options still applying.
-  Distinct from that, a selector *function* that returns `nil` or `[]` means
-  "nothing matched" — zero calls are made (`:all` returns `[]`, `:first`
-  returns `{:nebula_error, :no_success, []}`, `:quorum` fails
-  `:quorum_unreachable`); it never widens the target.
+  A variable or computed selector is a compile error (branch in Elixir and write a separate
+  `call_on_*` per case). Distinct from omitting it, a selector *function* that returns `nil`
+  or `[]` means "nothing matched" — zero calls are made (`:all` returns `[]`, `:first`
+  returns `{:nebula_error, :no_success, []}`, `:quorum` fails `:quorum_unreachable`); it never
+  widens the target.
 
   Inside the block, the innermost explicit routing wins: a call carrying its
   own truthy `node_selector:`/`multicast:` trailing opts routes itself (the
@@ -323,6 +446,13 @@ defmodule NebulaAPI.AST do
     do_call_on_nodes(nil, opts, block, __CALLER__)
   end
 
+  # Inline `do:` with a multi-selector chain — `call_on_nodes @a !@b, strategy: :all, do: ...`
+  # folds the chain, the opts AND the do into one arity-1, non-list arg.
+  defmacro call_on_nodes(selectors_opts_and_do) when not is_list(selectors_opts_and_do) do
+    {selector, opts, block} = unwrap_inline_chain_call!(selectors_opts_and_do, __CALLER__)
+    do_call_on_nodes(selector, opts, block, __CALLER__)
+  end
+
   defmacro call_on_nodes(selector_or_nebula_ast, opts_or_block)
 
   # Same disambiguation as call_on_node/2: a literal keyword list in selector
@@ -345,7 +475,10 @@ defmodule NebulaAPI.AST do
   end
 
   defp do_call_on_nodes(selector_or_nebula_ast, opts, block, caller) do
+    {selector_or_nebula_ast, opts} = absorb_trailing_opts(selector_or_nebula_ast, opts)
+    validate_literal_selector!(selector_or_nebula_ast, caller)
     validate_static_opts!(opts, :multicast, caller)
+    opts = enforce_fn_selector_quorum!(selector_or_nebula_ast, opts, caller)
     selector = build_selector(selector_or_nebula_ast, :multicast, caller)
 
     quote do
@@ -427,9 +560,30 @@ defmodule NebulaAPI.AST do
   end
 
   @unicast_block_opts [:timeout]
-  @multicast_only_opts [:strategy, :at_least, :success, :failure]
+  @multicast_only_opts [:strategy, :at_least, :success, :failure, :quorum]
   @multicast_block_opts @unicast_block_opts ++ @multicast_only_opts
   @valid_strategies [:all, :first, :quorum]
+  @valid_quorum_modes [:configured, :available]
+
+  # A literal `fn … end` selector picks its set dynamically, so quorum: :configured
+  # (a majority of a STATIC configured set) has nothing to count — refuse it at compile
+  # time, with no silent downgrade: the call must say how to count, quorum: :available
+  # or at_least: n. Only an anonymous-function literal is decided here: a nil/omitted selector
+  # is the no-restriction form (the method's own configured set), a variable defers to
+  # runtime (it may evaluate to nil), and an @/&/! selector is static.
+  defp enforce_fn_selector_quorum!(selector, opts, caller) do
+    if match?({:fn, _, _}, selector) and static_value(opts, :strategy) == {:literal, :quorum} and
+         Keyword.get(opts, :quorum) != :available and not opt_present?(opts, :at_least) do
+      compile_error!(
+        caller,
+        "a function selector with strategy: :quorum can't use the :configured quorum (the " <>
+          "default) — a runtime function has no static configured set to take a majority of. " <>
+          "Pass quorum: :available, or at_least: n."
+      )
+    end
+
+    opts
+  end
 
   # Compile-time validation of the call_on_* block options. The macros receive
   # literal keyword lists, so anything statically decidable fails the build at
@@ -441,12 +595,20 @@ defmodule NebulaAPI.AST do
   # nil-means-"not set" convention applies. A whole-opts variable
   # (`call_on_node sel, my_opts do`) skips this entirely for the same reason.
   defp validate_static_opts!(opts, mode, caller) do
-    if Keyword.keyword?(opts) do
-      keys = opts |> Keyword.keys() |> Enum.uniq()
-      validate_static_keys!(keys, mode, caller)
-      validate_static_values!(opts, caller)
-      if mode == :multicast, do: validate_static_combos!(opts, caller)
+    unless Keyword.keyword?(opts) do
+      compile_error!(
+        caller,
+        "call_on_* options must be a literal keyword list (e.g. strategy: :quorum, " <>
+          "timeout: 100) — a variable or computed opts list isn't allowed. Individual " <>
+          "values may be dynamic (timeout: t), but the option keys must be visible at " <>
+          "compile time. Branch in Elixir and write a separate call_on_* per case."
+      )
     end
+
+    keys = opts |> Keyword.keys() |> Enum.uniq()
+    validate_static_keys!(keys, mode, caller)
+    validate_static_values!(opts, caller)
+    if mode == :multicast, do: validate_static_combos!(opts, caller)
 
     :ok
   end
@@ -517,6 +679,13 @@ defmodule NebulaAPI.AST do
     end
 
     case static_value(opts, :strategy) do
+      :dynamic ->
+        compile_error!(
+          caller,
+          "strategy: must be one of #{inspect(@valid_strategies)} given literally — " <>
+            "a runtime value isn't allowed (branch in Elixir and write a separate call_on_*)"
+        )
+
       {:literal, s} when not is_nil(s) and s not in @valid_strategies ->
         compile_error!(
           caller,
@@ -532,6 +701,24 @@ defmodule NebulaAPI.AST do
         compile_error!(
           caller,
           "at_least: must be a positive integer (a number of workers), got: #{inspect(n)}"
+        )
+
+      _ ->
+        :ok
+    end
+
+    case static_value(opts, :quorum) do
+      :dynamic ->
+        compile_error!(
+          caller,
+          "quorum: must be one of #{inspect(@valid_quorum_modes)} given literally — " <>
+            "a runtime value isn't allowed (branch in Elixir and write a separate call_on_*)"
+        )
+
+      {:literal, m} when not is_nil(m) and m not in @valid_quorum_modes ->
+        compile_error!(
+          caller,
+          "quorum: must be one of #{inspect(@valid_quorum_modes)}, got: #{inspect(m)}"
         )
 
       _ ->
@@ -582,6 +769,22 @@ defmodule NebulaAPI.AST do
       )
     end
 
+    if opt_present?(opts, :quorum) and strategy_static not in [:quorum, :unknown] do
+      compile_error!(
+        caller,
+        "quorum: only applies to the :quorum strategy — this block resolves to " <>
+          "#{inspect(strategy_static)}"
+      )
+    end
+
+    if opt_present?(opts, :quorum) and opt_present?(opts, :at_least) do
+      compile_error!(
+        caller,
+        "at_least: and quorum: are mutually exclusive — at_least: asks for a precise " <>
+          "count, quorum: for a majority of a set"
+      )
+    end
+
     if (opt_present?(opts, :success) or opt_present?(opts, :failure)) and
          strategy_static not in [:first, :quorum, :unknown] do
       compile_error!(
@@ -605,8 +808,117 @@ defmodule NebulaAPI.AST do
     raise CompileError, line: caller.line, file: caller.file, description: description
   end
 
+  # --- Canonical space-juxtaposed selectors ----------------------------------
+  #
+  # The canonical NebulaAPI syntax juxtaposes selectors with a SPACE, never a
+  # bracketed list:
+  #
+  #     defapi &db !@backup, get(id) do ... end
+  #     call_on_nodes &db !@backup, strategy: :all do ... end
+  #
+  # Elixir parses a space-juxtaposed chain followed by a trailing comma argument
+  # (the defapi signature, or the call_on_* opts) by folding that trailing
+  # argument INTO the deepest selector call:
+  #
+  #     &db !@backup, get(id)            ==>  &db(!@backup, get(id))
+  #     &db !@backup, strategy: :all     ==>  &db(!@backup, [strategy: :all])
+  #
+  # So the chain arrives with the signature/opts (and, in the inline `do:` form, the
+  # `[do: ...]` too) absorbed as extra args of its deepest selector. peel_chain/1 walks
+  # the chain and lifts that whole absorbed tail back out, returning
+  # {pure_selector_ast, absorbed_list} — [] when nothing was absorbed. The pure chain is
+  # exactly what the single-selector / bracketed forms already feed the parser. A pure
+  # selector identifier carries `nil` or a single continuation arg, so any extra args on
+  # a selector identifier are the absorbed tail.
+  defp peel_chain({op, meta, [inner]}) when op in [:&, :@, :!] do
+    {clean, absorbed} = peel_chain(inner)
+    {{op, meta, [clean]}, absorbed}
+  end
+
+  defp peel_chain({name, meta, ctx}) when is_atom(ctx) do
+    {{name, meta, ctx}, []}
+  end
+
+  defp peel_chain({name, meta, [cont | absorbed]}) do
+    {clean_cont, deeper} = peel_chain(cont)
+    {{name, meta, [clean_cont]}, absorbed ++ deeper}
+  end
+
+  # Anything that isn't a selector chain head (a [list], a function selector,
+  # a variable, a bare opts list, a no-selector signature): nothing to peel.
+  defp peel_chain(other), do: {other, []}
+
+  # Only peel actual selector chain heads (@/&/!); leave function selectors,
+  # lists and opts-only lists untouched.
+  defp maybe_peel_chain({op, _, _} = selector) when op in [:&, :@, :!], do: peel_chain(selector)
+  defp maybe_peel_chain(selector), do: {selector, []}
+
+  # For call_on_* : lift any opts the canonical syntax folded into the selector
+  # back out and merge them ahead of opts passed the long way (the explicit ones
+  # win on conflict — they can't realistically both be present, but be safe).
+  defp absorb_trailing_opts(selector, opts) do
+    case maybe_peel_chain(selector) do
+      {clean, [absorbed_opts]} when is_list(absorbed_opts) ->
+        {clean, Keyword.merge(absorbed_opts, opts)}
+
+      {clean, _} ->
+        {clean, opts}
+    end
+  end
+
+  # call_on_* inline form: `call_on_node @a !@b, opt: v, do: block` folds the selector
+  # chain, the opts and the do into one arity-1 arg. Peel the chain, then split the do
+  # block out of the absorbed opts. Returns {clean_selector, opts, block}.
+  defp unwrap_inline_chain_call!(ast, caller) do
+    with {selector, [opts]} when is_list(opts) <- peel_chain(ast),
+         {block, rest} when not is_nil(block) <- Keyword.pop(opts, :do) do
+      {selector, rest, block}
+    else
+      _ ->
+        raise CompileError,
+          line: caller.line,
+          file: caller.file,
+          description: """
+          Malformed call_on_* call. Expected a do block, e.g.
+          `call_on_nodes &db !@backup, strategy: :all do ... end` (selectors juxtaposed by a space).
+          """
+    end
+  end
+
+  # Selectors must be written literally at the call site: a static nebula
+  # selector (@/&/!/list), a literal `fn`, or omitted (nil). A variable or any
+  # computed expression is refused — branch in plain Elixir and write a separate
+  # call_on_* per case. Keeping the selector statically visible is what lets the
+  # quorum denominator be decided at compile time (see enforce_fn_selector_quorum!).
+  defp validate_literal_selector!(selector, caller) do
+    cond do
+      is_nil(selector) -> :ok
+      # A function capture (`&fun/1`) shares the `&` head with a `&tag` selector but
+      # wraps a `/` (the arity) — catch it here with a clear message instead of letting
+      # it mangle through the tag parser into a confusing "unknown tag". A real selector
+      # function is written as a literal `fn nodes_info -> ... end`.
+      match?({:&, _, [{:/, _, _}]}, selector) ->
+        compile_error!(
+          caller,
+          "a function capture (&fun/1) isn't a valid call_on_* selector — write the " <>
+            "selector function as a literal `fn nodes_info -> ... end`, or use a " <>
+            "&tag / @node selector."
+        )
+
+      is_nebula_ast?(selector) -> :ok
+      match?({:fn, _, _}, selector) -> :ok
+      true ->
+        compile_error!(
+          caller,
+          "call_on_* selectors must be written literally (a &tag/@node selector, a literal " <>
+            "fn, or none) — a variable or computed selector isn't allowed. Branch in Elixir " <>
+            "and write a separate call_on_* per case."
+        )
+    end
+  end
+
   # Build a selector function from either a Nebula AST expression or a function.
-  # The is_nebula_ast? guard already disambiguates: @/&/!/list/:* shapes are
+  # The is_nebula_ast? guard already disambiguates: @/&/!/list shapes are
   # nebula selectors (a function never has these shapes), so any parse or
   # validation failure behind it IS an invalid selector — fail at compile time,
   # at the call site. Node selectors are compile-time by design; runtime
@@ -637,15 +949,12 @@ defmodule NebulaAPI.AST do
           end
 
         :multicast ->
-          # For multicast, return all matching nodes
+          # Return the CONFIGURED matching set, not just the present ones. Routing
+          # still intersects with the live workers downstream (call_selected_workers),
+          # so who actually gets called is unchanged — but a quorum: :configured call
+          # can now count the configured set (its denominator), connected or not.
           quote do
-            fn nodes_info ->
-              target_nodes = unquote(target_node_names)
-
-              nodes_info
-              |> Map.keys()
-              |> Enum.filter(fn node -> node in target_nodes end)
-            end
+            fn _nodes_info -> unquote(target_node_names) end
           end
       end
     else
@@ -658,7 +967,6 @@ defmodule NebulaAPI.AST do
   defp is_nebula_ast?({:&, _, _}), do: true
   defp is_nebula_ast?({:!, _, _}), do: true
   defp is_nebula_ast?(list) when is_list(list), do: true
-  defp is_nebula_ast?(:*), do: true
   defp is_nebula_ast?(_), do: false
 
   defp get_execution_nodes_from_nebula_ast!(ast) do

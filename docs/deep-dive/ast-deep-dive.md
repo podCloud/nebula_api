@@ -14,7 +14,7 @@ The AST processing pipeline:
 │                                                                         │
 │  Source Code                                                            │
 │  ────────────                                                           │
-│  defapi [&db, !@backup], get(id) do                                    │
+│  defapi &db !@backup, get(id) do                                       │
 │    Repo.get(User, id)                                                  │
 │  end                                                                    │
 │                                                                         │
@@ -54,19 +54,24 @@ The AST processing pipeline:
 
 ### Input: Selector AST
 
-When you write:
+The canonical syntax juxtaposes selectors with a space. When you write:
 ```elixir
-defapi [&db, !@backup], get(id) do ... end
+defapi &db !@backup, get(id) do ... end
 ```
 
-The selector `[&db, !@backup]` becomes this AST:
+the selector chain `&db !@backup` is *one* nested AST — each selector carries the next as
+its sole argument (its "rest"):
 
 ```elixir
-[
-  {:&, [], [{:db, [], nil}]},
+{:&, [], [{:db, [], [
   {:!, [], [{:@, [], [{:backup, [], nil}]}]}
-]
+]}]}
 ```
+
+The parser walks that chain via its `rest` clauses (a selector identifier with a single
+continuation arg), terminating at the last one (`nil` args). The bracketed list form
+`[&db, !@backup]` parses to the equivalent config through a separate `is_list` clause — it
+is tolerated, but not the canonical syntax.
 
 ### Parsing Process
 
@@ -94,19 +99,35 @@ The parser matches AST patterns:
 | `!@node` | `{:!, _, [{:@, _, [{node, _, _}]}]}` | `not_nodes` |
 | `&tag` | `{:&, _, [{tag, _, _}]}` | `tags` |
 | `!&tag` | `{:!, _, [{:&, _, [{tag, _, _}]}]}` | `not_tags` |
-| `[...]` | list | Process each element |
+| `a b …` (space-juxtaposed) | a selector node whose args carry the next selector as its `rest` | process the chain |
+| `[…]` | list | process each element (tolerated, non-canonical) |
 
-A single selector can be written without the surrounding list — `defapi &db, ...`
-is the same as `defapi [&db], ...`. Use the bracket form only to combine selectors.
+Combine selectors by juxtaposing them with a space — `defapi &db !@backup, ...`. The
+bracketed list (`defapi [&db, !@backup], ...`) parses to the same thing but is not the
+canonical form.
+
+### Lifting an absorbed trailing argument
+
+A subtlety specific to `defapi` (and `call_on_*`): Elixir parses a space-juxtaposed chain
+*followed by a trailing comma argument* — the `defapi` signature, or the `call_on_*` opts —
+by folding that argument into the chain's deepest selector. `&db !@backup, get(id)` parses
+as `&db(!@backup, get(id))`: the deepest selector identifier ends up with **two** args
+(`!@backup` and the signature). Since a pure selector identifier only ever has `nil` or a
+single continuation arg, that second arg is the unambiguous marker of an absorbed trailing
+argument. The private `peel_chain/1` walks the chain, lifts the trailing argument back
+out, and hands the pure selector chain to the parser — which is why the canonical
+multi-selector form compiles even though the macro is `defapi/2` in that case.
 
 ### Example Parsing
 
 ```elixir
-# Input AST
-[
-  {:&, [], [{:db, [], nil}]},
-  {:!, [], [{:@, [], [{:backup, [], nil}]}]}
-]
+# Input AST — the canonical space-juxtaposed chain for `&db !@backup`:
+# each selector carries the next as its single (rest) argument.
+{:&, [], [
+  {:db, [], [
+    {:!, [], [{:@, [], [{:backup, [], nil}]}]}
+  ]}
+]}
 
 # After parsing
 %{
@@ -133,7 +154,10 @@ end
 Handles:
 - Simple arguments: `arg` → `arg`
 - Default arguments: `arg \\ default` → `{arg, default}`
-- Inline atoms: `:atom` → `{:__inline, :atom}`
+
+Anything else — a pattern-matched argument (atom, map, list, tuple) — raises a
+`CompileError`: a `defapi` argument needs a *name* to travel through the generated router
+and the remote call tuple. Dispatch on values inside the body instead.
 
 ## Config Filter Functions
 
@@ -143,11 +167,13 @@ These functions filter the configured nodes based on the parsed selector.
 
 ### nodes_for_tags/2
 
-Keep nodes that have ANY of the specified tags:
+Keep nodes that carry ALL of the specified tags (intersection — `&a &b` means a AND b):
 
 ```elixir
 nodes_for_tags(nodes, [:db])
 # Keeps: nodes where :db is in their tag list
+nodes_for_tags(nodes, [:db, :cache])
+# Keeps: only nodes carrying BOTH :db and :cache
 ```
 
 ### nodes_for_not_tags/2
@@ -244,15 +270,26 @@ would trigger an "is never used" compiler warning in every consumer module).
 
 ### Remote function
 
-`build_remote_function/1` is generated on **every** node. It dispatches through the
+`build_remote_function/2` is generated on **every** node. It dispatches through the
 APIServer and threads routing options. Whatever `call_remote_method/3` returns is passed
-straight back to the caller — no re-wrapping, no `is_list` branching. A local exception
-becomes `{:nebula_error, exception}`:
+straight back to the caller — no re-wrapping, no `is_list` branching. A programming error
+(an invalid call option, validated up front) is re-raised so it crashes loud at the call
+site; only a genuine runtime exception becomes `{:nebula_error, exception}`. It also injects
+the method's **configured serving set** (the selector resolved over the topology at compile
+time, identical on every build) as a hidden `:__method_configured_nodes` opt, so a
+`quorum: :configured` call knows its denominator without any runtime lookup. The stub's
+set is authoritative — `Keyword.put` (not `put_new`) overwrites any caller-supplied value,
+so a quorum can't be silently shrunk from the call site:
 
 ```elixir
 defp __nbapi_remote_get(id, nebula_routing_opts) do
-  NebulaAPI.APIServer.call_remote_method(__MODULE__, {:get, id}, nebula_routing_opts)
+  NebulaAPI.APIServer.call_remote_method(
+    __MODULE__,
+    {:get, id},
+    Keyword.put(nebula_routing_opts, :__method_configured_nodes, [:"db@db.example"])
+  )
 rescue
+  e in ArgumentError -> reraise(e, __STACKTRACE__)
   e -> {:nebula_error, e}
 end
 ```
@@ -390,6 +427,7 @@ defp __nbapi_remote_get(id, opts, nebula_routing_opts) do
   NebulaAPI.APIServer.call_remote_method(MyApp.Users, {:get, id, opts}, nebula_routing_opts)
   # result returned verbatim
 rescue
+  e in ArgumentError -> reraise(e, __STACKTRACE__)
   e -> {:nebula_error, e}
 end
 ```
@@ -427,9 +465,13 @@ end
 ### Inspect a parsed selector
 
 ```elixir
-NebulaAPI.AST.Parser.parse_nebula_ast(quote do: [&db, !@backup])
-# => %{tags: [:db], not_tags: [], nodes: [], not_nodes: [:backup]}
+NebulaAPI.AST.Parser.parse_nebula_ast(Code.string_to_quoted!("&db !@backup"))
+# => %{nodes: [], tags: [:db], not_tags: [], not_nodes: [:backup]}
 ```
+
+Parse the selector from source (`Code.string_to_quoted!/1`), not `quote do: &db !@backup`:
+`quote` tags the identifiers with a macro context (`{:backup, _, Elixir}`), while the parser
+matches bare source identifiers (`{:backup, _, nil}`) — the form `defapi` actually receives.
 
 ### Check execution nodes
 
@@ -444,6 +486,6 @@ nodes()
 
 ## See Also
 
-- [Macros Reference](../macros-reference.md) — using the macros
-- [Server and Compiler](../server-and-compiler.md) — runtime execution
+- [Defining APIs](../defining.md) — using `defapi`, `on_nebula_nodes`, wiring the server
+- [Calling across nodes](../calling.md) — runtime routing and the worker/`:pg` layer
 - [Elixir Metaprogramming Guide](https://elixir-lang.org/getting-started/meta/quote-and-unquote.html)

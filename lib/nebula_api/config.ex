@@ -3,7 +3,8 @@ defmodule NebulaAPI.Config do
     nodes: [],
     default_opts: [],
     nodes_info_refresh_interval: 5_000,
-    default_timeout: 5_000
+    default_timeout: 5_000,
+    allow_nonode_nohost: false
   ]
 
   def config() do
@@ -12,7 +13,30 @@ defmodule NebulaAPI.Config do
   end
 
   def nodes() do
-    config()[:nodes]
+    base = config()[:nodes]
+    forbid_manual_nonode!(base)
+
+    # `allow_nonode_nohost: true` makes a NAMELESS build (`node()` is `:nonode@nohost`,
+    # built without `--name`) a valid, EMPTY node — never with custom tags. It's a generic
+    # node that matches no selector, serves nothing, and routes every `defapi` call remotely.
+    if config()[:allow_nonode_nohost] do
+      base ++ [{:nonode@nohost, []}]
+    else
+      base
+    end
+  end
+
+  # nonode@nohost is special — it's the generic/out-of-cluster identity, it must never carry
+  # tags or be addressable. You don't list it yourself; flip `allow_nonode_nohost: true` and
+  # it's added empty. A manual entry (with or without tags) is a configuration error.
+  defp forbid_manual_nonode!(nodes) do
+    if Keyword.has_key?(nodes, :nonode@nohost) do
+      raise ArgumentError, """
+      NebulaAPI: don't put `nonode@nohost` in `config :nebula_api, :nodes` — it's the
+      reserved generic/out-of-cluster identity and can't carry tags or be a target. To allow
+      a nameless build, set `config :nebula_api, allow_nonode_nohost: true` instead.
+      """
+    end
   end
 
   def default_opts() do
@@ -97,7 +121,7 @@ defmodule NebulaAPI.Config do
 
         Available nodes :
         #{all_nodes_names |> Enum.map(fn name -> if name |> String.contains?("@") do
-            "\t- @\"#{name}\""
+            "\t- @:\"#{name}\""
           else
             "\t- @#{name}"
           end end) |> Enum.join("\n")}
@@ -117,11 +141,16 @@ defmodule NebulaAPI.Config do
     nodes
     |> Enum.filter(fn
       {_node_name, node_tags} when is_list(node_tags) ->
-        # keep node if ANY requested tag is present in node_tags
-        Enum.any?(tags, &(&1 in node_tags))
+        # Keep the node only if it carries ALL requested tags (intersection):
+        # `&a &b` means "a AND b". Union is expressed by giving both groups a
+        # shared tag in config, so the selector combinator is the narrowing one
+        # — consistent with `@n &t`, `&t !&u` and `!&a !&b`, which all narrow.
+        Enum.all?(tags, &(&1 in node_tags))
 
       {_node_name, node_tag} when is_atom(node_tag) ->
-        node_tag in tags
+        # A node with a single (atom) tag satisfies "all requested" only when
+        # the request is exactly that one tag.
+        Enum.all?(tags, &(&1 == node_tag))
     end)
   end
 

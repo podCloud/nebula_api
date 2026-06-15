@@ -25,7 +25,7 @@ defmodule NebulaAPI.CompileErrorsTest do
   end
 
   describe "invalid selectors (M5)" do
-    test "a selector that is neither @/&/!/list/:* raises a clear CompileError" do
+    test "a selector that is neither @/&/!/list raises a clear CompileError" do
       assert_raise CompileError, ~r/invalid nebula selector/i, fn ->
         Parser.parse_nebula_ast(ast("42"))
       end
@@ -48,6 +48,17 @@ defmodule NebulaAPI.CompileErrorsTest do
 
       assert err.description =~ "call_on_node"
     end
+
+    test "a function capture (&fun/1) in call_on_* gets a clear message, not a mangled tag" do
+      # &fun/1 shares the `&` head with a &tag selector; without the dedicated
+      # check it peels into the tag parser and dies on a confusing "unknown tag".
+      err =
+        assert_raise CompileError, ~r/function capture/i, fn ->
+          eval_block("call_on_nodes &foo/1, strategy: :all")
+        end
+
+      assert err.description =~ "fn nodes_info"
+    end
   end
 
   describe "empty selector list ([])" do
@@ -60,8 +71,8 @@ defmodule NebulaAPI.CompileErrorsTest do
     # [] selects no node, so nothing could ever run — it used to silently
     # select every CONFIGURED node (the empty parse passed through every
     # Config filter). Now it fails the build everywhere a selector is
-    # accepted; :* says "all nodes", omitting the selector says "no
-    # restriction" in call_on_*.
+    # accepted. To run on every node, omit the selector entirely (defapi);
+    # in call_on_*, omitting the selector means "no restriction".
 
     test "the parser rejects [] directly" do
       assert_raise CompileError, ~r/empty nebula selector/i, fn ->
@@ -417,8 +428,9 @@ defmodule NebulaAPI.CompileErrorsTest do
       end
     end
 
-    test "a dynamic strategy defers the combination checks to runtime" do
-      # maybe_strategy could be :quorum at runtime: the macro must not refuse.
+    test "a dynamic strategy is refused at compile time (must be a literal atom)" do
+      # strategy: must be statically one of :all/:first/:quorum — a runtime value
+      # is refused, so the quorum/at_least combination is always decidable.
       code = """
       defmodule NebulaAPI.CompileErrorsTest.DynamicStrategy do
         use NebulaAPI.AST
@@ -431,7 +443,9 @@ defmodule NebulaAPI.CompileErrorsTest do
       end
       """
 
-      assert {_, _} = Code.eval_string(code)
+      assert_raise CompileError, ~r/strategy: must be one of.*literally/s, fn ->
+        Code.eval_string(code)
+      end
     end
 
     test "a valid quorum combination still compiles" do
@@ -520,6 +534,41 @@ defmodule NebulaAPI.CompileErrorsTest do
       """
 
       assert {_, _} = Code.eval_string(code)
+    end
+  end
+
+  describe "call_on_* require literal selector and options (no dynamic structure)" do
+    defp eval_mod(body) do
+      Code.eval_string("""
+      defmodule NebulaAPI.CompileErrorsTest.Dyn#{System.unique_integer([:positive])} do
+        use NebulaAPI.AST
+        #{body}
+      end
+      """)
+    end
+
+    test "a variable selector is refused at compile time" do
+      assert_raise CompileError, ~r/written literally/, fn ->
+        eval_mod("def go(sel), do: (call_on_nodes sel, strategy: :all do :ok end)")
+      end
+    end
+
+    test "a whole-opts variable is refused at compile time" do
+      assert_raise CompileError, ~r/literal keyword list/, fn ->
+        eval_mod("def go(opts), do: (call_on_node nil, opts do :ok end)")
+      end
+    end
+
+    test "a dynamic strategy: is refused at compile time" do
+      assert_raise CompileError, ~r/strategy: must be one of.*literally/s, fn ->
+        eval_mod("def go(s), do: (call_on_nodes strategy: s do :ok end)")
+      end
+    end
+
+    test "a dynamic quorum: is refused at compile time" do
+      assert_raise CompileError, ~r/quorum: must be one of.*literally/s, fn ->
+        eval_mod("def go(q), do: (call_on_nodes strategy: :quorum, quorum: q do :ok end)")
+      end
     end
   end
 end

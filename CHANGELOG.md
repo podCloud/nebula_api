@@ -5,6 +5,90 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`quorum:` mode — the default quorum is now a majority of the *configured* set, not the
+  connected workers.** A quorum needs a fixed set to take a majority of (otherwise two sides
+  of a partition each reach "their" quorum). On `strategy: :quorum`, a new `quorum:` option
+  picks the denominator:
+  - `:configured` (**the default**) — the configured nodes serving the method that match the
+    selector, connected or not. `call_on_nodes &db, strategy: :quorum` over three configured
+    `&db` nodes needs 2, so a single live node refuses (`:quorum_unreachable`). The method's
+    configured serving set is baked into its generated remote stub (`:__method_configured_nodes`),
+    config-derived and identical on every build.
+  - `:available` — a majority of the connected workers (`div(present, 2) + 1`), the previous
+    behaviour; "most of whoever is up", not a durability quorum.
+  - A **function selector** with `strategy: :quorum` must state its count explicitly —
+    `quorum: :available` or `at_least: n`; `:configured` (the default) is a compile error, since
+    a runtime function has no static set to take a majority of (no silent downgrade). `at_least:`
+    (an exact count) is mutually exclusive with `quorum:`.
+- **Boot-time node policy.** NebulaAPI bakes routing in per node at compile time, so a
+  release must run as the node it was compiled for. `nebula_api_server()` records the
+  compile-time node; `NebulaAPI.Server` decides at boot (`server_mode/3`):
+  - **running as exactly the compiled (real) node → serves normally.** This is the only case
+    that starts workers and serves.
+  - **compiled nameless AND running nameless** (`nonode@nohost` both sides) → a noop generic
+    node, no escape hatch needed (it's the deliberate nameless build running as intended).
+  - **any other case refuses to boot** with an explicit message — a worker build run as
+    `api@host`, a nameless (*forgot `--name`?*) build run under a real name, or a real build
+    run as `nonode@nohost` — *unless* the escape hatch is set.
+  - **`ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1`** turns the mismatch into a **generic node**:
+    `nebula_api_server()` becomes a no-op (no workers, a boot warning) and every `defapi`
+    call routes **remote** (the node serves nothing). Run as a real name it can still reach
+    the cluster (a quick prod console that calls but serves nothing); run as `nonode@nohost`
+    it's fully inert (out of cluster). The generated routers consult a boot-set flag /
+    `node()` so even locally-compiled bodies route remote in generic mode.
+- **`allow_nonode_nohost: true`** registers `nonode@nohost` as an empty, tagless node so a
+  nameless build compiles cleanly. Without it, compiling with no `--name` (so `node()` is
+  `:nonode@nohost`) is now a **CompileError** — a *missing* node name is distinct from an
+  *unknown* one, so `allow_unknown_self_node` deliberately does not cover it; you opt into a
+  nameless build explicitly. `nonode@nohost` may also **never** be listed in
+  `config :nebula_api, :nodes` directly (reserved identity — doing so raises); the flag is
+  the only way to admit it, always empty.
+
+### Changed
+- **BREAKING: juxtaposed positive tags `&a &b` now mean intersection (AND), not union (OR).**
+  `&a &b` matches nodes carrying *both* tags, consistent with `@n &t`, `&t !&u` and `!&a !&b`
+  (all of which narrow). Express a union by giving both node groups a shared tag in config and
+  selecting that. A combination that matches no node is a `CompileError`
+  (`No nodes found for execution`), so an over-broad reliance on the old OR surfaces at build.
+- **BREAKING: `call_on_*` arguments must be literal at the call site.** The selector must be a
+  `&tag`/`@node` selector, a literal `fn`, or omitted; the options must be a literal keyword
+  list with literal `strategy:`/`quorum:` atoms (individual values like `timeout:` may still be
+  dynamic). A variable or computed selector or opts list is now a `CompileError` — branch in
+  plain Elixir and write a separate `call_on_*` per case. This removes the silent `:available`
+  downgrade for function selectors and makes the quorum denominator fully decidable at compile
+  time.
+- The method's configured quorum set (`:__method_configured_nodes`, baked into the generated
+  stub) is now authoritative: a caller can no longer override it from the call site to shrink a
+  quorum.
+
+### Removed
+- **The wildcard selector is gone.** To make a `defapi` body run on every node, **omit the
+  selector entirely** — `defapi name(args) do ... end` — the same way
+  `call_on_nodes`/`call_on_all_nodes` with no selector means "everyone". "No selector = all
+  nodes" is the natural reading, with no special-case selector to learn.
+
+### Fixed
+- **Canonical space-juxtaposed multi-selectors now compile in `defapi` and
+  `call_on_node` / `call_on_nodes`.** The canonical NebulaAPI syntax juxtaposes
+  selectors with a space (`defapi &db !@backup, get(id)`), never a bracketed
+  list. Elixir folds a juxtaposed chain's trailing argument (the `defapi`
+  signature, or the `call_on_*` opts) into the chain's deepest selector
+  (`&db !@backup, get(id)` parses as `&db(!@backup, get(id))`); the macros now
+  lift that trailing argument back out before handing the pure chain to the
+  parser. Previously only a single selector or the bracketed `[&db, !@backup]`
+  form compiled for these macros. The bracketed list keeps working as a
+  tolerated, non-canonical alternative. Covered by `nebula_ast_parsing_test`.
+- **The inline `do:` (and `else:`) form now works with multi-selectors too**, across
+  `defapi`, `on_nebula_nodes` and `call_on_node` / `call_on_nodes` — e.g.
+  `defapi &db !@backup, get(id), do: ...` and
+  `on_nebula_nodes &worker !@backup, do: ..., else: ...`. The paren-less parse folds the
+  `do:`/`else:`/opts keyword list into the selector chain (arity 1); the macros lift it
+  back out alongside the signature. Block (`do ... end`) and inline forms now behave
+  identically for one selector or many.
+
 ## [0.4.0] - 2026-06-13
 
 ### Changed
@@ -109,8 +193,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An empty selector list (`[]`) raises a clear `CompileError` everywhere a selector is
   accepted (`defapi`, `on_nebula_nodes`, `call_on_node`/`call_on_nodes`) — it used to
   silently select every **configured** node. `[]` selects no node, so nothing could ever
-  run: `:*` is the explicit "all nodes", omitting the selector is the explicit "no
-  restriction" in `call_on_*`.
+  run; to run on every node, omit the selector entirely (in `call_on_*`, that means "no
+  restriction").
 - The `call_on_*` macros validate their literal options at compile time: an option the
   mode can never consume (`strategy:`/`at_least:`/`success:`/`failure:` on the unicast
   `call_on_node`), an unknown key, a malformed literal value (`timeout: :infinity`,
