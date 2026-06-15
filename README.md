@@ -252,10 +252,22 @@ is just a label; slice the cluster however suits you.
 
 ## Installation
 
+Add `:nebula_api` to your deps — from [Hex](https://hex.pm/packages/nebula_api):
+
 ```elixir
 def deps do
   [
-    {:nebula_api, git: "git@github.com:podCloud/NebulaAPI.git", tag: "v0.4.0"}
+    {:nebula_api, "~> 0.5"}
+  ]
+end
+```
+
+Or track the repo directly (e.g. for an unreleased fix):
+
+```elixir
+def deps do
+  [
+    {:nebula_api, git: "git@github.com:podCloud/NebulaAPI.git", tag: "v0.5.0"}
   ]
 end
 ```
