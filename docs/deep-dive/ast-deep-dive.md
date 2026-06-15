@@ -8,44 +8,22 @@ compile time to generate node-specific code.
 The AST processing pipeline:
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        Compile-Time Pipeline                             │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  Source Code                                                            │
-│  ────────────                                                           │
-│  defapi &db !@backup, get(id) do                                       │
-│    Repo.get(User, id)                                                  │
-│  end                                                                    │
-│                                                                         │
-│         │                                                               │
-│         ▼                                                               │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  1. ELIXIR COMPILER                                              │  │
-│  │     Converts source to AST                                       │  │
-│  └────────────────────────────────────────────────────────────────────┘  │
-│         │                                                               │
-│         ▼                                                               │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  2. AST.Parser.parse_nebula_ast/1                                │  │
-│  │     Extracts: tags, not_tags, nodes, not_nodes                   │  │
-│  │     Result: %{tags: [:db], not_nodes: [:backup], ...}            │  │
-│  └────────────────────────────────────────────────────────────────────┘  │
-│         │                                                               │
-│         ▼                                                               │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  3. Config.nodes_for_*/2                                         │  │
-│  │     Filters nodes by selector                                    │  │
-│  │     Result: ["db@db.example": [...]]                             │  │
-│  └────────────────────────────────────────────────────────────────────┘  │
-│         │                                                               │
-│         ▼                                                               │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  4. AST.Builder                                                  │  │
-│  │     Generates remote + router (+ local on matching nodes)        │  │
-│  └────────────────────────────────────────────────────────────────────┘  │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+  defapi &db !@backup, get(id) do … end
+        │
+        ▼
+  1. Elixir compiler — source → AST
+        │
+        ▼
+  2. AST.Parser.parse_nebula_ast/1
+     → tags: [:db], not_nodes: [:backup]
+        │
+        ▼
+  3. Config.nodes_for_*/2
+     filter the topology by the selector
+        │
+        ▼
+  4. AST.Builder
+     remote + router (+ local on match)
 ```
 
 ## AST Parser
