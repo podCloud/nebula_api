@@ -180,41 +180,19 @@ compiler reads `node()`), so a `&db` body is **real code** on a node that has `:
 **RPC stub** everywhere else — the stub routes through `:pg` process groups to a node that
 does have the body.
 
-<details>
-<summary>📊 Diagram</summary>
-
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Source code (same)                    │
-│                                                         │
-│   defapi &db, find_user(id) do                          │
-│     Repo.get(User, id)                                  │
-│   end                                                   │
-└────────────────────┬────────────────────────────────────┘
-                     │
-          ┌──────────┴──────────┐
-          │  mix compile        │
-          │  --name node@host   │
-          ▼                     ▼
-   ┌─────────────┐      ┌─────────────┐
-   │   @alpha     │      │   @beta     │
-   │  (has &db)   │      │  (no &db)   │
-   ├─────────────┤      ├─────────────┤
-   │ find_user/1 │      │ find_user/1 │
-   │ → Repo.get  │      │ → RPC call  │
-   │   (local)   │      │   (remote)  │
-   └─────────────┘      └──────┬──────┘
-                               │
-                        :pg process groups
-                               │
-                        ┌──────▼──────┐
-                        │   @alpha    │
-                        │   Worker    │
-                        │   Repo.get  │
-                        └─────────────┘
-```
+  defapi &db, find_user(id)
+  ── compiled per node (--name) ──
 
-</details>
+  on a :db node
+    → find_user/1 runs Repo.get locally
+
+  on any other node
+    → find_user/1 is an RPC stub
+         │
+         ▼  :pg groups
+       a :db node's Worker runs Repo.get
+```
 
 ## Reshape your topology without touching code
 
@@ -1003,34 +981,20 @@ which fail the build on an unknown tag or node) and a small **runtime** layer
 (`NebulaAPI.Server` per app starting a `Worker` per locally-served module, `APIServer`
 holding the `:pg` routing and the node-info ETS cache).
 
-<details>
-<summary>📊 Diagram</summary>
-
 ```
-┌─────────────────────────────────────────────────────┐
-│                  Compile time                        │
-│                                                      │
-│  AST.Parser     parses selectors (&tag, @node, !&)   │
-│  AST.Builder    generates the defapi functions        │
-│  Config         resolves nodes, validates topology    │
-│                 → CompileError on unknown tag/node    │
-└─────────────────────┬───────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────┐
-│                   Runtime                            │
-│                                                      │
-│  NebulaAPI.Server   per-app supervisor; starts one    │
-│                     Worker per locally-served module  │
-│                     (wired via nebula_api_server())   │
-│  APIServer          :pg routing + node-info ETS cache │
-│  APIServer.Worker   per-module GenServer; registers   │
-│                     its methods in :pg                │
-│  :pg groups         worker discovery across nodes     │
-└─────────────────────────────────────────────────────┘
+  COMPILE TIME
+  · AST.Parser   selectors → tags/nodes
+  · AST.Builder  emits the defapi funs
+  · Config       resolves & validates
+             (CompileError if unknown)
+        │  per-node bytecode
+        ▼
+  RUNTIME
+  · NebulaAPI.Server  one Worker per
+       locally-served module, per app
+  · APIServer  :pg routing + node cache
+  · Worker     registers methods in :pg
 ```
-
-</details>
 
 ## Documentation
 
