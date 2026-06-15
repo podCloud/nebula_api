@@ -708,12 +708,20 @@ create(%{name: "Ada"})   #=> {:ok, %User{...}}
 create(%{})              #=> {:error, %Ecto.Changeset{...}}
 ```
 
-The one value the library *does* inject is `{:nebula_error, reason}` — a **library or
+The one value the library *does* inject is a `:nebula_error` tuple — a **library or
 transport** failure (a timeout, no worker available, a crashing body, a quorum that wasn't
 reached), never a business outcome. So any `:ok` / `:error` you ever see is **yours**, and
 you never have to guess whether an `{:error, _}` came from your code or the framework. An
 exception, throw or exit escaping a body is reported the same way — identically whether the
 body ran locally or remotely.
+
+Its shape depends on the scope of the failure. A **single-node** failure (unicast, or one
+node inside a multicast result) is the 2-tuple `{:nebula_error, reason}`. A **whole-call**
+multicast failure carries an extra element with the partial results — `{:nebula_error,
+:no_success, results}`, `{:nebula_error, :quorum_not_reached, results}`,
+`{:nebula_error, :quorum_unreachable, %{workers: n, required: m}}` (see
+[Calling → multicast results](docs/calling.md#multicast-results)). Match the 3-tuples when
+you handle a `:first` / `:quorum` call's top-level outcome, not just `{:nebula_error, _}`.
 
 ## Wrap any single-node library
 
@@ -1014,7 +1022,7 @@ holding the `:pg` routing and the node-info ETS cache).
 
 ## Documentation
 
-This README is the whole picture. The [`docs/`](docs/) pages go deeper, in the order you
+This README is the whole picture. The [`docs/`](docs/README.md) pages go deeper, in the order you
 meet each theme:
 
 1. [Configuration](docs/configuration.md) — nodes, tags, topology, compile-per-node, dev/test, validation

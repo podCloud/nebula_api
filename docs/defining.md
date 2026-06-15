@@ -154,6 +154,13 @@ So `:ok` / `:error` always come from your code; `:nebula_error` always comes fro
 NebulaAPI. An exception, throw, or exit escaping the body is surfaced as
 `{:nebula_error, _}` — identically whether the body ran locally or remotely.
 
+The 2-tuple `{:nebula_error, reason}` is the **single-node** shape: a unicast call, or one
+node inside a multicast result list. A **whole-call** multicast failure carries an extra
+element — `{:nebula_error, :no_success, results}`, `{:nebula_error, :quorum_not_reached,
+results}`, `{:nebula_error, :quorum_unreachable, %{workers: n, required: m}}` — so match the
+3-tuples when handling a `:first` / `:quorum` top-level outcome (see
+[Calling → multicast results](calling.md#multicast-results)).
+
 > The trailing routing-options argument (`MyApp.Users.get(id, timeout: 100)`) and its
 > positional pitfall live in [Gotchas](gotchas.md#trailing-routing-options-are-positional).
 

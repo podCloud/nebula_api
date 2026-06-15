@@ -52,17 +52,15 @@ defmodule NebulaAPI.MixProject do
       extras: [
         "README.md",
         {"docs/README.md", title: "Documentation", filename: "documentation"},
-        "docs/concepts.md",
         "docs/configuration.md",
-        "docs/macros-reference.md",
-        "docs/server-and-compiler.md",
-        "docs/troubleshooting.md",
-        "docs/deep-dive/ast-deep-dive.md",
-        "docs/guides/adding-nebula-api.md"
+        "docs/defining.md",
+        "docs/calling.md",
+        "docs/gotchas.md",
+        "docs/deep-dive/ast-deep-dive.md"
       ],
       groups_for_extras: [
-        Guides: ~r/docs\/guides\//,
-        Reference: ~r/docs\//
+        Guides: ~r/docs\/(configuration|defining|calling|gotchas)\.md/,
+        "Deep dive": ~r/docs\/deep-dive\//
       ]
     ]
   end

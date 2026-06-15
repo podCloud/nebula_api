@@ -114,7 +114,7 @@ by folding that argument into the chain's deepest selector. `&db !@backup, get(i
 as `&db(!@backup, get(id))`: the deepest selector identifier ends up with **two** args
 (`!@backup` and the signature). Since a pure selector identifier only ever has `nil` or a
 single continuation arg, that second arg is the unambiguous marker of an absorbed trailing
-argument. `NebulaAPI.AST.peel_trailing/1` walks the chain, lifts the trailing argument back
+argument. The private `peel_chain/1` walks the chain, lifts the trailing argument back
 out, and hands the pure selector chain to the parser — which is why the canonical
 multi-selector form compiles even though the macro is `defapi/2` in that case.
 
@@ -167,11 +167,13 @@ These functions filter the configured nodes based on the parsed selector.
 
 ### nodes_for_tags/2
 
-Keep nodes that have ANY of the specified tags:
+Keep nodes that carry ALL of the specified tags (intersection — `&a &b` means a AND b):
 
 ```elixir
 nodes_for_tags(nodes, [:db])
 # Keeps: nodes where :db is in their tag list
+nodes_for_tags(nodes, [:db, :cache])
+# Keeps: only nodes carrying BOTH :db and :cache
 ```
 
 ### nodes_for_not_tags/2
