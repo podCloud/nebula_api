@@ -1,0 +1,12 @@
+#!/bin/sh
+#
+# Tracked pre-commit hook. Runs the project's `mix precommit` checks
+# (compile --warnings-as-errors, deps.unlock --check-unused, format --check-formatted,
+# and the distributed test suite) before allowing a commit.
+#
+# Enabled by `mix setup` (which runs `git config core.hooksPath .githooks`), or once by hand:
+#   git config core.hooksPath .githooks
+#
+# Bypass for a work-in-progress commit with: git commit --no-verify
+#
+exec mix precommit

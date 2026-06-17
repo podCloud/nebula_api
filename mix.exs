@@ -68,6 +68,18 @@ defmodule NebulaAPI.MixProject do
   end
 
   defp aliases do
-    [setup: ["deps.get"]]
+    [
+      # `mix setup` also points git at the tracked hooks dir (one-time, idempotent).
+      setup: ["deps.get", "cmd git config core.hooksPath .githooks"],
+      # Run before committing (wired as the .githooks/pre-commit hook). The test step
+      # runs as a distributed node — the suite needs a real node name (plain `mix test`
+      # fails on routing/:pg), so it is spawned with `--name` rather than a bare `test`.
+      precommit: [
+        "compile --warnings-as-errors",
+        "deps.unlock --check-unused",
+        "format --check-formatted",
+        "cmd elixir --name precommit@127.0.0.1 --cookie nebula_precommit -S mix test"
+      ]
+    ]
   end
 end
