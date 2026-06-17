@@ -901,7 +901,9 @@ defmodule NebulaAPI.AST do
   # quorum denominator be decided at compile time (see enforce_fn_selector_quorum!).
   defp validate_literal_selector!(selector, caller) do
     cond do
-      is_nil(selector) -> :ok
+      is_nil(selector) ->
+        :ok
+
       # A function capture (`&fun/1`) shares the `&` head with a `&tag` selector but
       # wraps a `/` (the arity) — catch it here with a clear message instead of letting
       # it mangle through the tag parser into a confusing "unknown tag". A real selector
@@ -914,8 +916,12 @@ defmodule NebulaAPI.AST do
             "&tag / @node selector."
         )
 
-      is_nebula_ast?(selector) -> :ok
-      match?({:fn, _, _}, selector) -> :ok
+      is_nebula_ast?(selector) ->
+        :ok
+
+      match?({:fn, _, _}, selector) ->
+        :ok
+
       true ->
         compile_error!(
           caller,
