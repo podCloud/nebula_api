@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Routing introspection** (#6) — two public functions on `NebulaAPI.APIServer`, keyed by
+  `{fn_name, arity}`:
+  - `configured_nodes/2` — the method's compile-time serving set (the selector resolved over the
+    topology, connected or not). Persisted as module metadata, so it answers for any method on
+    any node.
+  - `available_nodes/2` — the nodes that currently have a live worker for the method (from
+    `:pg`); a subset of the configured set.
+
 ## [0.5.1] - 2026-06-15
 
 ### Documentation

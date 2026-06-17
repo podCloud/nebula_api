@@ -146,6 +146,15 @@ defmodule NebulaAPI.AST do
       {fundef.name, fundef.args_count}
     )
 
+    # Persist the method's configured serving set so it is queryable at runtime
+    # (NebulaAPI.APIServer.configured_nodes/2), on every node — the stub carries it
+    # everywhere, not just where the body is local.
+    caller.module
+    |> Module.put_attribute(
+      :nebula_configured_nodes,
+      {{fundef.name, fundef.args_count}, serving_nodes}
+    )
+
     # Generate the defapi functions: remote + router everywhere, the local
     # implementation only on matching nodes (build_local_function emits
     # nothing elsewhere).

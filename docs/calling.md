@@ -251,6 +251,25 @@ A selector function that returns `nil` / `[]` means "nothing matched" — it nev
 target (the full `nil`-selector vs selector-returning-`nil` distinction is in
 [Gotchas](gotchas.md)).
 
+## Introspecting where a method runs
+
+Two functions answer "which nodes serve `Mod.fun/arity`?", keyed by `{fn_name, arity}` — handy
+for ops, debugging, and assertions, without reaching into `:pg`:
+
+```elixir
+# The compile-time serving set (the selector over the topology), connected or not.
+# Answers on any node — the value is module metadata the stub carries everywhere.
+NebulaAPI.APIServer.configured_nodes(MyApp.Users, {:get, 1})
+#=> [:"db@db.example", :"db2@db.example"]
+
+# The nodes that currently have a live worker for it (from :pg) — a subset of the above.
+NebulaAPI.APIServer.available_nodes(MyApp.Users, {:get, 1})
+#=> [:"db@db.example"]
+```
+
+`configured_nodes/2` returns `[]` for a method the module doesn't define; `available_nodes/2`
+returns `[]` when nobody serves it.
+
 ## Wrap any single-node library
 
 The pattern that tends to click: **NebulaAPI turns any single-node library into a

@@ -133,6 +133,13 @@ defmodule NebulaAPI do
       persist: true
     )
 
+    # {{fn_name, arity}, configured_nodes} per defapi — the compile-time serving set,
+    # exposed at runtime via NebulaAPI.APIServer.configured_nodes/2.
+    Module.register_attribute(env.module, :nebula_configured_nodes,
+      accumulate: true,
+      persist: true
+    )
+
     # persist: true so the marker is readable at runtime via __info__(:attributes),
     # which is how NebulaAPI.Server discovers the modules that `use NebulaAPI`.
     Module.register_attribute(env.module, :nebula_api, persist: true)

@@ -111,6 +111,35 @@ defmodule NebulaAPI.APIServer do
     |> List.flatten()
   end
 
+  @doc """
+  The CONFIGURED nodes that serve `module`'s `{fn_name, arity}` — the method's selector
+  resolved over the topology at compile time (connected or not), `[]` for an unknown method.
+
+  Compile-time and config-derived, so identical on every node: the value is read from the
+  module's persisted metadata, which the stub carries on every build. Use it to introspect
+  routing without reaching into `:pg`. See also `available_nodes/2`.
+  """
+  def configured_nodes(module, {fn_name, arity}) do
+    module.__info__(:attributes)
+    |> Keyword.get_values(:nebula_configured_nodes)
+    |> List.flatten()
+    |> Enum.find_value([], fn
+      {{^fn_name, ^arity}, nodes} -> nodes
+      _ -> nil
+    end)
+  end
+
+  @doc """
+  The nodes that currently have a live worker for `module`'s `{fn_name, arity}` — the runtime
+  serving set, read from `:pg`. `[]` when nobody serves it. A subset of `configured_nodes/2`
+  (only the connected ones whose app wired `nebula_api_server()`).
+  """
+  def available_nodes(module, {fn_name, arity}) do
+    :pg.get_members(:pg_nebula_api, {module, {fn_name, arity}})
+    |> Enum.map(&node/1)
+    |> Enum.uniq()
+  end
+
   @doc false
   # Escape hatch (env var `ALLOW_RUNTIME_NEBULA_NODE_MISMATCH=1`): lets a release boot under
   # a node name that doesn't match the one it was compiled for, as a generic node that serves
