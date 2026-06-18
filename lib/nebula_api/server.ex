@@ -26,9 +26,9 @@ defmodule NebulaAPI.Server do
   `Application` — that wires the per-app server into its supervision tree.
 
   Unlike `use NebulaAPI`, this does **not** register the `defapi` bookkeeping
-  (`:nebula_local_api_methods`, `:nebula_remote_api_methods`, the `:nebula_api` marker)
-  nor validate `self_node` — the host module has no `defapi` of its own, so none of that
-  applies. Use `use NebulaAPI` only on modules that actually define `defapi` endpoints.
+  (`:nebula_configured_nodes`, the `:nebula_api` marker) nor validate `self_node` — the host
+  module has no `defapi` of its own, so none of that applies. Use `use NebulaAPI` only on
+  modules that actually define `defapi` endpoints.
   """
   defmacro __using__(_opts) do
     # Persist the marker so the `:nebula` Mix compiler can read it from the .beam.

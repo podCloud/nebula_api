@@ -57,6 +57,27 @@ defmodule NebulaAPI.ServingNodesTest do
     assert APIServer.configured_nodes(mod, {:nope, 9}) == []
   end
 
+  test "registered_local/remote_methods are derived from the single configured source" do
+    # read(x) is &db → local on probe (probe carries :db); elsewhere(x) is @db2 → remote on probe.
+    mod =
+      compile!("SN_Derived", """
+      defapi &db, read(x), do: x
+      defapi @:"db2@somewhere", elsewhere(x), do: x
+      """)
+
+    assert APIServer.registered_local_methods(mod) == [{:read, 1}]
+    assert APIServer.registered_remote_methods(mod) == [{:elsewhere, 1}]
+  end
+
+  test "the redundant local/remote method attributes are gone (single source of truth)" do
+    mod = compile!("SN_NoDupAttrs", "defapi &db, read(x), do: x")
+    keys = mod.__info__(:attributes) |> Keyword.keys()
+
+    refute :nebula_local_api_methods in keys
+    refute :nebula_remote_api_methods in keys
+    assert :nebula_configured_nodes in keys
+  end
+
   test "available_nodes/2 is empty with no worker, then includes this node once a worker registers" do
     mod = compile!("SN_Available", "defapi &db, read(x), do: x")
 

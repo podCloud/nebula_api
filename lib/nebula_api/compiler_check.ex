@@ -27,8 +27,23 @@ defmodule NebulaAPI.CompilerCheck do
     end
   end
 
+  # Local on this build = the compiled node (self_node, baked into the :nebula_api opts)
+  # is in a method's configured serving set. Derived from the single source
+  # (:nebula_configured_nodes); stays pure (no node()) — reads only the given attrs.
   defp local_methods?(attrs) do
-    attrs |> Keyword.get_values(:nebula_local_api_methods) |> List.flatten() != []
+    self_node = self_node(attrs)
+
+    attrs
+    |> Keyword.get_values(:nebula_configured_nodes)
+    |> List.flatten()
+    |> Enum.any?(fn {_method, nodes} -> self_node in nodes end)
+  end
+
+  defp self_node(attrs) do
+    attrs
+    |> Keyword.get_values(:nebula_api)
+    |> List.flatten()
+    |> Keyword.get(:self_node)
   end
 
   defp wired?(attrs) do

@@ -44,16 +44,21 @@ defmodule NebulaAPI.ResilienceTest do
     pid
   end
 
-  # A module carrying the persisted :nebula_local_api_methods marker the worker
-  # reads to register itself and validate incoming calls.
+  # A module carrying the persisted :nebula_configured_nodes marker the worker reads
+  # (via registered_local_methods/1, local = node() in the configured set) to register
+  # itself and validate incoming calls. [node()] = local on this (test) node.
   defmodule LocalMethodsMod do
-    Module.register_attribute(__MODULE__, :nebula_local_api_methods,
+    Module.register_attribute(__MODULE__, :nebula_configured_nodes,
       accumulate: true,
       persist: true
     )
 
-    @nebula_local_api_methods {:gated, 1}
-    @nebula_local_api_methods {:fast, 0}
+    Module.register_attribute(__MODULE__, :nebula_api, persist: true)
+
+    # Compiled "as" this node, so its configured-[node()] methods derive as local here.
+    @nebula_api [self_node: node()]
+    @nebula_configured_nodes {{:gated, 1}, [node()]}
+    @nebula_configured_nodes {{:fast, 0}, [node()]}
 
     # Latch body: announces itself, then blocks until released — lets tests
     # prove non-blocking execution by message order instead of elapsed time.

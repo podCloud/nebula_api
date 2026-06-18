@@ -99,16 +99,49 @@ defmodule NebulaAPI.APIServer do
     )
   end
 
-  def registered_remote_methods(module) do
+  # All {{fn_name, arity}, configured_nodes} a module persisted via defapi — the single
+  # compile-time source that registered_local/remote_methods and configured_nodes/2 read.
+  defp configured_methods(module) do
     module.__info__(:attributes)
-    |> Keyword.get_values(:nebula_remote_api_methods)
+    |> Keyword.get_values(:nebula_configured_nodes)
     |> List.flatten()
   end
 
-  def registered_local_methods(module) do
+  # The node this module was COMPILED as (the `use NebulaAPI` self_node), baked into the
+  # :nebula_api opts. local/remote is a compile-time fact, so it is derived against this —
+  # not runtime node() (which only equals it on a correctly-booted serving node).
+  defp compiled_self_node(module) do
     module.__info__(:attributes)
-    |> Keyword.get_values(:nebula_local_api_methods)
+    |> Keyword.get_values(:nebula_api)
     |> List.flatten()
+    |> Keyword.get(:self_node)
+  end
+
+  @doc """
+  The `{fn_name, arity}` methods served REMOTELY from this build — derived from the configured
+  set (the compiled `self_node` is NOT in a method's configured nodes).
+  """
+  def registered_remote_methods(module) do
+    self_node = compiled_self_node(module)
+
+    module
+    |> configured_methods()
+    |> Enum.reject(fn {_method, nodes} -> self_node in nodes end)
+    |> Enum.map(fn {method, _nodes} -> method end)
+  end
+
+  @doc """
+  The `{fn_name, arity}` methods whose body is LOCAL on this build — derived from the configured
+  set (the compiled `self_node` is in a method's configured nodes). This is what
+  `nebula_api_server()` starts a worker for.
+  """
+  def registered_local_methods(module) do
+    self_node = compiled_self_node(module)
+
+    module
+    |> configured_methods()
+    |> Enum.filter(fn {_method, nodes} -> self_node in nodes end)
+    |> Enum.map(fn {method, _nodes} -> method end)
   end
 
   @doc """
@@ -120,9 +153,8 @@ defmodule NebulaAPI.APIServer do
   routing without reaching into `:pg`. See also `available_nodes/2`.
   """
   def configured_nodes(module, {fn_name, arity}) do
-    module.__info__(:attributes)
-    |> Keyword.get_values(:nebula_configured_nodes)
-    |> List.flatten()
+    module
+    |> configured_methods()
     |> Enum.find_value([], fn
       {{^fn_name, ^arity}, nodes} -> nodes
       _ -> nil

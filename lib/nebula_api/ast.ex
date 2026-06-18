@@ -135,20 +135,10 @@ defmodule NebulaAPI.AST do
 
     fundef = fn_ast |> NebulaAPI.AST.Parser.parse_fundef_ast()
 
-    # Register method as local or remote
-    caller.module
-    |> Module.put_attribute(
-      if is_current_node do
-        :nebula_local_api_methods
-      else
-        :nebula_remote_api_methods
-      end,
-      {fundef.name, fundef.args_count}
-    )
-
-    # Persist the method's configured serving set so it is queryable at runtime
-    # (NebulaAPI.APIServer.configured_nodes/2), on every node — the stub carries it
-    # everywhere, not just where the body is local.
+    # Persist the method's configured serving set — the single source of truth, queryable
+    # at runtime (APIServer.configured_nodes/2) on every node (the stub carries it
+    # everywhere). local/remote on a node are derived from it (node ∈ configured ⇒ local),
+    # so no separate local/remote method attributes are kept.
     caller.module
     |> Module.put_attribute(
       :nebula_configured_nodes,

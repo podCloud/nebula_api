@@ -16,6 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `available_nodes/2` — the nodes that currently have a live worker for the method (from
     `:pg`); a subset of the configured set.
 
+### Changed
+- **Single source of truth for method metadata** (#6) — `{fn_name, arity} -> configured_nodes`
+  (`:nebula_configured_nodes`) is now the only per-method attribute. The former
+  `:nebula_local_api_methods` / `:nebula_remote_api_methods` lists are dropped;
+  `registered_local_methods/1` and `registered_remote_methods/1` derive local/remote from the
+  configured set against the build's compiled `self_node`. Internal — public behaviour unchanged.
+
+### Tooling
+- `mix precommit` alias (compile `--warnings-as-errors`, `deps.unlock --check-unused`,
+  `format --check-formatted`, the distributed test suite) wired as a tracked git pre-commit hook
+  (`.githooks/`, enabled by `mix setup`).
+
 ## [0.5.1] - 2026-06-15
 
 ### Documentation
