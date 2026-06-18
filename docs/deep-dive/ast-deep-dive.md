@@ -375,8 +375,9 @@ end
 ### Compiled on a `:db` node
 
 ```elixir
-@nebula_local_api_methods [{:get, 2}]
-@nebula_remote_api_methods []
+# Single persisted source of truth: {{fn, arity}, configured_nodes}.
+# self_node (this build) IS in the set ⇒ get/2 is local here.
+@nebula_configured_nodes {{:get, 2}, [:"db@db.example"]}
 
 # public router → local
 def get(id, opts \\ [], nebula_routing_opts \\ []) do
@@ -393,8 +394,9 @@ end
 ### Compiled on a node without `:db`
 
 ```elixir
-@nebula_local_api_methods []
-@nebula_remote_api_methods [{:get, 2}]
+# Identical persisted value on every build — the stub carries it everywhere.
+# self_node (this build) is NOT in the set ⇒ get/2 is remote here.
+@nebula_configured_nodes {{:get, 2}, [:"db@db.example"]}
 
 # public router → remote (no __nbapi_local_get is generated on this node)
 def get(id, opts \\ [], nebula_routing_opts \\ []) do
@@ -410,9 +412,10 @@ rescue
 end
 ```
 
-The persisted module attributes (`@nebula_local_api_methods` /
-`@nebula_remote_api_methods`) record what is local vs remote on this node — they're how
-`NebulaAPI.Server` knows which workers to start.
+The single persisted attribute `@nebula_configured_nodes` records each method's configured
+serving set (identical on every build). local vs remote is *derived* per build by testing the
+compiled `self_node` against that set (`NebulaAPI.APIServer.registered_local_methods/1`) —
+that's how `NebulaAPI.Server` knows which workers to start.
 
 ## Validation
 

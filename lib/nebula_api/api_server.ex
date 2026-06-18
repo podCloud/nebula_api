@@ -110,6 +110,12 @@ defmodule NebulaAPI.APIServer do
   # The node this module was COMPILED as (the `use NebulaAPI` self_node), baked into the
   # :nebula_api opts. local/remote is a compile-time fact, so it is derived against this —
   # not runtime node() (which only equals it on a correctly-booted serving node).
+  #
+  # This makes "local" == self_node ∈ configured, matching defapi's own is_current_node — with
+  # one escape-hatch edge: a NO-selector defapi compiled with `allow_unknown_self_node: true`
+  # and a self_node absent from the topology generates a local body but derives as remote here
+  # (it isn't in the configured set). That combo is for throwaway compiles off a node that's
+  # not part of the cluster, not for a real serving node, so the divergence is harmless.
   defp compiled_self_node(module) do
     module.__info__(:attributes)
     |> Keyword.get_values(:nebula_api)
@@ -163,8 +169,9 @@ defmodule NebulaAPI.APIServer do
 
   @doc """
   The nodes that currently have a live worker for `module`'s `{fn_name, arity}` — the runtime
-  serving set, read from `:pg`. `[]` when nobody serves it. A subset of `configured_nodes/2`
-  (only the connected ones whose app wired `nebula_api_server()`).
+  serving set, read from `:pg`. `[]` when nobody serves it. On correctly-booted nodes (each
+  running as the node it was compiled for) this is a subset of `configured_nodes/2` — the
+  connected ones whose app wired `nebula_api_server()`.
   """
   def available_nodes(module, {fn_name, arity}) do
     :pg.get_members(:pg_nebula_api, {module, {fn_name, arity}})
