@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `available_nodes/2` — the nodes that currently have a live worker for the method (from
     `:pg`); a subset of the configured set.
 
+- **`mix nebula.routes` + `NebulaAPI.Server.print_routes/0`** (#8) — print the per-node routing
+  map "git lola"-style: one vertical rail per node (name + `@short`/`&tag` selectors), then one
+  glyph row per `Module.fun/arity`, current node in bold, full-remote nodes greyed. `NebulaAPI.Routes`
+  holds the logic; the mix task works in a single app or at an umbrella root, `print_routes/0` is
+  the iex entry point. Scope: lists only the `defapi` compiled into this build/release.
+  - **Static view** — `●` local / `-` remote (the compile-time configured set, no cluster needed).
+  - **`--available`** — live overlay from `:pg` + `Node.list`: `●` local · `∆` remote-reachable ·
+    `x` worker down · `X` node down; a disconnected node's whole column is greyed.
+  - **`--follow`** — refresh every 5s (implies `--available`); `--no-color`.
+  - **Sorting** — `sort:` / `--sort`: `:module` (default), `:name`, or `:locality` (most-local first).
+
 - **`:nebula` compiler warning** (#5) — warns (without failing the build) when an app wires
   `nebula_api_server()` but defines no `defapi` methods at all (a server with nothing to serve).
   An app whose methods are merely all-remote on this build still has `defapi`, so it does not warn.

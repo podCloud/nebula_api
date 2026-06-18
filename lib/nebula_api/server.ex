@@ -88,6 +88,15 @@ defmodule NebulaAPI.Server do
     Supervisor.start_link(__MODULE__, opts)
   end
 
+  @doc """
+  Print the per-node routing map (local vs remote per node) from a running node — e.g. in iex:
+
+      iex> NebulaAPI.Server.print_routes()
+
+  Delegates to `NebulaAPI.Routes.print/1`; see it for options (`:color`, `:nodes`, …).
+  """
+  def print_routes(opts \\ []), do: NebulaAPI.Routes.print(opts)
+
   @impl true
   def init(opts) do
     require Logger
