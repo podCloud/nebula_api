@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `registered_local_methods/1` and `registered_remote_methods/1` derive local/remote from the
   configured set against the build's compiled `self_node`. Internal — public behaviour unchanged.
 
+### Fixed
+- A user `@doc` written above a `defapi` now attaches to the **public router** function instead
+  of the first generated `defp __nbapi_*` helper (where Elixir discarded it with a warning). The
+  router is emitted first in the expansion, so `@doc`/`@spec` above a `defapi` document the public
+  API as written.
+
 ### Documentation
 - Clarify that the `:nebula` compiler is **per-app**: it must be in each child app's
   `compilers:` and is **not** invoked at the umbrella root (a root-only placement does nothing).

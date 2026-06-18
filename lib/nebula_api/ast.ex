@@ -149,9 +149,10 @@ defmodule NebulaAPI.AST do
     # implementation only on matching nodes (build_local_function emits
     # nothing elsewhere).
     quote do
+      # public router goes first to be attached to any @doc written above defapi
+      unquote(NebulaAPI.AST.Builder.build_public_function(fundef, is_current_node))
       unquote(NebulaAPI.AST.Builder.build_local_function(fundef, do_fn, is_current_node))
       unquote(NebulaAPI.AST.Builder.build_remote_function(fundef, serving_nodes))
-      unquote(NebulaAPI.AST.Builder.build_public_function(fundef, is_current_node))
     end
   rescue
     e in CompileError ->
