@@ -43,6 +43,25 @@ defmodule NebulaAPI.CompilerCheckTest do
     assert CompilerCheck.verify(attrs) == :ok
   end
 
+  test "warns when the server is wired but the app has no defapi methods at all" do
+    attrs = [
+      {Some.Application, [nebula_api_server_wired: [true]]}
+    ]
+
+    assert CompilerCheck.verify(attrs) == {:warn, :server_without_methods}
+  end
+
+  test "does NOT warn when the server is wired and the app has defapi (even if all remote here)" do
+    # youpod-style build: the app has defapi methods, but none are local on this node.
+    # The server legitimately starts no workers here — that is not a smell.
+    attrs = [
+      {Some.Store, [nebula_api: @self, nebula_configured_nodes: [{{:get, 1}, [:other@node]}]]},
+      {Some.Application, [nebula_api_server_wired: [true]]}
+    ]
+
+    assert CompilerCheck.verify(attrs) == :ok
+  end
+
   test "error lists the local-method modules when no server is wired anywhere" do
     attrs = [
       {Some.Store, [nebula_api: @self, nebula_configured_nodes: [{{:get, 1}, [:this@node]}]]},

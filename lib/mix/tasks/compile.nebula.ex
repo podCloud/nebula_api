@@ -2,7 +2,7 @@ defmodule Mix.Tasks.Compile.Nebula do
   @moduledoc """
   Mix compiler that guards against forgetting `nebula_api_server/0`.
 
-  Opt in from a consuming app's `mix.exs`:
+  Opt in from **each** consuming app's `mix.exs` (per-app — see the umbrella note):
 
       def project do
         [
@@ -11,23 +11,30 @@ defmodule Mix.Tasks.Compile.Nebula do
         ]
       end
 
-  It runs after `:app` (so every module is compiled and its `.beam` written), reads the
-  persisted NebulaAPI attributes straight from the beams, and fails compilation when the
-  app has modules with local methods on this node but no `nebula_api_server()` wired into
-  its supervision tree — i.e. workers that would never start. This mirrors the compile
-  errors NebulaAPI already raises (e.g. a `defapi` for an unknown node).
+  It runs after `:app`, reads the persisted NebulaAPI attributes from the beams, and:
+
+    * **fails** when the app has local methods on this build but no `nebula_api_server()`
+      is wired (workers that would never start);
+    * **warns** when a server is wired but the app defines no `defapi` methods at all
+      (a server with nothing to serve — likely a leftover `nebula_api_server()`).
+
+  ## Umbrella note
+
+  Per-app: it must be in the `compilers:` of each child app. `mix compile` in an umbrella
+  recurses into the child apps and runs *their* `compilers:`; adding `:nebula` to the umbrella
+  **root** `mix.exs` does **nothing** (the root's custom compilers are not invoked for an
+  `apps_path` project). There is no single root-level switch — opt each app in.
   """
 
   use Mix.Task.Compiler
 
-  # In umbrella projects, run once per child app (in each app's own context), like the
-  # built-in :elixir compiler — so `mix compile` from the umbrella root checks each app.
+  # Per child app: `mix compile` recurses into each app and runs its own compilers, so this runs
+  # once per app that lists `:nebula` (with `:app` set). NOT invoked at the umbrella root
+  # (apps_path, no `:app`) — a root-only placement does nothing; opt each app in.
   @recursive true
 
   @impl true
   def run(_argv) do
-    # No app in the current project (e.g. the umbrella root) → nothing of ours to check;
-    # the verification runs in each child app's own context, where `:app` is set.
     case Mix.Project.config()[:app] do
       nil ->
         {:noop, []}
@@ -37,10 +44,13 @@ defmodule Mix.Tasks.Compile.Nebula do
           :ok ->
             {:noop, []}
 
+          {:warn, :server_without_methods} ->
+            # A wired server with nothing to serve is a smell, not a build-breaker.
+            Mix.shell().info(warning_message(app))
+            {:noop, []}
+
           {:error, local_modules} ->
             message = error_message(app, local_modules)
-            # Print for humans (Mix doesn't render compiler diagnostics on its own) and
-            # return the structured diagnostic for editors; :error status fails the build.
             Mix.shell().error(message)
             {:error, [diagnostic(message)]}
         end
@@ -75,9 +85,14 @@ defmodule Mix.Tasks.Compile.Nebula do
     """
   end
 
-  # The app's `mod:` from its `.app` file → the Application module where the supervisor
-  # (and thus nebula_api_server()) lives. The supervisor's registered name is a runtime
-  # arg, so it isn't knowable here; the Application module is, and it's the actionable spot.
+  defp warning_message(app) do
+    """
+    warning: app #{inspect(app)} wired nebula_api_server() but defines no defapi methods — \
+    the server will start no workers (nothing to serve). Add defapi endpoints, or drop \
+    nebula_api_server() from #{inspect(app)}'s supervisor.
+    """
+  end
+
   defp application_module(app) do
     app_file = Path.join(Mix.Project.compile_path(), "#{app}.app")
 
@@ -89,8 +104,6 @@ defmodule Mix.Tasks.Compile.Nebula do
     end
   end
 
-  # {module, persisted_attributes} for every compiled module of the current app,
-  # read from disk without loading the modules.
   defp modules_attrs do
     Mix.Project.compile_path()
     |> Path.join("*.beam")

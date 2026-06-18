@@ -279,14 +279,22 @@ will never start.
          - MyApp.Users
 ```
 
-In an umbrella the compiler is `@recursive`, so it checks each child app in its own
-context.
+It also **warns** (without failing the build) if an app wires `nebula_api_server()` but
+defines no `defapi` methods at all — a server with nothing to serve.
+
+**Per-app, in an umbrella.** Add `:nebula` to the `compilers:` of **each** child app you want
+guarded. `mix compile` recurses into the child apps and runs *their* `compilers:`, so the
+check runs once per opted-in app — but adding `:nebula` to the umbrella **root** `mix.exs`
+does **nothing** (a root `apps_path` project's custom compilers are not invoked). There is no
+single root-level switch.
 
 ## Inspecting what compiled where
 
 ```elixir
-MyModule.__info__(:attributes) |> Keyword.get_values(:nebula_local_api_methods) |> List.flatten()
-# => [{:get, 1}, ...] if local here, [] if this node only has the remote stub
+NebulaAPI.APIServer.registered_local_methods(MyModule)
+# => [{:get, 1}, ...] if local on this build, [] if this node only has the remote stub
+NebulaAPI.APIServer.configured_nodes(MyModule, {:get, 1})  # nodes that serve it (compile-time)
+NebulaAPI.APIServer.available_nodes(MyModule, {:get, 1})   # nodes with a live worker (runtime)
 
 :pg.which_groups(:pg_nebula_api)
 :pg.get_members(:pg_nebula_api, {MyApp.Users, {:get, 1}})
