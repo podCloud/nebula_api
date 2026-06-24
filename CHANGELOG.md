@@ -17,13 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `:pg`); a subset of the configured set.
 
 - **`mix nebula.routes` + `NebulaAPI.Server.print_routes/0`** (#8) — print the per-node routing
-  map "git lola"-style: one vertical rail per node (name + `@short`/`&tag` selectors), then one
-  glyph row per `Module.fun/arity`, current node in bold, full-remote nodes greyed. `NebulaAPI.Routes`
-  holds the logic; the mix task works in a single app or at an umbrella root, `print_routes/0` is
-  the iex entry point. Scope: lists only the `defapi` compiled into this build/release.
-  - **Static view** — `●` local / `-` remote (the compile-time configured set, no cluster needed).
+  map "git lola"-style: one continuous vertical rail per node (name + `@short`/`&tag` selectors),
+  a `●` marking each node that serves a method and the rail (`|`) continuing where it isn't local;
+  current node in bold, serves-nothing nodes greyed. `NebulaAPI.Routes` holds the logic; the mix
+  task works in a single app or at an umbrella root, `print_routes/0` is the iex entry point.
+  Scope: lists only the modules and `defapi` present in this build (compiled for `compiled_node()`).
+  - **Static view** — `●` local · `|` not local here. Asserts only locality (compile-time,
+    config-known); it makes no claim that a method actually runs remotely — that's `--available`.
   - **`--available`** — live overlay from `:pg` + `Node.list`: `●` local · `∆` remote-reachable ·
-    `x` worker down · `X` node down; a disconnected node's whole column is greyed.
+    `x` worker down · `X` node down · `-` not served here · `|` unknown (this node can't observe
+    the cluster, e.g. run offline); a disconnected node's column is greyed.
   - **`--follow`** — refresh every 5s (implies `--available`); `--no-color`.
   - **Sorting** — `sort:` / `--sort`: `:module` (default), `:name`, or `:locality` (most-local first).
 
@@ -49,9 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   set, with `registered_local/remote_methods`, and with the boot policy (which runs it in generic
   mode anyway). Normal builds (self_node in the topology) are unchanged — still local everywhere.
 - `mix nebula.routes --available` no longer paints the **current** node's rail as `local` when it
-  isn't actually connected (an offline invocation where `node()` is `nonode@nohost` and `current`
-  is only the config `self_node` fallback): the current rail is now reported `:node_unavailable`
-  like any other unreachable node, instead of a misleading green ●.
+  isn't actually connected. When this node can't observe the cluster (an offline invocation where
+  `node()` is `nonode@nohost` and `current` is only the config `self_node` fallback), every cell is
+  reported `:unknown` (`|`) rather than asserting a misleading green ● / `:node_unavailable`.
 
 ### Documentation
 - Clarify that the `:nebula` compiler is **per-app**: it must be in each child app's

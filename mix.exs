@@ -49,6 +49,7 @@ defmodule NebulaAPI.MixProject do
   defp docs do
     [
       main: "readme",
+      source_ref: "v#{@version}",
       extras: [
         "README.md",
         {"docs/README.md", title: "Documentation", filename: "documentation"},
@@ -63,6 +64,25 @@ defmodule NebulaAPI.MixProject do
         Guides: ~r/docs\/(configuration|defining|calling|gotchas)\.md/,
         "Deep dive": ~r/docs\/deep-dive\//,
         Project: ~r/ABOUT-LLMS/
+      ],
+      groups_for_modules: [
+        "Public API": [
+          NebulaAPI,
+          NebulaAPI.Server,
+          NebulaAPI.APIServer,
+          NebulaAPI.Routes,
+          NebulaAPI.Config,
+          Mix.Tasks.Nebula.Routes
+        ],
+        Internals: [
+          NebulaAPI.AST,
+          NebulaAPI.AST.Parser,
+          NebulaAPI.AST.Builder,
+          NebulaAPI.APIServer.Worker,
+          NebulaAPI.APIServer.NodesInfoCache,
+          NebulaAPI.CompilerCheck,
+          Mix.Tasks.Compile.Nebula
+        ]
       ]
     ]
   end

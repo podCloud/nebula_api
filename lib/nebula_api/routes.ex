@@ -1,21 +1,24 @@
 defmodule NebulaAPI.Routes do
   @moduledoc """
-  The per-node routing map — where each `defapi` runs (local) vs forwards over RPC (remote).
+  The per-node routing map — where each `defapi` is served locally vs reached over RPC.
 
   Built entirely from compile-time data (`:nebula_configured_nodes`, the single source of truth
   also behind `NebulaAPI.APIServer.configured_nodes/2`): a method is *local* on the nodes in its
-  configured serving set, *remote* everywhere else. Nothing is recomputed; no cluster needed.
+  configured serving set. Nothing is recomputed; no cluster needed.
 
-  Rendered "git lola"-style — one vertical rail per node, then a `●`/`-` row per method —
-  by `mix nebula.routes` and `NebulaAPI.Server.print_routes/0`.
+  Rendered "git lola"-style — one continuous vertical rail per node, with a `●` marking each node
+  that serves a method; the rail simply continues (`|`) where it isn't local. The static view
+  asserts only locality (config-known) — it does **not** claim a method actually runs elsewhere;
+  pass `available: true` for the live picture (`∆`/`x`/`X` from `:pg` + `Node.list`). Printed by
+  `mix nebula.routes` and `NebulaAPI.Server.print_routes/0`.
 
   ## Scope
 
-  It lists only the `defapi` modules **compiled into this build/release**. A node whose release
-  includes a subset of an umbrella's apps (for smaller binaries) does not carry the other apps'
-  modules, so their methods aren't present and aren't shown — the view is per-build, not a
-  guaranteed cluster-wide map. Run it from a node/release that carries every app for the full
-  picture.
+  It lists only the modules — and their `defapi` — **present in this build** (the one compiled for
+  `compiled_node()`). A node whose release carries a subset of an umbrella's apps does not carry
+  the other apps' modules, so those modules and their methods are simply absent from the map;
+  modules not imported/used by this build are not shown either. Run it from a node/release that
+  carries every app for the full picture.
   """
 
   @doc """
@@ -44,18 +47,34 @@ defmodule NebulaAPI.Routes do
   Render the routing map as a "git lola"-style graph string.
 
   `nodes` is the topology as `[{name, tags}]` (the `config :nebula_api, :nodes` shape). Each node
-  gets a vertical rail, introduced top-down with its name and selectors (`@short &tag …`); then
-  one row per method, a glyph per rail (`●` local / `-` remote) followed by the method. The
-  `current_node`'s rail label is bold. Options: `:color` (default true).
+  gets a continuous vertical rail, introduced top-down with its name and selectors (`@short &tag …`);
+  then one row per method: `●` where the method is local, the rail (`|`) where it isn't. The
+  `current_node`'s rail label is bold. With `available: true` the per-cell glyphs reflect live
+  state (`∆`/`x`/`X`, `|` when this node can't observe the cluster). Options: `:color` (default
+  true), `:available`.
   """
   def render(rows, nodes, current_node, opts \\ []) do
     color? = Keyword.get(opts, :color, true)
+    available? = Keyword.get(opts, :available, false)
     node_names = Keyword.keys(nodes)
     title = "NebulaAPI routes — current node: #{current_node}"
-    scope = faint_if("(lists only the defapi compiled into this build / release)", true, color?)
+
+    scope =
+      faint_if(
+        "only modules & defapi methods present/visible in this build: #{current_node}",
+        true,
+        color?
+      )
+
+    topo_note =
+      if current_node in node_names,
+        do: [],
+        else: [
+          bold_if("(current node #{current_node} is not in the configured topology)", color?)
+        ]
 
     if rows == [] do
-      Enum.join([title, scope, "(no defapi methods found)"], "\n")
+      Enum.join([title, scope] ++ topo_note ++ ["", "(no defapi methods found)"], "\n")
     else
       # Spaced, continuous rails (no blank lines, or the vertical lines break). A node that
       # serves nothing locally (no ● in its column) is kept but greyed out whole.
@@ -82,16 +101,26 @@ defmodule NebulaAPI.Routes do
           cells <> " " <> method_label(row)
         end)
 
-      legend = legend(rows, color?)
+      legend = legend(color?, available?)
 
-      Enum.join([title, scope] ++ header ++ [cont] ++ body ++ ["", legend], "\n")
+      Enum.join(
+        [title, scope] ++ topo_note ++ [""] ++ header ++ [cont] ++ body ++ ["", legend],
+        "\n"
+      )
     end
   end
 
   @doc """
-  Discover, build, sort, and print the routing map for the current node. Options: `:nodes`
-  (`[{name, tags}]`), `:current_node`, `:modules`, `:sort` (`:module` default, or `:name`),
-  `:color`.
+  Discover, build, sort, and print the routing map for the current node.
+
+  Options:
+    * `:available` — overlay live `:pg` + `Node.list` state (`∆`/`x`/`X`; `|` when this node
+      can't observe the cluster). Default `false`.
+    * `:follow` — refresh every 5s (implies `:available`). Default `false`.
+    * `:sort` — `:module` (default), `:name`, or `:locality` (most-local-first).
+    * `:color` — ANSI color (default `true`).
+    * `:nodes` (`[{name, tags}]`), `:current_node`, `:modules` — override the discovered
+      topology / current node / module set (mainly for tests).
   """
   def print(opts \\ []) do
     if Keyword.get(opts, :follow, false) do
@@ -147,33 +176,41 @@ defmodule NebulaAPI.Routes do
   worker), or `:node_unavailable` (disconnected). A `:remote` cell (the node doesn't serve the
   method) becomes `:not_served`.
 
+  When `current_node` is not in `connected` we can't observe the cluster at all (e.g. the task
+  runs as `nonode@nohost` and `current_node` is only the config `self_node` fallback): every cell
+  becomes `:unknown` rather than asserting a (false) `:node_unavailable`.
+
   `connected` is the list of reachable node names; `available_by_method` maps
   `{module, {fun, arity}}` to the nodes with a live worker (from `NebulaAPI.APIServer.available_nodes/2`).
   """
   def build_available(rows, connected, available_by_method, current_node) do
     connected = MapSet.new(connected)
+    observable? = MapSet.member?(connected, current_node)
 
     Enum.map(rows, fn row ->
       workers = MapSet.new(Map.get(available_by_method, {row.module, {row.fun, row.arity}}, []))
 
       nodes =
         Map.new(row.nodes, fn {node, status} ->
-          {node, available_status(status, node, current_node, connected, workers)}
+          {node, available_status(status, node, current_node, connected, workers, observable?)}
         end)
 
       %{row | nodes: nodes}
     end)
   end
 
-  defp available_status(:remote, _node, _current, _connected, _workers), do: :not_served
+  # Not observable (this node isn't connected — offline / nonode fallback): we can't tell live
+  # state for anything, so assert nothing — every cell is :unknown.
+  defp available_status(_status, _node, _current, _connected, _workers, false), do: :unknown
 
-  defp available_status(:local, node, current, connected, workers) do
+  # Configured-remote (the node doesn't serve the method).
+  defp available_status(:remote, _node, _current, _connected, _workers, true), do: :not_served
+
+  # Configured-local, graded against live state. We are observable here, so the current node is
+  # genuinely serving locally; peers are graded by connection + worker liveness.
+  defp available_status(:local, node, current, connected, workers, true) do
     cond do
-      # The current node is local by ground truth — but only when we are actually running AS it.
-      # Offline (node() == nonode@nohost), `current` is the config self_node fallback, not the
-      # running node, so don't paint its rail green: fall through and report it like any other
-      # (it won't be in `connected` → :node_unavailable).
-      node == current and MapSet.member?(connected, node) -> :local
+      node == current -> :local
       not MapSet.member?(connected, node) -> :node_unavailable
       MapSet.member?(workers, node) -> :remote_available
       true -> :worker_unavailable
@@ -228,20 +265,14 @@ defmodule NebulaAPI.Routes do
 
   defp method_label(%{module: m, fun: f, arity: a}), do: "#{inspect(m)}.#{f}/#{a}"
 
-  defp available_view?(rows) do
-    statuses = [:remote_available, :worker_unavailable, :node_unavailable, :not_served]
-    Enum.any?(rows, fn r -> Enum.any?(Map.values(r.nodes), &(&1 in statuses)) end)
+  defp legend(color?, true) do
+    "#{glyph(:local, color?)} local   #{glyph(:remote_available, color?)} remote-ok   " <>
+      "#{glyph(:worker_unavailable, color?)} worker down   #{glyph(:node_unavailable, color?)} node down   " <>
+      "#{glyph(:not_served, color?)} unavailable   #{glyph(:unknown, color?)} unknown"
   end
 
-  defp legend(rows, color?) do
-    if available_view?(rows) do
-      "#{glyph(:local, color?)} local   #{glyph(:remote_available, color?)} remote-ok   " <>
-        "#{glyph(:worker_unavailable, color?)} worker down   " <>
-        "#{glyph(:node_unavailable, color?)} node down   #{glyph(:not_served, color?)} not served"
-    else
-      "#{glyph(:local, color?)} local   #{glyph(:remote, color?)} remote   " <>
-        "current bold · full-remote node greyed"
-    end
+  defp legend(color?, false) do
+    "#{glyph(:local, color?)} local  · run --available for live status"
   end
 
   # A column is "active" if it has any reachable/serving cell. Inactive columns (full-remote in
@@ -257,6 +288,9 @@ defmodule NebulaAPI.Routes do
 
   defp faint_if(s, true, true), do: IO.ANSI.faint() <> s <> IO.ANSI.reset()
   defp faint_if(s, _faint?, _color?), do: s
+
+  defp bold_if(s, true), do: IO.ANSI.bright() <> IO.ANSI.yellow() <> s <> IO.ANSI.reset()
+  defp bold_if(s, false), do: s
 
   defp node_label(name, tags, current?, grey?, color?) do
     selectors = "@#{name |> to_string() |> String.split("@") |> hd()}" <> tags_suffix(tags)
@@ -277,14 +311,19 @@ defmodule NebulaAPI.Routes do
   end
 
   defp glyph(:local, true), do: IO.ANSI.green() <> "●" <> IO.ANSI.reset()
-  defp glyph(:remote, true), do: IO.ANSI.faint() <> "-" <> IO.ANSI.reset()
   defp glyph(:remote_available, true), do: IO.ANSI.cyan() <> "∆" <> IO.ANSI.reset()
   defp glyph(:worker_unavailable, true), do: IO.ANSI.yellow() <> "x" <> IO.ANSI.reset()
   defp glyph(:node_unavailable, true), do: IO.ANSI.red() <> "X" <> IO.ANSI.reset()
   defp glyph(:local, false), do: "●"
-  defp glyph(:remote, false), do: "-"
   defp glyph(:remote_available, false), do: "∆"
   defp glyph(:worker_unavailable, false), do: "x"
   defp glyph(:node_unavailable, false), do: "X"
-  defp glyph(:not_served, color?), do: glyph(:remote, color?)
+
+  # "not local here" (static view): the rail just continues — a faint `|`, asserting nothing
+  # about whether the method actually runs remotely (that's the --available view's job).
+  defp glyph(:remote, color?), do: faint_if("|", true, color?)
+  # config-remote, observed with no live worker (--available view): a faint dash.
+  defp glyph(:not_served, color?), do: faint_if("-", true, color?)
+  # can't observe the cluster (--available, offline): a faint rail — asserts nothing.
+  defp glyph(:unknown, color?), do: faint_if("|", true, color?)
 end

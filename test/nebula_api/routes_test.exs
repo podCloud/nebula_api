@@ -46,14 +46,25 @@ defmodule NebulaAPI.RoutesTest do
     out = Routes.render(rows, nodes, :db@h, color: false)
 
     assert out =~ "current node: db@h"
+    # a blank line separates the scope line from the start of the graph
+    assert out =~ "build: db@h\n\n/~~ api@h @api &api"
     # rail headers with name + selectors
     assert out =~ "api@h @api &api"
     assert out =~ "db@h @db &db"
-    # method row: api remote (-), db local (●), spaced, then the label
-    assert out =~ "- ● MyApp.Users.get/1"
+    # method row: api not-local (rail |), db local (●), spaced, then the label
+    assert out =~ "| ● MyApp.Users.get/1"
     assert out =~ "● local"
     # continuous rails: the "| |" line sits directly above the first method row, no blank
-    assert out =~ "| |\n- ● MyApp.Users.get/1"
+    assert out =~ "| |\n| ● MyApp.Users.get/1"
+  end
+
+  test "render flags a current node that isn't in the configured topology" do
+    rows = Routes.build([{M, [{{:f, 0}, [:a@h]}]}], [:a@h, :b@h])
+    out = Routes.render(rows, [{:a@h, []}, {:b@h, []}], :observer@h, color: false)
+
+    assert out =~ "current node observer@h is not in the configured topology"
+    # the note sits before the blank line that opens the graph
+    assert out =~ "configured topology)\n\n/~~ a@h"
   end
 
   test "render/4 with no rows says so" do
@@ -118,14 +129,23 @@ defmodule NebulaAPI.RoutesTest do
            ] = out
   end
 
-  test "build_available/4 does not paint current as :local when it isn't connected (offline view)" do
+  test "build_available/4 reports :unknown for everything when it can't observe the cluster (offline)" do
     rows = Routes.build([{M, [{{:f, 0}, [:a@h, :b@h]}]}], [:a@h, :b@h])
 
     # current = a@h, but nothing is connected (e.g. the task runs as nonode@nohost and `current`
-    # is only the config self_node fallback). The current rail must NOT be green: it's down.
+    # is only the config self_node fallback). We can't observe anything → assert nothing.
     out = Routes.build_available(rows, [], %{{M, {:f, 0}} => []}, :a@h)
 
-    assert [%{nodes: %{a@h: :node_unavailable, b@h: :node_unavailable}}] = out
+    assert [%{nodes: %{a@h: :unknown, b@h: :unknown}}] = out
+  end
+
+  test "render available legend lists the unknown glyph; offline renders rails not X" do
+    rows = [%{module: M, fun: :f, arity: 0, nodes: %{a@h: :unknown, b@h: :unknown}}]
+
+    out = Routes.render(rows, [{:a@h, []}, {:b@h, []}], :a@h, color: false, available: true)
+
+    assert out =~ "| unknown"
+    assert out =~ "| | M.f/0"
   end
 
   test "render shows the available glyphs ● ∆ x X" do

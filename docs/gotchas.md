@@ -170,6 +170,11 @@ NebulaAPI.APIServer.registered_local_methods(MyApp.Users) # should include {:get
 :pg.get_members(:pg_nebula_api, {MyApp.Users, {:get, 1}}) # should have ≥ 1 pid
 ```
 
+Or, for the whole cluster at a glance, `mix nebula.routes --available` (or
+`NebulaAPI.Server.print_routes(available: true)` from iex): an `x`/`X` on the node that should
+serve the method tells you immediately whether it's a missing worker or a down node. See
+[Calling → Seeing the whole routing map](calling.md#seeing-the-whole-routing-map).
+
 ### Timeout
 
 The default RPC timeout is **5000 ms** (override per call, per module, or globally — see

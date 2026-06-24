@@ -2,21 +2,33 @@ defmodule Mix.Tasks.Nebula.Routes do
   @shortdoc "Print the NebulaAPI per-node routing map (local vs remote)"
 
   @moduledoc """
-  Prints where each `defapi` runs (local) vs forwards over RPC (remote), "git lola"-style: one
-  vertical rail per node (name + `@short`/`&tag` selectors), then a `●` (local) / `-` (remote)
-  row per `Module.fun/arity`, current node in bold.
+  Prints where each `defapi` is served, "git lola"-style: one continuous vertical rail per node
+  (name + `@short`/`&tag` selectors), with a `●` marking each node that serves a method and the
+  rail (`|`) continuing where it isn't local; current node in bold, serves-nothing nodes greyed.
 
-      mix nebula.routes
+      mix nebula.routes                  # static map (config-known locality)
+      mix nebula.routes --available      # live overlay from :pg + Node.list
+      mix nebula.routes --follow         # refresh every 5s (implies --available)
+      mix nebula.routes --sort locality  # most-local first (also: module [default], name)
       mix nebula.routes --no-color
 
-  Built from compile-time data (`:nebula_configured_nodes`) — no running cluster needed. Works
-  in a single app or at an umbrella root (it loads the project's apps without starting them, so
-  the boot-time node policy doesn't fire). For the same view from a running node, use
-  `NebulaAPI.Server.print_routes/0` in iex.
+  ## Glyphs
 
-  **Scope:** lists only the `defapi` compiled into this build/release — a node whose release
-  carries a subset of an umbrella's apps won't show the other apps' methods. See
-  `NebulaAPI.Routes`.
+  Static view: `●` local · `|` not local here (the rail just continues — it makes no claim about
+  whether the method runs remotely; use `--available` for that).
+
+  `--available` view (live, from `:pg` + `Node.list`): `●` local · `∆` remote, reachable, live
+  worker · `x` configured-local but no worker · `X` node down · `-` not served here · `|` unknown
+  (this node can't observe the cluster, e.g. run offline).
+
+  Built from compile-time data (`:nebula_configured_nodes`) — the static view needs no running
+  cluster. Works in a single app or at an umbrella root (it loads the project's apps without
+  starting them, so the boot-time node policy doesn't fire). For the same map from a running node,
+  use `NebulaAPI.Server.print_routes/0` in iex (accepts `available:`, `follow:`, `sort:`, `color:`).
+
+  **Scope:** lists only the modules — and their `defapi` — present in this build (compiled for
+  `compiled_node()`); modules from apps not in this release, or not imported/used, are absent.
+  See `NebulaAPI.Routes`.
   """
 
   use Mix.Task
