@@ -170,11 +170,16 @@ defmodule NebulaAPI.AST do
     |> Keyword.keys()
   end
 
-  # `:all` is the no-selector form — the body is local on every node.
+  # `:all` is the no-selector form — local on every node IN THE CONFIGURED TOPOLOGY.
+  # A self_node OUTSIDE the topology is only reachable via `allow_unknown_self_node` (a
+  # throwaway/generic compile off a non-cluster node); such a node is not a serving node, so
+  # emit a remote stub instead of a dead local body. This keeps codegen consistent with the
+  # persisted serving set (the topology), with registered_local/remote_methods, and with the
+  # boot policy that runs such a node in generic (serve-nothing) mode anyway. For any normal
+  # build self_node is in the topology, so this stays local everywhere as before.
   defp defapi_local?(:all, caller) do
-    # Still require `use NebulaAPI` for the bookkeeping defapi relies on.
-    _ = fetch_self_node!(caller)
-    true
+    self_node = fetch_self_node!(caller)
+    self_node in (NebulaAPI.Config.nodes() |> Keyword.keys())
   end
 
   defp defapi_local?(nebula_ast, caller) do

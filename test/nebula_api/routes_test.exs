@@ -118,6 +118,16 @@ defmodule NebulaAPI.RoutesTest do
            ] = out
   end
 
+  test "build_available/4 does not paint current as :local when it isn't connected (offline view)" do
+    rows = Routes.build([{M, [{{:f, 0}, [:a@h, :b@h]}]}], [:a@h, :b@h])
+
+    # current = a@h, but nothing is connected (e.g. the task runs as nonode@nohost and `current`
+    # is only the config self_node fallback). The current rail must NOT be green: it's down.
+    out = Routes.build_available(rows, [], %{{M, {:f, 0}} => []}, :a@h)
+
+    assert [%{nodes: %{a@h: :node_unavailable, b@h: :node_unavailable}}] = out
+  end
+
   test "render shows the available glyphs ● ∆ x X" do
     rows = [
       %{

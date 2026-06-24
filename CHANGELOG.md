@@ -43,6 +43,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of the first generated `defp __nbapi_*` helper (where Elixir discarded it with a warning). The
   router is emitted first in the expansion, so `@doc`/`@spec` above a `defapi` document the public
   API as written.
+- A **no-selector `defapi` compiled off-topology** (only reachable via `allow_unknown_self_node`,
+  for a throwaway/generic node not in the configured cluster) now emits a remote stub instead of a
+  dead local body. Such a node serves nothing, so this aligns codegen with the persisted serving
+  set, with `registered_local/remote_methods`, and with the boot policy (which runs it in generic
+  mode anyway). Normal builds (self_node in the topology) are unchanged — still local everywhere.
+- `mix nebula.routes --available` no longer paints the **current** node's rail as `local` when it
+  isn't actually connected (an offline invocation where `node()` is `nonode@nohost` and `current`
+  is only the config `self_node` fallback): the current rail is now reported `:node_unavailable`
+  like any other unreachable node, instead of a misleading green ●.
 
 ### Documentation
 - Clarify that the `:nebula` compiler is **per-app**: it must be in each child app's

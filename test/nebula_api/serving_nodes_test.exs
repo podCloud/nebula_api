@@ -69,6 +69,29 @@ defmodule NebulaAPI.ServingNodesTest do
     assert APIServer.registered_remote_methods(mod) == [{:elsewhere, 1}]
   end
 
+  test "a no-selector defapi compiled off-topology (allow_unknown_self_node) emits no local body" do
+    # self_node is NOT in the configured topology — only possible via the escape hatch. Such a
+    # node serves nothing, so the no-selector form must compile to a remote stub, not a (dead)
+    # local body.
+    src = """
+    defmodule SN_OffTopo do
+      use NebulaAPI, allow_unknown_self_node: true, self_node: :"ghost@nowhere"
+      defapi everywhere(), do: :ok
+    end
+    """
+
+    [{mod, _bin}] = Code.compile_string(src)
+    funs = mod.module_info(:functions) |> Keyword.keys()
+
+    # remote stub present (proves module_info lists private helpers), local body suppressed
+    assert :__nbapi_remote_everywhere in funs
+    refute :__nbapi_local_everywhere in funs
+
+    # and it derives as remote (consistent with codegen)
+    assert APIServer.registered_local_methods(mod) == []
+    assert APIServer.registered_remote_methods(mod) == [{:everywhere, 0}]
+  end
+
   test "the redundant local/remote method attributes are gone (single source of truth)" do
     mod = compile!("SN_NoDupAttrs", "defapi &db, read(x), do: x")
     keys = mod.__info__(:attributes) |> Keyword.keys()

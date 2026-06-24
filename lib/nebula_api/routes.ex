@@ -169,7 +169,11 @@ defmodule NebulaAPI.Routes do
 
   defp available_status(:local, node, current, connected, workers) do
     cond do
-      node == current -> :local
+      # The current node is local by ground truth — but only when we are actually running AS it.
+      # Offline (node() == nonode@nohost), `current` is the config self_node fallback, not the
+      # running node, so don't paint its rail green: fall through and report it like any other
+      # (it won't be in `connected` → :node_unavailable).
+      node == current and MapSet.member?(connected, node) -> :local
       not MapSet.member?(connected, node) -> :node_unavailable
       MapSet.member?(workers, node) -> :remote_available
       true -> :worker_unavailable
