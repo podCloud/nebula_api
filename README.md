@@ -118,7 +118,7 @@ Cachex (gate the dependency itself the same way and it isn't even pulled in).
 
 **Smaller binaries.** Code that doesn't belong on a node doesn't exist in its binary — a
 `defapi` body is only emitted on matching nodes. Whole dependencies fall away the same way. The
-[runnable demo](https://github.com/podCloud/NebulaAPI/tree/main/demo) pins Cachex to its
+[runnable demo](https://github.com/podCloud/nebula_api/tree/main/demo) pins Cachex to its
 `db` node (`on_nebula_nodes @db` plus a conditional dep), so only that build carries Cachex
 and its dependency tree (~570 KB); every other node never compiles it and comes out
 **~38% smaller — ≈860 KB vs the db node's 1.4 MB** (measured, per-node `_build` from
@@ -235,7 +235,7 @@ Add `:nebula_api` to your deps — from [Hex](https://hex.pm/packages/nebula_api
 ```elixir
 def deps do
   [
-    {:nebula_api, "~> 0.5"}
+    {:nebula_api, "~> 0.6"}
   ]
 end
 ```
@@ -245,7 +245,7 @@ Or track the repo directly (e.g. for an unreleased fix):
 ```elixir
 def deps do
   [
-    {:nebula_api, git: "git@github.com:podCloud/NebulaAPI.git", tag: "v0.5.1"}
+    {:nebula_api, git: "git@github.com:podCloud/nebula_api.git", tag: "v0.6.0"}
   ]
 end
 ```
@@ -450,7 +450,7 @@ to negate it.
 **The short name is intentionally "many": that's a feature.** A short name matches *every*
 node that shares it, which is usually exactly what you want for a horizontally-scaled role.
 Picture three nodes running the same `worker` release on three hosts (as the
-[runnable demo](https://github.com/podCloud/NebulaAPI/tree/main/demo) does), each kitted out
+[runnable demo](https://github.com/podCloud/nebula_api/tree/main/demo) does), each kitted out
 differently:
 
 ```elixir
@@ -968,7 +968,7 @@ find each other is entirely up to you. Anything that ends up calling `Node.conne
   for your environment: `Gossip` on a flat network, `Kubernetes` / `Kubernetes.DNS` on k8s,
   `EpmdDNS` behind a headless service, or a static `Epmd` list for a fixed fleet. Point its
   topology at the same node names you put in `config :nebula_api, :nodes`. (The
-  [runnable demo](https://github.com/podCloud/NebulaAPI/tree/main/demo) does exactly this
+  [runnable demo](https://github.com/podCloud/nebula_api/tree/main/demo) does exactly this
   with libcluster's `Epmd` strategy over a Docker network.)
 - **Plain epmd + `Node.connect/1`** — for a handful of known hosts, a few `Node.connect`
   calls at boot (or `-kernel sync_nodes_mandatory ...` in `vm.args`) are enough.
