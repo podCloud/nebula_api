@@ -49,6 +49,7 @@ defmodule NebulaAPI.MixProject do
   defp docs do
     [
       main: "readme",
+      source_ref: "v#{@version}",
       extras: [
         "README.md",
         {"docs/README.md", title: "Documentation", filename: "documentation"},
@@ -63,11 +64,42 @@ defmodule NebulaAPI.MixProject do
         Guides: ~r/docs\/(configuration|defining|calling|gotchas)\.md/,
         "Deep dive": ~r/docs\/deep-dive\//,
         Project: ~r/ABOUT-LLMS/
+      ],
+      groups_for_modules: [
+        "Public API": [
+          NebulaAPI,
+          NebulaAPI.Server,
+          NebulaAPI.APIServer,
+          NebulaAPI.Routes,
+          NebulaAPI.Config,
+          Mix.Tasks.Nebula.Routes
+        ],
+        Internals: [
+          NebulaAPI.AST,
+          NebulaAPI.AST.Parser,
+          NebulaAPI.AST.Builder,
+          NebulaAPI.APIServer.Worker,
+          NebulaAPI.APIServer.NodesInfoCache,
+          NebulaAPI.CompilerCheck,
+          Mix.Tasks.Compile.Nebula
+        ]
       ]
     ]
   end
 
   defp aliases do
-    [setup: ["deps.get"]]
+    [
+      # `mix setup` also points git at the tracked hooks dir (one-time, idempotent).
+      setup: ["deps.get", "cmd git config core.hooksPath .githooks"],
+      # Run before committing (wired as the .githooks/pre-commit hook). The test step
+      # runs as a distributed node — the suite needs a real node name (plain `mix test`
+      # fails on routing/:pg), so it is spawned with `--name` rather than a bare `test`.
+      precommit: [
+        "compile --warnings-as-errors",
+        "deps.unlock --check-unused",
+        "format --check-formatted",
+        "cmd elixir --name precommit@127.0.0.1 --cookie nebula_precommit -S mix test"
+      ]
+    ]
   end
 end

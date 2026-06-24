@@ -322,7 +322,13 @@ end
 
 If an app has modules with local methods but no `nebula_api_server()` wired into its
 supervisor, `mix compile` fails with an explanatory error — the same spirit as the
-compile error raised for a `defapi` targeting an unknown node.
+compile error raised for a `defapi` targeting an unknown node. It also *warns* (without
+failing the build) when an app wires `nebula_api_server()` but defines no `defapi` at all —
+a server with nothing to serve.
+
+In an **umbrella**, add `:nebula` to **each child app's** `compilers:` — a placement in the
+umbrella-root `mix.exs` does nothing (`mix compile` recurses into the children and only runs
+*their* compilers). One `compilers: Mix.compilers() ++ [:nebula]` per app that uses NebulaAPI.
 
 ### 4. Compile with the target node name
 
@@ -996,6 +1002,25 @@ holding the `:pg` routing and the node-info ETS cache).
   · Worker     registers methods in :pg
 ```
 
+## Seeing where things route
+
+`mix nebula.routes` prints a "git lola"-style map of where every `defapi` is served — one
+continuous rail per node, a `●` where each method is local, the rail (`|`) where it isn't:
+
+```
+mix nebula.routes               # static: ● local · | not local here (config-known)
+mix nebula.routes --available   # live overlay from :pg + Node.list (∆ remote-ok · x worker down · X node down)
+mix nebula.routes --follow      # refresh every 5s (implies --available)
+mix nebula.routes --sort locality   # most-local-first (also: module [default], name)
+```
+
+The static view asserts only **locality** (compile-time) — it makes no claim that a method
+actually runs remotely, so non-local cells are just the rail. From a running node, the same map
+without leaving iex: `NebulaAPI.Server.print_routes()` (or `print_routes(available: true)`).
+For a single method, `NebulaAPI.APIServer.configured_nodes/2` (compile-time set) and
+`available_nodes/2` (live `:pg`). The map lists only what *this* build carries — see
+[Calling → Seeing the whole routing map](docs/calling.md#seeing-the-whole-routing-map).
+
 ## Documentation
 
 This README is the whole picture. The [`docs/`](docs/README.md) pages go deeper, in the order you
@@ -1003,7 +1028,7 @@ meet each theme:
 
 1. [Configuration](docs/configuration.md) — nodes, tags, topology, compile-per-node, dev/test, validation
 2. [Defining APIs](docs/defining.md) — the three `use` macros, `defapi`, selectors, return values, `on_nebula_nodes`, wiring the server
-3. [Calling across nodes](docs/calling.md) — calling endpoints, `call_on_*`, multicast strategies, node-info routing, wrapping single-node libraries, spawning a generic node
+3. [Calling across nodes](docs/calling.md) — calling endpoints, `call_on_*`, multicast strategies, node-info routing, introspection, the routing map (`mix nebula.routes` / `print_routes`), wrapping single-node libraries, spawning a generic node
 4. [Gotchas and troubleshooting](docs/gotchas.md) — trailing opts, process scope, the `nil`-selector distinction, common errors
 
 Deep dive:

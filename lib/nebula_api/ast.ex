@@ -135,24 +135,24 @@ defmodule NebulaAPI.AST do
 
     fundef = fn_ast |> NebulaAPI.AST.Parser.parse_fundef_ast()
 
-    # Register method as local or remote
+    # Persist the method's configured serving set — the single source of truth, queryable
+    # at runtime (APIServer.configured_nodes/2) on every node (the stub carries it
+    # everywhere). local/remote on a node are derived from it (node ∈ configured ⇒ local),
+    # so no separate local/remote method attributes are kept.
     caller.module
     |> Module.put_attribute(
-      if is_current_node do
-        :nebula_local_api_methods
-      else
-        :nebula_remote_api_methods
-      end,
-      {fundef.name, fundef.args_count}
+      :nebula_configured_nodes,
+      {{fundef.name, fundef.args_count}, serving_nodes}
     )
 
     # Generate the defapi functions: remote + router everywhere, the local
     # implementation only on matching nodes (build_local_function emits
     # nothing elsewhere).
     quote do
+      # public router goes first to be attached to any @doc written above defapi
+      unquote(NebulaAPI.AST.Builder.build_public_function(fundef, is_current_node))
       unquote(NebulaAPI.AST.Builder.build_local_function(fundef, do_fn, is_current_node))
       unquote(NebulaAPI.AST.Builder.build_remote_function(fundef, serving_nodes))
-      unquote(NebulaAPI.AST.Builder.build_public_function(fundef, is_current_node))
     end
   rescue
     e in CompileError ->
@@ -170,11 +170,16 @@ defmodule NebulaAPI.AST do
     |> Keyword.keys()
   end
 
-  # `:all` is the no-selector form — the body is local on every node.
+  # `:all` is the no-selector form — local on every node IN THE CONFIGURED TOPOLOGY.
+  # A self_node OUTSIDE the topology is only reachable via `allow_unknown_self_node` (a
+  # throwaway/generic compile off a non-cluster node); such a node is not a serving node, so
+  # emit a remote stub instead of a dead local body. This keeps codegen consistent with the
+  # persisted serving set (the topology), with registered_local/remote_methods, and with the
+  # boot policy that runs such a node in generic (serve-nothing) mode anyway. For any normal
+  # build self_node is in the topology, so this stays local everywhere as before.
   defp defapi_local?(:all, caller) do
-    # Still require `use NebulaAPI` for the bookkeeping defapi relies on.
-    _ = fetch_self_node!(caller)
-    true
+    self_node = fetch_self_node!(caller)
+    self_node in (NebulaAPI.Config.nodes() |> Keyword.keys())
   end
 
   defp defapi_local?(nebula_ast, caller) do
@@ -892,7 +897,9 @@ defmodule NebulaAPI.AST do
   # quorum denominator be decided at compile time (see enforce_fn_selector_quorum!).
   defp validate_literal_selector!(selector, caller) do
     cond do
-      is_nil(selector) -> :ok
+      is_nil(selector) ->
+        :ok
+
       # A function capture (`&fun/1`) shares the `&` head with a `&tag` selector but
       # wraps a `/` (the arity) — catch it here with a clear message instead of letting
       # it mangle through the tag parser into a confusing "unknown tag". A real selector
@@ -905,8 +912,12 @@ defmodule NebulaAPI.AST do
             "&tag / @node selector."
         )
 
-      is_nebula_ast?(selector) -> :ok
-      match?({:fn, _, _}, selector) -> :ok
+      is_nebula_ast?(selector) ->
+        :ok
+
+      match?({:fn, _, _}, selector) ->
+        :ok
+
       true ->
         compile_error!(
           caller,

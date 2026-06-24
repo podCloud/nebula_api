@@ -4,16 +4,20 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
   alias NebulaAPI.APIServer.Worker
 
   # Mirrors a real `use NebulaAPI, max_concurrent_calls: 1` module: the generated
-  # __nebula_api__/1 accessor plus the local-methods markers the worker
-  # registers/validates.
+  # __nebula_api__/1 accessor plus the :nebula_configured_nodes marker the worker reads
+  # (local = node() in the configured set). [node()] = local on this (test) node.
   defmodule SerialMod do
-    Module.register_attribute(__MODULE__, :nebula_local_api_methods,
+    Module.register_attribute(__MODULE__, :nebula_configured_nodes,
       accumulate: true,
       persist: true
     )
 
-    @nebula_local_api_methods {:gated, 1}
-    @nebula_local_api_methods {:ping, 1}
+    Module.register_attribute(__MODULE__, :nebula_api, persist: true)
+
+    # Compiled "as" this node, so its configured-[node()] methods derive as local here.
+    @nebula_api [self_node: node()]
+    @nebula_configured_nodes {{:gated, 1}, [node()]}
+    @nebula_configured_nodes {{:ping, 1}, [node()]}
 
     def __nebula_api__(:max_concurrent_calls), do: 1
 

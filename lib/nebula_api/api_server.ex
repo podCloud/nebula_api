@@ -99,16 +99,84 @@ defmodule NebulaAPI.APIServer do
     )
   end
 
-  def registered_remote_methods(module) do
+  # All {{fn_name, arity}, configured_nodes} a module persisted via defapi — the single
+  # compile-time source that registered_local/remote_methods and configured_nodes/2 read.
+  defp configured_methods(module) do
     module.__info__(:attributes)
-    |> Keyword.get_values(:nebula_remote_api_methods)
+    |> Keyword.get_values(:nebula_configured_nodes)
     |> List.flatten()
   end
 
-  def registered_local_methods(module) do
+  # The node this module was COMPILED as (the `use NebulaAPI` self_node), baked into the
+  # :nebula_api opts. local/remote is a compile-time fact, so it is derived against this —
+  # not runtime node() (which only equals it on a correctly-booted serving node).
+  #
+  # This makes "local" == self_node ∈ configured, matching defapi's own is_current_node — with
+  # one escape-hatch edge: a NO-selector defapi compiled with `allow_unknown_self_node: true`
+  # and a self_node absent from the topology generates a local body but derives as remote here
+  # (it isn't in the configured set). That combo is for throwaway compiles off a node that's
+  # not part of the cluster, not for a real serving node, so the divergence is harmless.
+  defp compiled_self_node(module) do
     module.__info__(:attributes)
-    |> Keyword.get_values(:nebula_local_api_methods)
+    |> Keyword.get_values(:nebula_api)
     |> List.flatten()
+    |> Keyword.get(:self_node)
+  end
+
+  @doc """
+  The `{fn_name, arity}` methods served REMOTELY from this build — derived from the configured
+  set (the compiled `self_node` is NOT in a method's configured nodes).
+  """
+  def registered_remote_methods(module) do
+    self_node = compiled_self_node(module)
+
+    module
+    |> configured_methods()
+    |> Enum.reject(fn {_method, nodes} -> self_node in nodes end)
+    |> Enum.map(fn {method, _nodes} -> method end)
+  end
+
+  @doc """
+  The `{fn_name, arity}` methods whose body is LOCAL on this build — derived from the configured
+  set (the compiled `self_node` is in a method's configured nodes). This is what
+  `nebula_api_server()` starts a worker for.
+  """
+  def registered_local_methods(module) do
+    self_node = compiled_self_node(module)
+
+    module
+    |> configured_methods()
+    |> Enum.filter(fn {_method, nodes} -> self_node in nodes end)
+    |> Enum.map(fn {method, _nodes} -> method end)
+  end
+
+  @doc """
+  The CONFIGURED nodes that serve `module`'s `{fn_name, arity}` — the method's selector
+  resolved over the topology at compile time (connected or not), `[]` for an unknown method.
+
+  Compile-time and config-derived, so identical on every node: the value is read from the
+  module's persisted metadata, which the stub carries on every build. Use it to introspect
+  routing without reaching into `:pg`. See also `available_nodes/2`.
+  """
+  def configured_nodes(module, {fn_name, arity}) do
+    module
+    |> configured_methods()
+    |> Enum.find_value([], fn
+      {{^fn_name, ^arity}, nodes} -> nodes
+      _ -> nil
+    end)
+  end
+
+  @doc """
+  The nodes that currently have a live worker for `module`'s `{fn_name, arity}` — the runtime
+  serving set, read from `:pg`. `[]` when nobody serves it. On correctly-booted nodes (each
+  running as the node it was compiled for) this is a subset of `configured_nodes/2` — the
+  connected ones whose app wired `nebula_api_server()`.
+  """
+  def available_nodes(module, {fn_name, arity}) do
+    :pg.get_members(:pg_nebula_api, {module, {fn_name, arity}})
+    |> Enum.map(&node/1)
+    |> Enum.uniq()
   end
 
   @doc false

@@ -5,6 +5,66 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Routing introspection** (#6) — two public functions on `NebulaAPI.APIServer`, keyed by
+  `{fn_name, arity}`:
+  - `configured_nodes/2` — the method's compile-time serving set (the selector resolved over the
+    topology, connected or not). Persisted as module metadata, so it answers for any method on
+    any node.
+  - `available_nodes/2` — the nodes that currently have a live worker for the method (from
+    `:pg`); a subset of the configured set.
+
+- **`mix nebula.routes` + `NebulaAPI.Server.print_routes/0`** (#8) — print the per-node routing
+  map "git lola"-style: one continuous vertical rail per node (name + `@short`/`&tag` selectors),
+  a `●` marking each node that serves a method and the rail (`|`) continuing where it isn't local;
+  current node in bold, serves-nothing nodes greyed. `NebulaAPI.Routes` holds the logic; the mix
+  task works in a single app or at an umbrella root, `print_routes/0` is the iex entry point.
+  Scope: lists only the modules and `defapi` present in this build (compiled for `compiled_node()`).
+  - **Static view** — `●` local · `|` not local here. Asserts only locality (compile-time,
+    config-known); it makes no claim that a method actually runs remotely — that's `--available`.
+  - **`--available`** — live overlay from `:pg` + `Node.list`: `●` local · `∆` remote-reachable ·
+    `x` worker down · `X` node down · `-` not served here · `|` unknown (this node can't observe
+    the cluster, e.g. run offline); a disconnected node's column is greyed.
+  - **`--follow`** — refresh every 5s (implies `--available`); `--no-color`.
+  - **Sorting** — `sort:` / `--sort`: `:module` (default), `:name`, or `:locality` (most-local first).
+
+- **`:nebula` compiler warning** (#5) — warns (without failing the build) when an app wires
+  `nebula_api_server()` but defines no `defapi` methods at all (a server with nothing to serve).
+  An app whose methods are merely all-remote on this build still has `defapi`, so it does not warn.
+
+### Changed
+- **Single source of truth for method metadata** (#6) — `{fn_name, arity} -> configured_nodes`
+  (`:nebula_configured_nodes`) is now the only per-method attribute. The former
+  `:nebula_local_api_methods` / `:nebula_remote_api_methods` lists are dropped;
+  `registered_local_methods/1` and `registered_remote_methods/1` derive local/remote from the
+  configured set against the build's compiled `self_node`. Internal — public behaviour unchanged.
+
+### Fixed
+- A user `@doc` written above a `defapi` now attaches to the **public router** function instead
+  of the first generated `defp __nbapi_*` helper (where Elixir discarded it with a warning). The
+  router is emitted first in the expansion, so `@doc`/`@spec` above a `defapi` document the public
+  API as written.
+- A **no-selector `defapi` compiled off-topology** (only reachable via `allow_unknown_self_node`,
+  for a throwaway/generic node not in the configured cluster) now emits a remote stub instead of a
+  dead local body. Such a node serves nothing, so this aligns codegen with the persisted serving
+  set, with `registered_local/remote_methods`, and with the boot policy (which runs it in generic
+  mode anyway). Normal builds (self_node in the topology) are unchanged — still local everywhere.
+- `mix nebula.routes --available` no longer paints the **current** node's rail as `local` when it
+  isn't actually connected. When this node can't observe the cluster (an offline invocation where
+  `node()` is `nonode@nohost` and `current` is only the config `self_node` fallback), every cell is
+  reported `:unknown` (`|`) rather than asserting a misleading green ● / `:node_unavailable`.
+
+### Documentation
+- Clarify that the `:nebula` compiler is **per-app**: it must be in each child app's
+  `compilers:` and is **not** invoked at the umbrella root (a root-only placement does nothing).
+
+### Tooling
+- `mix precommit` alias (compile `--warnings-as-errors`, `deps.unlock --check-unused`,
+  `format --check-formatted`, the distributed test suite) wired as a tracked git pre-commit hook
+  (`.githooks/`, enabled by `mix setup`).
+
 ## [0.5.1] - 2026-06-15
 
 ### Documentation

@@ -123,12 +123,11 @@ defmodule NebulaAPI do
         """
     end
 
-    Module.register_attribute(env.module, :nebula_local_api_methods,
-      accumulate: true,
-      persist: true
-    )
-
-    Module.register_attribute(env.module, :nebula_remote_api_methods,
+    # Single compile-time source of truth, persisted per defapi as
+    # {{fn_name, arity}, configured_nodes}. local/remote on a node are DERIVED from it
+    # (node ∈ configured ⇒ local) — there are no separate local/remote method lists.
+    # Exposed at runtime via NebulaAPI.APIServer.{configured_nodes,registered_local_methods}.
+    Module.register_attribute(env.module, :nebula_configured_nodes,
       accumulate: true,
       persist: true
     )

@@ -251,6 +251,56 @@ A selector function that returns `nil` / `[]` means "nothing matched" — it nev
 target (the full `nil`-selector vs selector-returning-`nil` distinction is in
 [Gotchas](gotchas.md)).
 
+## Introspecting where a method runs
+
+Two functions answer "which nodes serve `Mod.fun/arity`?", keyed by `{fn_name, arity}` — handy
+for ops, debugging, and assertions, without reaching into `:pg`:
+
+```elixir
+# The compile-time serving set (the selector over the topology), connected or not.
+# Answers on any node — the value is module metadata the stub carries everywhere.
+NebulaAPI.APIServer.configured_nodes(MyApp.Users, {:get, 1})
+#=> [:"db@db.example", :"db2@db.example"]
+
+# The nodes that currently have a live worker for it (from :pg) — a subset of the above.
+NebulaAPI.APIServer.available_nodes(MyApp.Users, {:get, 1})
+#=> [:"db@db.example"]
+```
+
+`configured_nodes/2` returns `[]` for a method the module doesn't define; `available_nodes/2`
+returns `[]` when nobody serves it.
+
+### Seeing the whole routing map
+
+For the cluster-wide picture rather than one method, print the routing map — a "git lola"-style
+graph, one continuous rail per node, with a `●` where each method is local:
+
+```
+mix nebula.routes               # static: ● local · | not local here (config-known)
+mix nebula.routes --available   # live overlay from :pg + Node.list
+mix nebula.routes --follow      # refresh every 5s (implies --available)
+mix nebula.routes --sort locality   # most-local-first (also: module [default], name)
+mix nebula.routes --no-color
+```
+
+The static view asserts only **locality** (compile-time, config-known) — it does not claim a
+method actually runs remotely, so non-local cells are just the rail (`|`). The `--available`
+view overlays live state: `●` local · `∆` remote, reachable, live worker · `x` configured-local
+but no worker · `X` node down · `-` not served here · `|` unknown (this node can't observe the
+cluster, e.g. run offline).
+
+From a running node, the same map without leaving iex:
+
+```elixir
+iex> NebulaAPI.Server.print_routes()                    # static
+iex> NebulaAPI.Server.print_routes(available: true)     # live
+```
+
+**Scope:** it lists only the modules — and their `defapi` — present in *this* build (the one
+compiled for `compiled_node()`). A node whose release carries a subset of an umbrella's apps
+won't show the other apps' methods, and modules not imported/used by this build are absent. Run
+it from a node/release that carries every app for the full cluster-wide picture.
+
 ## Wrap any single-node library
 
 The pattern that tends to click: **NebulaAPI turns any single-node library into a
