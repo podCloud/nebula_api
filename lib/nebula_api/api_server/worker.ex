@@ -133,7 +133,7 @@ defmodule NebulaAPI.APIServer.Worker do
     {:ok, pid} =
       Task.Supervisor.start_child(NebulaAPI.TaskSupervisor, fn ->
         # Stash the reply address so the body can heartbeat via
-        # NebulaAPI.request_more_time!/0. The task is throwaway, so the process
+        # NebulaAPI.request_more_time/0. The task is throwaway, so the process
         # dictionary is the lightest request-scoped carrier.
         Process.put(:nebula_api_call, from)
         result = execute_local_call(module, methods, fn_call)
