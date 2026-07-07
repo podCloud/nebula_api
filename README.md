@@ -615,8 +615,14 @@ Results are always tagged per node — `{node, value}` on success,
 
 > "Stops waiting" is exactly that: once you have what you asked for (a first success, or
 > the quorum), the rest is just wasted waiting — so NebulaAPI kills the local tasks still
-> awaiting a reply and discards their late responses. A body that already started running on
-> a remote node isn't aborted — the RPC was already sent.
+> awaiting a reply and discards their late responses. Killing a straggler's local task
+> aborts its remote body too: the serving worker watches the caller and stops the body the
+> moment nobody awaits it.
+>
+> That is the general rule — a remote body runs only while its caller waits, so a caller
+> timeout or crash kills it (write bodies safe to interrupt). A body that legitimately runs
+> long heartbeats with [`NebulaAPI.request_more_time/0`](docs/defining.md#a-remote-body-is-tied-to-its-callers-interest)
+> to keep its caller waiting instead of being timed out.
 
 `:first` and `:quorum` let you define what counts as a success with a `success:` (or
 `failure:`) predicate — by default, any node that responded counts:
