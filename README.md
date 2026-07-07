@@ -235,7 +235,7 @@ Add `:nebula_api` to your deps — from [Hex](https://hex.pm/packages/nebula_api
 ```elixir
 def deps do
   [
-    {:nebula_api, "~> 0.6"}
+    {:nebula_api, "~> 0.7"}
   ]
 end
 ```
@@ -245,7 +245,7 @@ Or track the repo directly (e.g. for an unreleased fix):
 ```elixir
 def deps do
   [
-    {:nebula_api, git: "git@github.com:podCloud/nebula_api.git", tag: "v0.6.0"}
+    {:nebula_api, git: "git@github.com:podCloud/nebula_api.git", tag: "v0.7.0"}
   ]
 end
 ```
