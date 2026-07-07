@@ -241,8 +241,11 @@ defmodule NebulaAPI.IntegrationTest.FakeWorker do
 
   def init(state), do: {:ok, state}
 
-  def handle_call({:nebula_call, fn_call}, _from, state) do
+  # New transport: the request arrives as an info message carrying {caller, ref};
+  # the reply is a tagged send, not a GenServer reply.
+  def handle_info({:nebula_call, {caller, ref}, fn_call}, state) do
     # Real defapi workers return the body's raw value (no wrapping).
-    {:reply, state.response_fn.(fn_call), state}
+    send(caller, {ref, {:reply, state.response_fn.(fn_call)}})
+    {:noreply, state}
   end
 end

@@ -302,7 +302,11 @@ defmodule NebulaAPI.GeneratedFunctionsTest do
     defmodule FakeWorker do
       use GenServer
       def init(reply), do: {:ok, reply}
-      def handle_call({:nebula_call, _fn_call}, _from, reply), do: {:reply, reply, reply}
+
+      def handle_info({:nebula_call, {caller, ref}, _fn_call}, reply) do
+        send(caller, {ref, {:reply, reply}})
+        {:noreply, reply}
+      end
     end
 
     defp start_fake_for(module, method, arity, reply) do

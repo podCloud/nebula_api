@@ -4,6 +4,7 @@ defmodule NebulaAPI.Config do
     default_opts: [],
     nodes_info_refresh_interval: 5_000,
     default_timeout: 5_000,
+    max_time_extensions: 10,
     allow_nonode_nohost: false
   ]
 
@@ -52,6 +53,14 @@ defmodule NebulaAPI.Config do
   # (`use NebulaAPI, default_timeout: ...`) and per call (`timeout:` option).
   def default_timeout() do
     config()[:default_timeout]
+  end
+
+  # Max number of `NebulaAPI.request_more_time/0` heartbeats honored for one call
+  # before the deadline stops being extended. Bounds a body that would otherwise
+  # heartbeat forever and never time out. Overridable per module
+  # (`use NebulaAPI, max_time_extensions: ...`) and per call (`max_time_extensions:`).
+  def max_time_extensions() do
+    config()[:max_time_extensions]
   end
 
   def validate_with_nodes(config, nodes) do

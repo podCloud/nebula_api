@@ -52,7 +52,7 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
 
     for i <- 1..2 do
       spawn(fn ->
-        send(parent, {:done, i, GenServer.call(worker, {:nebula_call, {:gated, parent}}, 5_000)})
+        send(parent, {:done, i, nebula_call(worker, {:gated, parent}, 5_000)})
       end)
     end
 
@@ -77,7 +77,7 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
     parent = self()
 
     # Occupy the single slot with a gated call.
-    spawn(fn -> GenServer.call(worker, {:nebula_call, {:gated, parent}}, 5_000) end)
+    spawn(fn -> nebula_call(worker, {:gated, parent}, 5_000) end)
     assert_receive {:started, gate}, 1_000
 
     # Mimic how the library actually calls workers: through a throwaway process
@@ -86,7 +86,7 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
     proxy =
       spawn(fn ->
         try do
-          GenServer.call(worker, {:nebula_call, {:ping, parent}}, 50)
+          nebula_call(worker, {:ping, parent}, 50)
         catch
           :exit, _ -> :ok
         end
@@ -100,7 +100,7 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
     # the purged entry never runs: the queue is FIFO, so a fresh call enqueued
     # after it would execute after it — one :executed, not two.
     send(gate, :go)
-    assert GenServer.call(worker, {:nebula_call, {:ping, parent}}, 1_000) == :pong
+    assert nebula_call(worker, {:ping, parent}, 1_000) == :pong
     assert_receive :executed
     refute_receive :executed, 100
 
@@ -111,8 +111,8 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
     {:ok, worker} = Worker.start_link(SerialMod)
 
     # :nope is unknown -> replies {:nebula_error, _} but must release the slot.
-    assert {:nebula_error, _} = GenServer.call(worker, {:nebula_call, {:nope}}, 1_000)
-    assert GenServer.call(worker, {:nebula_call, {:ping, self()}}, 1_000) == :pong
+    assert {:nebula_error, _} = nebula_call(worker, {:nope}, 1_000)
+    assert nebula_call(worker, {:ping, self()}, 1_000) == :pong
     assert_receive :executed
 
     GenServer.stop(worker)
@@ -123,7 +123,7 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
     parent = self()
 
     # Occupy the single slot with a gated call.
-    spawn(fn -> GenServer.call(worker, {:nebula_call, {:gated, parent}}, 5_000) end)
+    spawn(fn -> nebula_call(worker, {:gated, parent}, 5_000) end)
     assert_receive {:started, gate}, 1_000
 
     # Queue a call behind it, then kill its caller while it waits in line. In real
@@ -131,7 +131,7 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
     # is exactly how loss of interest manifests (timeout, early :first resolution).
     victim =
       spawn(fn ->
-        GenServer.call(worker, {:nebula_call, {:ping, parent}}, 5_000)
+        nebula_call(worker, {:ping, parent}, 5_000)
       end)
 
     # The victim must be IN the queue before we kill it: poll the worker's
@@ -147,7 +147,7 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
     # Same FIFO argument as above: free the slot, run a fresh call, and the
     # purged entry must never have produced its own :executed.
     send(gate, :go)
-    assert GenServer.call(worker, {:nebula_call, {:ping, parent}}, 1_000) == :pong
+    assert nebula_call(worker, {:ping, parent}, 1_000) == :pong
     assert_receive :executed
     refute_receive :executed, 100
 
@@ -162,7 +162,7 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
 
     # The worker (and its queue bookkeeping) survived: real calls still work.
     assert Process.alive?(worker)
-    assert GenServer.call(worker, {:nebula_call, {:ping, self()}}, 1_000) == :pong
+    assert nebula_call(worker, {:ping, self()}, 1_000) == :pong
     assert_receive :executed
 
     GenServer.stop(worker)
@@ -174,7 +174,7 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
     send(worker, :garbage_info)
 
     # The worker (and its queue bookkeeping) survived: real calls still work.
-    assert GenServer.call(worker, {:nebula_call, {:ping, self()}}, 1_000) == :pong
+    assert nebula_call(worker, {:ping, self()}, 1_000) == :pong
     assert_receive :executed
 
     GenServer.stop(worker)
@@ -185,13 +185,31 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
 
     GenServer.cast(worker, :garbage_cast)
 
-    assert GenServer.call(worker, {:nebula_call, {:ping, self()}}, 1_000) == :pong
+    assert nebula_call(worker, {:ping, self()}, 1_000) == :pong
     assert_receive :executed
 
     GenServer.stop(worker)
   end
 
   # Bounded poll: turns "sleep and hope" into "wait for the actual condition".
+  # Mirrors APIServer.safe_call/3's request/reply/heartbeat protocol: send the
+  # request tagged with a ref, await the tagged reply, and (like the real caller
+  # loop) treat a :request_more_time heartbeat as "keep waiting". Exits on timeout.
+  defp nebula_call(worker, fn_call, timeout) do
+    ref = make_ref()
+    send(worker, {:nebula_call, {self(), ref}, fn_call})
+    await_nebula_reply(ref, timeout)
+  end
+
+  defp await_nebula_reply(ref, timeout) do
+    receive do
+      {^ref, {:reply, result}} -> result
+      {^ref, :request_more_time} -> await_nebula_reply(ref, timeout)
+    after
+      timeout -> exit(:timeout)
+    end
+  end
+
   defp wait_until(fun, timeout \\ 1_000) do
     deadline = System.monotonic_time(:millisecond) + timeout
     do_wait_until(fun, deadline)

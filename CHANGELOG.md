@@ -5,6 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-07-07
+
+### Changed
+- **A remote body now runs only while its caller is waiting** (#10). When a caller times out or
+  dies (a crash, or a `:first`/`:quorum` multicast abandoning a straggler), the body executing on
+  the serving node is **killed** — previously it kept running to completion and replied into the
+  void (an orphaned RPC). **This is a behavioural change:** write `defapi` bodies that are safe to
+  interrupt (idempotent, no un-retryable half-updates). A legitimately long body can keep its
+  caller waiting with the new `NebulaAPI.request_more_time/0` (see below). Killing a body stops the
+  process, not an in-flight DB query already handed to the driver.
+- **Transport** (internal) — the caller-side of a remote call is now a hand-rolled `send` + receive
+  loop instead of `GenServer.call`, so the serving worker can monitor the caller (to kill an
+  orphaned body) and accept heartbeats. The return contract (`{:nebula_error, _}` shapes, `:infinity`
+  rejection) is unchanged.
+
+### Added
+- **`NebulaAPI.request_more_time/0`** — call it from inside a `defapi` body to reset the caller's
+  timeout window (a heartbeat, like a long task pinging its scheduler), so a slow-but-alive body is
+  not mistaken for a hung one and killed. Outside a remote call it is a no-op.
+- **`max_time_extensions`** — bounds how many `request_more_time/0` heartbeats one call honors
+  before its deadline stops being extended (so a body cannot heartbeat forever and defeat its own
+  timeout). Default `10`; resolved per call (`max_time_extensions:`), per module
+  (`use NebulaAPI, max_time_extensions:`), or globally (`config :nebula_api, :max_time_extensions`).
+  `0` forbids extension; `:infinity` is rejected.
+
 ## [0.6.0] - 2026-06-24
 
 ### Added

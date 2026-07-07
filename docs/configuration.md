@@ -109,6 +109,7 @@ Defaults applied by every `use NebulaAPI`:
 | `self_node` | atom | The node to build for, when not starting the VM with `--name` (dev/test). |
 | `max_concurrent_calls` | positive integer or `:infinity` | Cap on how many calls a module's worker runs at once on this node; `1` gives strict serialization. |
 | `default_timeout` | positive integer (ms) | Inherited default remote-call timeout. |
+| `max_time_extensions` | non-negative integer | How many `NebulaAPI.request_more_time/0` heartbeats a call may use before its deadline stops being extended. `0` forbids extension. |
 
 A module's own `use NebulaAPI, ...` options override these.
 
@@ -134,6 +135,24 @@ a call's own timeout:  >  the module's default_timeout:  >  this  >  5000
 ```elixir
 config :nebula_api, default_timeout: 15_000
 ```
+
+## `max_time_extensions`
+
+How many `NebulaAPI.request_more_time/0` heartbeats a single call may honor before its deadline
+stops being extended (default `10`). It bounds a body that would otherwise heartbeat forever and
+never time out — the total wait stays under `(max_time_extensions + 1) × timeout`. Same
+resolution order as the timeout:
+
+```
+a call's own max_time_extensions:  >  the module's max_time_extensions:  >  this  >  10
+```
+
+```elixir
+config :nebula_api, max_time_extensions: 20
+```
+
+`0` forbids extension entirely (`request_more_time/0` becomes a no-op for that call). `:infinity`
+is rejected — a call must stay bounded.
 
 ## `nodes_info_refresh_interval`
 

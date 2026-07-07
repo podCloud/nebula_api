@@ -164,6 +164,42 @@ results}`, `{:nebula_error, :quorum_unreachable, %{workers: n, required: m}}` �
 > The trailing routing-options argument (`MyApp.Users.get(id, timeout: 100)`) and its
 > positional pitfall live in [Gotchas](gotchas.md#trailing-routing-options-are-positional).
 
+### A remote body is tied to its caller's interest
+
+When a body runs remotely, it runs **for** a caller — and only as long as that caller is
+still waiting. If the caller gives up (its `timeout` elapses) or dies (it crashed, or a
+`:first`/`:quorum` multicast already has its answer and abandons the stragglers), the body is
+**killed** where it runs. There is no "finish anyway" — the moment nobody awaits the result,
+the work stops.
+
+So write bodies that are **safe to interrupt at any point**: idempotent, no half-updates that
+a retry can't cope with. This is the same discipline a body already needs for the caller
+seeing `{:nebula_error, :timeout}` — the difference is the body genuinely stops, it doesn't
+keep running in the background.
+
+For a body that is *legitimately* long (a big report, a slow external call) and shouldn't be
+mistaken for a hung one, call [`NebulaAPI.request_more_time/0`](`NebulaAPI.request_more_time/0`)
+from inside it. It resets the caller's timeout window — a heartbeat, like a long task pinging
+its scheduler — so the caller keeps waiting instead of timing out and killing the body. The
+number of heartbeats one call may use is capped by
+[`max_time_extensions`](configuration.md#max_time_extensions) (default 10, configurable per
+call/module/globally): past the cap, further heartbeats are ignored and the next window ends the
+call — so a body can extend itself, but never forever.
+
+```elixir
+defapi &db, export(scope) do
+  Enum.each(chunks(scope), fn chunk ->
+    process(chunk)
+    NebulaAPI.request_more_time()   # "still alive, don't time me out"
+  end)
+end
+```
+
+> Caveat: killing a body stops the **process** running it, not necessarily side effects it
+> already handed off. A `Repo` query in flight runs in the driver's own connection process; a
+> killed body abandons its wait for that query, it does not cancel the query in the database.
+> Interruption-safety is about your body's own steps, not about un-sending what already left.
+
 ### What gets generated
 
 For each `defapi`, the macro generates:

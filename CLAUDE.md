@@ -63,7 +63,11 @@ picture spans several files:
   app's `use NebulaAPI` modules with local methods and starts a `Worker` each. `server_mode/3`
   is the pure boot-policy function (serve / generic-noop / refuse) — test it without a second VM.
 - `APIServer.Worker` — named after the consumer module; registers methods in `:pg`, runs each
-  call in a supervised task, queues over `max_concurrent_calls` with caller-monitored entries.
+  call in a supervised task, queues over `max_concurrent_calls`. It monitors the caller of every
+  call (queued *and* running) and kills the running body if the caller dies. The transport is a
+  hand-rolled send + receive loop in `safe_call/3`, not `GenServer.call`, so the caller owns its
+  receive — which is what lets the worker observe its death and what lets a body extend its
+  deadline via `NebulaAPI.request_more_time/0`.
 - `APIServer.call_remote_method/3` — unicast / multicast (`:all` / `:first` / `:quorum`) and
   all the confinement.
 - `NodesInfoCache` — rebuilds the node-info snapshot on a timer; reads never fan out.
@@ -83,6 +87,15 @@ Deliberate and load-bearing; a "cleanup" that violates one is a regression:
 - **Workers are registered under the consumer module's own name**, so stray messages reach
   them. The `handle_call`/`handle_info`/`handle_cast` catch-alls keep one stray message from
   killing the queue — don't remove them.
+- **A running body is killed when its caller dies.** The worker monitors each running call's
+  caller and `Process.exit`s the body on its DOWN (that is the orphaned-RPC fix, #10). The
+  transport is deliberately a hand-rolled send/receive loop, not `GenServer.call`, so the caller
+  owns its receive — do **not** "simplify" it back to `GenServer.call`: that reintroduces the
+  orphan bug and breaks `request_more_time/0` (whose heartbeat needs a clause in that receive).
+- **`request_more_time/0` is bounded.** `await_reply`'s heartbeat clause is guarded by
+  `extensions_left > 0`; when spent, further heartbeats match no clause, so they neither wake the
+  receive nor reset its `after` timer, and the call times out. Do not drop that guard — an
+  unbounded heartbeat lets a body defeat its own timeout forever (`max_time_extensions`, default 10).
 - **`nil` means "not set"** for every call option. Bad opts raise *up front* (outside the
   transport rescue); only genuine transport failures become `{:nebula_error, _}`.
 - **Selectors are literal** at `call_on_*` sites (a `&tag`/`@node`, a literal `fn`, or none);

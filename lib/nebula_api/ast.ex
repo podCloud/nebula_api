@@ -564,7 +564,7 @@ defmodule NebulaAPI.AST do
     ast != [] and Keyword.keyword?(ast)
   end
 
-  @unicast_block_opts [:timeout]
+  @unicast_block_opts [:timeout, :max_time_extensions]
   @multicast_only_opts [:strategy, :at_least, :success, :failure, :quorum]
   @multicast_block_opts @unicast_block_opts ++ @multicast_only_opts
   @valid_strategies [:all, :first, :quorum]
@@ -675,6 +675,21 @@ defmodule NebulaAPI.AST do
           "timeout: must be a positive integer in milliseconds, got: #{inspect(t)}" <>
             if(t == :infinity,
               do: " — :infinity is not supported; use a large finite budget instead",
+              else: ""
+            )
+        )
+
+      _ ->
+        :ok
+    end
+
+    case static_value(opts, :max_time_extensions) do
+      {:literal, n} when not is_nil(n) and not (is_integer(n) and n >= 0) ->
+        compile_error!(
+          caller,
+          "max_time_extensions: must be a non-negative integer, got: #{inspect(n)}" <>
+            if(n == :infinity,
+              do: " — :infinity is not supported; a call must stay bounded",
               else: ""
             )
         )

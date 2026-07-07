@@ -182,6 +182,12 @@ The default RPC timeout is **5000 ms** (override per call, per module, or global
 caller: a unicast call returns `{:nebula_error, :timeout}`; in multicast, the failure for a
 given node is reported per-node as `{node, {:nebula_error, :timeout}}`.
 
+A timeout doesn't just unblock the caller — it **kills the remote body**. The body runs only
+as long as someone awaits it; on timeout (or caller death) it stops where it runs, so bodies
+must be safe to interrupt, and a legitimately-long body should heartbeat with
+`NebulaAPI.request_more_time/0` (see
+[Defining → a remote body is tied to its caller's interest](defining.md#a-remote-body-is-tied-to-its-callers-interest)).
+
 If calls time out, check network latency (`Node.ping/1`), the target's load
 (`:erlang.statistics(:run_queue)` on it), or make the operation faster. Other transport
 faults follow the same shape: `{:nebula_error, {:selector_failed, reason}}` when a selector
