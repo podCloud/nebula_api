@@ -408,6 +408,24 @@ defmodule NebulaAPI.CompileErrorsTest do
       assert {_, _} = eval_block("call_on_nodes strategy: :first, success: nil")
     end
 
+    test "max_time_extensions: is accepted on call_on_node and call_on_nodes" do
+      assert {_, _} = eval_block("call_on_node timeout: 100, max_time_extensions: 5")
+      assert {_, _} = eval_block("call_on_nodes strategy: :all, max_time_extensions: 5")
+    end
+
+    test "a literal invalid max_time_extensions raises at compile time" do
+      assert_raise CompileError, ~r/max_time_extensions/, fn ->
+        eval_block("call_on_node max_time_extensions: :infinity")
+      end
+
+      # A literal float is decidable at compile time (a negative like -1 parses as
+      # the unary-minus AST, so it stays :dynamic and defers to the runtime check,
+      # same as timeout:).
+      assert_raise CompileError, ~r/max_time_extensions/, fn ->
+        eval_block("call_on_node max_time_extensions: 1.5")
+      end
+    end
+
     test "at_least: without strategy: :quorum raises (the block resolves to :all)" do
       assert_raise CompileError, ~r/at_least.*:quorum/s, fn ->
         eval_block("call_on_nodes at_least: 2")
