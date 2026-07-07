@@ -192,14 +192,19 @@ defmodule NebulaAPI.WorkerConcurrencyTest do
   end
 
   # Bounded poll: turns "sleep and hope" into "wait for the actual condition".
-  # Mirrors APIServer.safe_call/3's transport: send the request tagged with a
-  # ref, await the tagged reply. Exits on timeout, like the real caller loop.
+  # Mirrors APIServer.safe_call/3's request/reply/heartbeat protocol: send the
+  # request tagged with a ref, await the tagged reply, and (like the real caller
+  # loop) treat a :request_more_time heartbeat as "keep waiting". Exits on timeout.
   defp nebula_call(worker, fn_call, timeout) do
     ref = make_ref()
     send(worker, {:nebula_call, {self(), ref}, fn_call})
+    await_nebula_reply(ref, timeout)
+  end
 
+  defp await_nebula_reply(ref, timeout) do
     receive do
       {^ref, {:reply, result}} -> result
+      {^ref, :request_more_time} -> await_nebula_reply(ref, timeout)
     after
       timeout -> exit(:timeout)
     end
