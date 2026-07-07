@@ -22,6 +22,25 @@ defmodule NebulaAPI do
     end
   end
 
+  @doc """
+  Extends the deadline of the in-flight NebulaAPI call this process is serving.
+
+  Call it from inside a `defapi` body that legitimately runs long: it resets the
+  caller's timeout window (a heartbeat, like a long task pinging its scheduler),
+  so a slow-but-alive body is not mistaken for a hung one and killed.
+
+  Outside a remote call — the same body invoked locally, or any other process —
+  it is a no-op: the local path has no caller deadline to extend.
+  """
+  def request_more_time do
+    case Process.get(:nebula_api_call) do
+      {caller, ref} -> send(caller, {ref, :request_more_time})
+      nil -> :ok
+    end
+
+    :ok
+  end
+
   defp __register__(env, opts) do
     defaults =
       NebulaAPI.Config.default_opts()

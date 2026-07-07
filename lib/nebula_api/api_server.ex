@@ -772,9 +772,10 @@ defmodule NebulaAPI.APIServer do
   end
 
   # The transport. A hand-rolled send + receive loop instead of GenServer.call:
-  # the caller owns its receive, which lets the worker monitor it and kill the
-  # running body when it dies, and leaves room to accept heartbeats later without
-  # GenServer.call's closed receive. Return contract is unchanged so
+  # the caller owns its receive, which (1) lets the worker monitor it and kill
+  # the running body when it dies, and (2) accepts `:request_more_time`
+  # heartbeats that reset the deadline — GenServer.call's internal receive is
+  # closed, you cannot add either. Return contract is unchanged so
   # confined_call/tagged_call keep working:
   #   `{:replied, term}` = the worker replied (term may be a business-level error).
   #   `{:exit, :timeout}` / `{:exit, reason}` = gave up without a reply.
@@ -796,6 +797,8 @@ defmodule NebulaAPI.APIServer do
   defp await_reply(ref, wmon, timeout) do
     receive do
       {^ref, {:reply, result}} -> {:replied, result}
+      # Heartbeat from NebulaAPI.request_more_time/0: loop with a fresh `after`.
+      {^ref, :request_more_time} -> await_reply(ref, wmon, timeout)
       {:DOWN, ^wmon, :process, _pid, reason} -> {:exit, reason}
     after
       timeout -> {:exit, :timeout}
