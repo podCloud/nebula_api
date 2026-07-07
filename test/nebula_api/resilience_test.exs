@@ -27,14 +27,14 @@ defmodule NebulaAPI.ResilienceTest do
     use GenServer
     def init(state), do: {:ok, state}
 
-    def handle_call(
-          {:nebula_call, fn_call},
-          _from,
+    def handle_info(
+          {:nebula_call, {caller, ref}, fn_call},
           %{delay: delay, reply: reply} = state
         ) do
       if delay > 0, do: Process.sleep(delay)
       _ = fn_call
-      {:reply, reply, state}
+      send(caller, {ref, {:reply, reply}})
+      {:noreply, state}
     end
   end
 
@@ -256,7 +256,7 @@ defmodule NebulaAPI.ResilienceTest do
       spawn(fn ->
         send(
           parent,
-          {:gated_done, GenServer.call(worker, {:nebula_call, {:gated, parent}}, 5_000)}
+          {:gated_done, nebula_call(worker, {:gated, parent}, 5_000)}
         )
       end)
 
@@ -265,7 +265,7 @@ defmodule NebulaAPI.ResilienceTest do
 
       # A second call completes WHILE the first is still blocked: that's the
       # non-blocking worker, proven causally (no clock involved).
-      assert GenServer.call(worker, {:nebula_call, {:fast}}, 1_000) == {:ok, :fast}
+      assert nebula_call(worker, {:fast}, 1_000) == {:ok, :fast}
 
       send(gate, :go)
       assert_receive {:gated_done, {:ok, :gated}}, 1_000
@@ -277,11 +277,11 @@ defmodule NebulaAPI.ResilienceTest do
       {:ok, worker} = NebulaAPI.APIServer.Worker.start_link(LocalMethodsMod)
 
       assert {:nebula_error, {:undefined_local_method, LocalMethodsMod, :nope, 0}} =
-               GenServer.call(worker, {:nebula_call, {:nope}}, 1_000)
+               nebula_call(worker, {:nope}, 1_000)
 
       # The worker survives and keeps serving its real methods.
       assert Process.alive?(worker)
-      assert GenServer.call(worker, {:nebula_call, {:fast}}, 1_000) == {:ok, :fast}
+      assert nebula_call(worker, {:fast}, 1_000) == {:ok, :fast}
 
       GenServer.stop(worker)
     end
@@ -816,6 +816,19 @@ defmodule NebulaAPI.ResilienceTest do
       assert info.last_seen_at == nil
 
       GenServer.stop(pid)
+    end
+  end
+
+  # Mirrors APIServer.safe_call/3's transport: send the request tagged with a
+  # ref, await the tagged reply. Exits on timeout, like the real caller loop.
+  defp nebula_call(worker, fn_call, timeout) do
+    ref = make_ref()
+    send(worker, {:nebula_call, {self(), ref}, fn_call})
+
+    receive do
+      {^ref, {:reply, result}} -> result
+    after
+      timeout -> exit(:timeout)
     end
   end
 

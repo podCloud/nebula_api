@@ -26,7 +26,9 @@ defmodule NebulaAPI.APIServer.Worker do
        max: max_concurrent_calls(module),
        in_flight: 0,
        queue: :queue.new(),
-       tasks: MapSet.new()
+       # task_ref => %{task_pid, caller_ref}. We monitor BOTH the running body
+       # (to free the slot) and its caller (to kill the body if the caller dies).
+       running: %{}
      }}
   end
 
@@ -38,46 +40,61 @@ defmodule NebulaAPI.APIServer.Worker do
     _ -> :infinity
   end
 
+  # The transport (safe_call/3) is a plain `send`, not a GenServer.call: the
+  # caller runs its own receive loop so it can accept `:request_more_time`
+  # heartbeats and reset its deadline. So the request lands here as an info
+  # message carrying {caller, ref} — the caller pid and a unique ref the reply
+  # (and any heartbeat) is tagged with.
+  #
   # If a slot is free the call runs now; otherwise it waits in line, MONITORED
   # through its caller. The library only ever calls workers from throwaway
   # processes (confined_call, the multicast fan-out tasks), so the caller's death
   # is exactly how loss of interest manifests — timeout, early :first resolution,
   # caller crash, network partition. The entry is purged on DOWN: event-driven,
   # no clocks to compare across nodes.
-  def handle_call({:nebula_call, fn_call}, {caller, _tag} = from, state) do
+  def handle_info({:nebula_call, {caller, _ref} = from, fn_call}, state) do
     if slot_free?(state) do
       start_call(state, {from, fn_call})
     else
-      ref = Process.monitor(caller)
-      {:noreply, %{state | queue: :queue.in({from, fn_call, ref}, state.queue)}}
+      cref = Process.monitor(caller)
+      {:noreply, %{state | queue: :queue.in({from, fn_call, cref}, state.queue)}}
     end
   end
 
-  # Workers are registered under the consumer module's own name: anything can
-  # reach them by accident. An unexpected call must not crash the worker — its
-  # death would take the pending queue down with it, turning one stray message
-  # into a timeout for every queued caller.
-  def handle_call(other, _from, state) do
-    {:reply, {:nebula_error, {:unexpected_message, other}}, state}
-  end
-
-  # Two monitor families: a ref in state.tasks is a running call (its DOWN frees
-  # a slot, reply or crash); any other ref is a queued caller that died — purge
-  # its entry without executing, nobody awaits it anymore.
+  # Three monitor families, matched in order:
+  #   (a) a ref in state.running is a running body — its DOWN frees the slot
+  #       (reply already sent, or crash) and we stop watching its caller;
+  #   (b) a ref that OWNS a running entry as its caller_ref means the caller of a
+  #       running call died — kill the body; its own DOWN then falls into (a);
+  #   (c) anything else is a queued caller that died — purge its entry, nobody
+  #       awaits it anymore.
   def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
-    if MapSet.member?(state.tasks, ref) do
-      dequeue_next(%{
-        state
-        | tasks: MapSet.delete(state.tasks, ref),
-          in_flight: state.in_flight - 1
-      })
-    else
-      queue = :queue.filter(fn {_from, _fn_call, r} -> r != ref end, state.queue)
-      {:noreply, %{state | queue: queue}}
+    cond do
+      Map.has_key?(state.running, ref) ->
+        %{caller_ref: cref} = Map.fetch!(state.running, ref)
+        Process.demonitor(cref, [:flush])
+
+        dequeue_next(%{
+          state
+          | running: Map.delete(state.running, ref),
+            in_flight: state.in_flight - 1
+        })
+
+      task_ref = caller_ref_owner(state.running, ref) ->
+        # The caller gave up (timeout) or died (crash / kill upstream) while its
+        # body was still running. Kill the orphaned body; its DOWN handles the
+        # slot via branch (a). Process.exit on an already-dead pid is a no-op, so
+        # the "body finished at the same instant" race is harmless.
+        Process.exit(Map.fetch!(state.running, task_ref).task_pid, :kill)
+        {:noreply, state}
+
+      true ->
+        queue = :queue.filter(fn {_from, _fn_call, cref} -> cref != ref end, state.queue)
+        {:noreply, %{state | queue: queue}}
     end
   end
 
-  # Same rationale as the handle_call catch-all above: workers are registered
+  # Same rationale as the handle_call catch-all below: workers are registered
   # under the consumer module's name, so stray messages happen. Defining our
   # own handle_info({:DOWN, ...}) clause REPLACED the permissive default that
   # `use GenServer` injects — without this catch-all, one stray send means a
@@ -88,6 +105,15 @@ defmodule NebulaAPI.APIServer.Worker do
     )
 
     {:noreply, state}
+  end
+
+  # Workers are registered under the consumer module's own name: anything can
+  # reach them by accident. An unexpected call must not crash the worker — its
+  # death would take the pending queue down with it, turning one stray message
+  # into a timeout for every queued caller. (Real calls arrive via handle_info,
+  # not handle_call — see the transport note above.)
+  def handle_call(other, _from, state) do
+    {:reply, {:nebula_error, {:unexpected_message, other}}, state}
   end
 
   # No handle_cast was defined at all, so the `use GenServer` default applied —
@@ -101,29 +127,39 @@ defmodule NebulaAPI.APIServer.Worker do
   defp slot_free?(%{max: :infinity}), do: true
   defp slot_free?(%{max: max, in_flight: in_flight}), do: in_flight < max
 
-  defp start_call(state, {from, fn_call}) do
+  defp start_call(state, {{caller, ref} = from, fn_call}) do
     %{module: module, methods: methods} = state
 
     {:ok, pid} =
       Task.Supervisor.start_child(NebulaAPI.TaskSupervisor, fn ->
-        GenServer.reply(from, execute_local_call(module, methods, fn_call))
+        # Stash the reply address so the body can heartbeat via
+        # NebulaAPI.request_more_time!/0. The task is throwaway, so the process
+        # dictionary is the lightest request-scoped carrier.
+        Process.put(:nebula_api_call, from)
+        result = execute_local_call(module, methods, fn_call)
+        send(caller, {ref, {:reply, result}})
       end)
 
-    ref = Process.monitor(pid)
+    task_ref = Process.monitor(pid)
+    caller_ref = Process.monitor(caller)
 
-    {:noreply, %{state | tasks: MapSet.put(state.tasks, ref), in_flight: state.in_flight + 1}}
+    running = Map.put(state.running, task_ref, %{task_pid: pid, caller_ref: caller_ref})
+    {:noreply, %{state | running: running, in_flight: state.in_flight + 1}}
+  end
+
+  defp caller_ref_owner(running, cref) do
+    Enum.find_value(running, fn {tref, entry} -> if entry.caller_ref == cref, do: tref end)
   end
 
   defp dequeue_next(state) do
     case :queue.out(state.queue) do
-      {{:value, {from, fn_call, ref}}, rest} ->
-        # Pure hygiene: we no longer care about this caller's fate, so stop
-        # watching it and :flush any DOWN already in our mailbox. A stale caller
-        # DOWN could never be MISTAKEN for anything (monitor refs are unique, so
-        # it would just no-op against the queue) — it would only be useless work.
-        # If the caller dies in the very instant we start its call, that's the
-        # irreducible RPC ambiguity: the reply is a no-op, the body just runs.
-        Process.demonitor(ref, [:flush])
+      {{:value, {from, fn_call, cref}}, rest} ->
+        # We are about to run this queued call: stop watching it as a QUEUED
+        # caller (start_call re-monitors it as a running caller) and :flush any
+        # DOWN already in our mailbox. A stale caller DOWN could never be
+        # MISTAKEN for anything (monitor refs are unique), it would only be
+        # useless work.
+        Process.demonitor(cref, [:flush])
         start_call(%{state | queue: rest}, {from, fn_call})
 
       {:empty, _} ->
@@ -136,9 +172,10 @@ defmodule NebulaAPI.APIServer.Worker do
   # - unknown method -> {:nebula_error, {:undefined_local_method, ...}} (instead of crashing the worker)
   # - exception/exit in the body -> {:nebula_error, reason}
   #
-  # Runs inside the supervised task spawned by start_call/2, replying via
-  # GenServer.reply/2 — the worker itself only does slot/queue bookkeeping (see
-  # handle_call), so a slow body never blocks the module's other calls.
+  # Runs inside the supervised task spawned by start_call/2, which sends the
+  # tagged reply back to the caller — the worker itself only does slot/queue
+  # bookkeeping (see handle_info), so a slow body never blocks the module's
+  # other calls.
   defp execute_local_call(module, methods, fn_call) do
     fn_name = elem(fn_call, 0)
     fn_args = Tuple.delete_at(fn_call, 0)

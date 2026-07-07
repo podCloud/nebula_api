@@ -771,18 +771,35 @@ defmodule NebulaAPI.APIServer do
     |> List.first()
   end
 
-  # Wraps a GenServer.call: tells a received reply apart from an exit (timeout / other).
-  # `{:replied, term}` = the worker replied (term may be a business-level error).
-  # `{:exit, :timeout}` / `{:exit, reason}` = the call exited without a reply.
+  # The transport. A hand-rolled send + receive loop instead of GenServer.call:
+  # the caller owns its receive, which lets the worker monitor it and kill the
+  # running body when it dies, and leaves room to accept heartbeats later without
+  # GenServer.call's closed receive. Return contract is unchanged so
+  # confined_call/tagged_call keep working:
+  #   `{:replied, term}` = the worker replied (term may be a business-level error).
+  #   `{:exit, :timeout}` / `{:exit, reason}` = gave up without a reply.
   #
   # This always runs inside a throwaway process (confined_call, the multicast
   # fan-out tasks) whose death marks the end of interest in the result — the
-  # worker monitors it to purge queued entries (see Worker.handle_call/3).
+  # worker monitors it and, on death, KILLS the running body (see
+  # Worker.handle_info/2). We monitor the worker too, to fast-fail if the node or
+  # the worker dies instead of waiting out the whole timeout.
   defp safe_call(worker, fn_call, timeout) do
-    {:replied, GenServer.call(worker, {:nebula_call, fn_call}, timeout)}
-  catch
-    :exit, {:timeout, _} -> {:exit, :timeout}
-    :exit, reason -> {:exit, reason}
+    ref = make_ref()
+    wmon = Process.monitor(worker)
+    send(worker, {:nebula_call, {self(), ref}, fn_call})
+    result = await_reply(ref, wmon, timeout)
+    Process.demonitor(wmon, [:flush])
+    result
+  end
+
+  defp await_reply(ref, wmon, timeout) do
+    receive do
+      {^ref, {:reply, result}} -> {:replied, result}
+      {:DOWN, ^wmon, :process, _pid, reason} -> {:exit, reason}
+    after
+      timeout -> {:exit, :timeout}
+    end
   end
 
   # Confined unicast: the GenServer.call runs in a throwaway task, so that a late
