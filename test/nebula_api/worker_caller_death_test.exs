@@ -51,13 +51,19 @@ defmodule NebulaAPI.WorkerCallerDeathTest do
     :ok
   end
 
-  # Mirrors safe_call/3: send the new-protocol message, await the tagged reply.
+  # Mirrors safe_call/3's request/reply/heartbeat protocol: send the message,
+  # await the tagged reply, and treat a :request_more_time heartbeat as "keep
+  # waiting" (like the real caller loop). Exits on timeout.
   defp nebula_call(worker, fn_call, timeout) do
     ref = make_ref()
     send(worker, {:nebula_call, {self(), ref}, fn_call})
+    await_nebula_reply(ref, timeout)
+  end
 
+  defp await_nebula_reply(ref, timeout) do
     receive do
       {^ref, {:reply, result}} -> result
+      {^ref, :request_more_time} -> await_nebula_reply(ref, timeout)
     after
       timeout -> exit(:timeout)
     end
