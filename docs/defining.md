@@ -180,7 +180,11 @@ keep running in the background.
 For a body that is *legitimately* long (a big report, a slow external call) and shouldn't be
 mistaken for a hung one, call [`NebulaAPI.request_more_time/0`](`NebulaAPI.request_more_time/0`)
 from inside it. It resets the caller's timeout window — a heartbeat, like a long task pinging
-its scheduler — so the caller keeps waiting instead of timing out and killing the body:
+its scheduler — so the caller keeps waiting instead of timing out and killing the body. The
+number of heartbeats one call may use is capped by
+[`max_time_extensions`](configuration.md#max_time_extensions) (default 10, configurable per
+call/module/globally): past the cap, further heartbeats are ignored and the next window ends the
+call — so a body can extend itself, but never forever.
 
 ```elixir
 defapi &db, export(scope) do

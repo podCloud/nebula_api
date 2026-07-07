@@ -92,6 +92,83 @@ defmodule NebulaAPI.CallOptionsTest do
     end
   end
 
+  describe "Config.max_time_extensions/0" do
+    test "reads the :max_time_extensions app env" do
+      Application.put_env(:nebula_api, :max_time_extensions, 3)
+      on_exit(fn -> Application.delete_env(:nebula_api, :max_time_extensions) end)
+
+      assert Config.max_time_extensions() == 3
+    end
+
+    test "falls back to 10 when unset" do
+      assert Config.max_time_extensions() == 10
+    end
+  end
+
+  describe "APIServer.resolve_max_time_extensions/2" do
+    alias NebulaAPI.APIServer
+
+    # Mirrors the accessor `use NebulaAPI, max_time_extensions: 5` generates.
+    defmodule WithModuleExt do
+      def __nebula_api__(:max_time_extensions), do: 5
+    end
+
+    defmodule WithoutExt do
+    end
+
+    test "the call's max_time_extensions: option wins over everything" do
+      assert APIServer.resolve_max_time_extensions(WithModuleExt, max_time_extensions: 2) == 2
+    end
+
+    test "the module's max_time_extensions beats the global default" do
+      assert APIServer.resolve_max_time_extensions(WithModuleExt, []) == 5
+    end
+
+    test "the global default applies when the module has none" do
+      Application.put_env(:nebula_api, :max_time_extensions, 3)
+      on_exit(fn -> Application.delete_env(:nebula_api, :max_time_extensions) end)
+
+      assert APIServer.resolve_max_time_extensions(WithoutExt, []) == 3
+    end
+
+    test "a module atom that is not a compiled module falls back to the lib default" do
+      assert APIServer.resolve_max_time_extensions(NotARealModule, []) == 10
+    end
+
+    test "max_time_extensions: nil means 'not set' — the default resolution applies" do
+      assert APIServer.resolve_max_time_extensions(WithModuleExt, max_time_extensions: nil) == 5
+      assert APIServer.resolve_max_time_extensions(WithoutExt, max_time_extensions: nil) == 10
+    end
+
+    test "0 is a valid, explicit value (no extensions) — it is not treated as 'unset'" do
+      assert APIServer.resolve_max_time_extensions(WithModuleExt, max_time_extensions: 0) == 0
+    end
+  end
+
+  describe "max_time_extensions: validation" do
+    alias NebulaAPI.APIServer
+
+    test ":infinity raises ArgumentError up front — it would reopen the unbounded hole" do
+      assert_raise ArgumentError, ~r/max_time_extensions/, fn ->
+        APIServer.call_remote_method(NoSuchMod, {:work}, max_time_extensions: :infinity)
+      end
+    end
+
+    test "negative or non-integer values raise ArgumentError" do
+      for bad <- [-1, 1.5, "3", :lots, false] do
+        assert_raise ArgumentError, ~r/max_time_extensions/, fn ->
+          APIServer.call_remote_method(NoSuchMod, {:work}, max_time_extensions: bad)
+        end
+      end
+    end
+
+    test "0 is accepted (no extensions), not rejected" do
+      # Valid value → no ArgumentError; falls through to the no-worker outcome.
+      assert {:nebula_error, {:no_worker, _}} =
+               APIServer.call_remote_method(NoSuchMod, {:work}, max_time_extensions: 0)
+    end
+  end
+
   describe "strategy: validation (I2)" do
     alias NebulaAPI.APIServer
 

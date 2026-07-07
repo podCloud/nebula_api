@@ -92,6 +92,10 @@ Deliberate and load-bearing; a "cleanup" that violates one is a regression:
   transport is deliberately a hand-rolled send/receive loop, not `GenServer.call`, so the caller
   owns its receive — do **not** "simplify" it back to `GenServer.call`: that reintroduces the
   orphan bug and breaks `request_more_time/0` (whose heartbeat needs a clause in that receive).
+- **`request_more_time/0` is bounded.** `await_reply`'s heartbeat clause is guarded by
+  `extensions_left > 0`; when spent, further heartbeats match no clause, so they neither wake the
+  receive nor reset its `after` timer, and the call times out. Do not drop that guard — an
+  unbounded heartbeat lets a body defeat its own timeout forever (`max_time_extensions`, default 10).
 - **`nil` means "not set"** for every call option. Bad opts raise *up front* (outside the
   transport rescue); only genuine transport failures become `{:nebula_error, _}`.
 - **Selectors are literal** at `call_on_*` sites (a `&tag`/`@node`, a literal `fn`, or none);

@@ -19,6 +19,9 @@ defmodule NebulaAPI do
 
       def __nebula_api__(:max_concurrent_calls),
         do: unquote(Keyword.fetch!(resolved, :max_concurrent_calls))
+
+      def __nebula_api__(:max_time_extensions),
+        do: unquote(Keyword.fetch!(resolved, :max_time_extensions))
     end
   end
 
@@ -48,7 +51,8 @@ defmodule NebulaAPI do
         self_node: node(),
         allow_unknown_self_node: false,
         max_concurrent_calls: :infinity,
-        default_timeout: nil
+        default_timeout: nil,
+        max_time_extensions: nil
       )
 
     opts =

@@ -249,7 +249,11 @@ defmodule NebulaAPI.APIServer do
     in the moduledoc for the exact shape per strategy.
   """
   def call_remote_method(module, fn_call, opts \\ []) do
-    timeout = validate_call_opts!(module, opts)
+    {timeout, max_extensions} = validate_call_opts!(module, opts)
+    # Call-scoped context (same convention as :nebula_call / :nebula_node_selector):
+    # the deep unicast/multicast dispatch reads it back here, in this process, to
+    # thread into the transport — it never has to cross a spawn boundary.
+    Process.put(:nebula_api_max_extensions, max_extensions)
     multicast = Keyword.get(opts, :multicast, false)
     strategy = Keyword.get(opts, :strategy) || :all
     node_selector = Keyword.get(opts, :node_selector)
@@ -620,11 +624,16 @@ defmodule NebulaAPI.APIServer do
 
     timeout = resolve_timeout(module, opts)
     validate_timeout!(timeout)
-    timeout
+
+    max_extensions = resolve_max_time_extensions(module, opts)
+    validate_max_time_extensions!(max_extensions)
+
+    {timeout, max_extensions}
   end
 
   @valid_call_opts [
     :timeout,
+    :max_time_extensions,
     :node_selector,
     :multicast,
     :strategy,
@@ -760,6 +769,23 @@ defmodule NebulaAPI.APIServer do
     _ -> nil
   end
 
+  # Same precedence as resolve_timeout/2: per-call opt > per-module accessor >
+  # global config > lib default (10). nil means "not set". 0 is a real value
+  # (no extensions) and, being truthy in Elixir, is NOT swallowed by the `||`.
+  @doc false
+  def resolve_max_time_extensions(module, opts) do
+    case Keyword.get(opts, :max_time_extensions) do
+      nil -> module_max_time_extensions(module) || NebulaAPI.Config.max_time_extensions()
+      n -> n
+    end
+  end
+
+  defp module_max_time_extensions(module) do
+    module.__nebula_api__(:max_time_extensions)
+  rescue
+    _ -> nil
+  end
+
   # Private functions
 
   defp get_remote_method_worker(module, fn_call) do
@@ -785,21 +811,31 @@ defmodule NebulaAPI.APIServer do
   # worker monitors it and, on death, KILLS the running body (see
   # Worker.handle_info/2). We monitor the worker too, to fast-fail if the node or
   # the worker dies instead of waiting out the whole timeout.
-  defp safe_call(worker, fn_call, timeout) do
+  defp safe_call(worker, fn_call, timeout, max_extensions) do
     ref = make_ref()
     wmon = Process.monitor(worker)
     send(worker, {:nebula_call, {self(), ref}, fn_call})
-    result = await_reply(ref, wmon, timeout)
+    result = await_reply(ref, wmon, timeout, max_extensions)
     Process.demonitor(wmon, [:flush])
     result
   end
 
-  defp await_reply(ref, wmon, timeout) do
+  # `extensions_left` bounds how many heartbeats reset the deadline. When it hits
+  # 0 the heartbeat clause's guard fails, so a further `:request_more_time` matches
+  # NO clause: it stays in the mailbox WITHOUT waking the receive, and — crucial —
+  # a non-matching message does NOT restart the `after` timer. So the last window
+  # runs out and the body is timed out (then killed). Total ≤ (max+1) × timeout,
+  # no clocks. A body cannot heartbeat its way past the limit.
+  defp await_reply(ref, wmon, timeout, extensions_left) do
     receive do
-      {^ref, {:reply, result}} -> {:replied, result}
-      # Heartbeat from NebulaAPI.request_more_time/0: loop with a fresh `after`.
-      {^ref, :request_more_time} -> await_reply(ref, wmon, timeout)
-      {:DOWN, ^wmon, :process, _pid, reason} -> {:exit, reason}
+      {^ref, {:reply, result}} ->
+        {:replied, result}
+
+      {^ref, :request_more_time} when extensions_left > 0 ->
+        await_reply(ref, wmon, timeout, extensions_left - 1)
+
+      {:DOWN, ^wmon, :process, _pid, reason} ->
+        {:exit, reason}
     after
       timeout -> {:exit, :timeout}
     end
@@ -815,9 +851,13 @@ defmodule NebulaAPI.APIServer do
   # The body's return value is passed through untouched; only a transport failure
   # turns into {:nebula_error, reason}.
   defp confined_call(worker, fn_call, timeout) do
+    # Read here, in the caller process (which holds the call-scoped context), and
+    # close over it: the throwaway task doesn't inherit the process dictionary.
+    max_extensions = current_max_extensions()
+
     task =
       Task.Supervisor.async_nolink(NebulaAPI.TaskSupervisor, fn ->
-        case safe_call(worker, fn_call, timeout) do
+        case safe_call(worker, fn_call, timeout, max_extensions) do
           {:replied, reply} -> reply
           {:exit, :timeout} -> {:nebula_error, :timeout}
           {:exit, reason} -> {:nebula_error, reason}
@@ -827,11 +867,19 @@ defmodule NebulaAPI.APIServer do
     Task.await(task, :infinity)
   end
 
+  # The call's resolved extension budget, stashed by call_remote_method. The
+  # fallback keeps a direct/edge caller (no context set) bounded by the global
+  # default rather than treated as unlimited. 0 is truthy in Elixir, so an
+  # explicit "no extensions" survives the `||`.
+  defp current_max_extensions do
+    Process.get(:nebula_api_max_extensions) || NebulaAPI.Config.max_time_extensions()
+  end
+
   # Node-tagged multicast call, built on safe_call/3. Returns {node, value} when the
   # worker replied (value passed through as-is), or {node, {:nebula_error, reason}}
   # on a transport failure.
-  defp tagged_call(worker, fn_call, timeout, target_node) do
-    case safe_call(worker, fn_call, timeout) do
+  defp tagged_call(worker, fn_call, timeout, target_node, max_extensions) do
+    case safe_call(worker, fn_call, timeout, max_extensions) do
       {:replied, reply} -> {target_node, reply}
       {:exit, :timeout} -> {target_node, {:nebula_error, :timeout}}
       {:exit, reason} -> {target_node, {:nebula_error, reason}}
@@ -1070,6 +1118,21 @@ defmodule NebulaAPI.APIServer do
     end
   end
 
+  # Non-negative integer: 0 = no extensions allowed. :infinity is rejected on
+  # purpose — an unbounded number of heartbeats would let a body defeat its own
+  # timeout forever, exactly the hang the timeout exists to prevent.
+  defp validate_max_time_extensions!(max_extensions) do
+    unless is_integer(max_extensions) and max_extensions >= 0 do
+      raise ArgumentError,
+            "max_time_extensions: must be a non-negative integer, got: " <>
+              inspect(max_extensions) <>
+              if(max_extensions == :infinity,
+                do: " — :infinity is not supported; a call must stay bounded",
+                else: ""
+              )
+    end
+  end
+
   @valid_strategies [:all, :first, :quorum]
 
   # Same up-front philosophy as the other call opts: a typo'd strategy must not
@@ -1188,11 +1251,11 @@ defmodule NebulaAPI.APIServer do
   # the collector (wait_for_*) stops at the deadline, so a reply earned during
   # any grace window could only be flushed — calling would just make the worker
   # run a body nobody collects. Report the node as a timeout directly.
-  defp tagged_call_within(worker, fn_call, deadline, target_node) do
+  defp tagged_call_within(worker, fn_call, deadline, target_node, max_extensions) do
     remaining = deadline - System.monotonic_time(:millisecond)
 
     if remaining > 0 do
-      tagged_call(worker, fn_call, remaining, target_node)
+      tagged_call(worker, fn_call, remaining, target_node, max_extensions)
     else
       {target_node, {:nebula_error, :timeout}}
     end
@@ -1202,12 +1265,16 @@ defmodule NebulaAPI.APIServer do
     parent = self()
     ref = make_ref()
     deadline = System.monotonic_time(:millisecond) + timeout
+    max_extensions = current_max_extensions()
 
     tasks =
       target_workers
       |> Enum.map(fn {target_node, worker} ->
         Task.Supervisor.async_nolink(NebulaAPI.TaskSupervisor, fn ->
-          send(parent, {ref, tagged_call_within(worker, fn_call, deadline, target_node)})
+          send(
+            parent,
+            {ref, tagged_call_within(worker, fn_call, deadline, target_node, max_extensions)}
+          )
         end)
       end)
 
@@ -1251,13 +1318,17 @@ defmodule NebulaAPI.APIServer do
     parent = self()
     ref = make_ref()
     deadline = System.monotonic_time(:millisecond) + timeout
+    max_extensions = current_max_extensions()
     predicate = success_predicate(opts)
 
     tasks =
       target_workers
       |> Enum.map(fn {target_node, worker} ->
         Task.Supervisor.async_nolink(NebulaAPI.TaskSupervisor, fn ->
-          send(parent, {ref, tagged_call_within(worker, fn_call, deadline, target_node)})
+          send(
+            parent,
+            {ref, tagged_call_within(worker, fn_call, deadline, target_node, max_extensions)}
+          )
         end)
       end)
 
@@ -1299,13 +1370,17 @@ defmodule NebulaAPI.APIServer do
     parent = self()
     ref = make_ref()
     deadline = System.monotonic_time(:millisecond) + timeout
+    max_extensions = current_max_extensions()
     predicate = success_predicate(opts)
 
     tasks =
       target_workers
       |> Enum.map(fn {target_node, worker} ->
         Task.Supervisor.async_nolink(NebulaAPI.TaskSupervisor, fn ->
-          send(parent, {ref, tagged_call_within(worker, fn_call, deadline, target_node)})
+          send(
+            parent,
+            {ref, tagged_call_within(worker, fn_call, deadline, target_node, max_extensions)}
+          )
         end)
       end)
 

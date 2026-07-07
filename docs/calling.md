@@ -68,10 +68,13 @@ end
 | Option | Type | Default |
 |--------|------|---------|
 | `timeout` | positive integer (ms) — `:infinity` rejected | 5000 |
+| `max_time_extensions` | non-negative integer — `:infinity` rejected | 10 |
 
-`timeout:` is the **only** option `call_on_node` accepts; passing a multicast-only option
-(`strategy:`, `at_least:`, `success:`/`failure:`), an unknown key, or `timeout: :infinity`
-is a `CompileError` at the call site.
+`timeout:` and `max_time_extensions:` are the **only** options `call_on_node` accepts; passing a
+multicast-only option (`strategy:`, `at_least:`, `success:`/`failure:`), an unknown key, or an
+`:infinity` for either is a `CompileError` at the call site. `max_time_extensions:` caps how many
+`NebulaAPI.request_more_time/0` heartbeats the body may use (see
+[Defining → a remote body is tied to its caller's interest](defining.md#a-remote-body-is-tied-to-its-callers-interest)).
 
 **Return value.** On success, the body's value exactly as-is. On a transport failure
 (timeout, no worker, crash), `{:nebula_error, reason}`.
@@ -105,6 +108,7 @@ Selectors use the canonical space-juxtaposed syntax here too
 | Option | Type | Default | |
 |--------|------|---------|--|
 | `timeout` | positive integer (ms) — `:infinity` rejected | 5000 | |
+| `max_time_extensions` | non-negative integer — `:infinity` rejected | 10 | caps `request_more_time/0` heartbeats (bounded by the fan-out deadline anyway) |
 | `strategy` | atom | `:all` | `:all` / `:first` / `:quorum` |
 | `quorum` | `:configured` / `:available` | `:configured` | for `:quorum` — which set the majority is taken over (see below) |
 | `at_least` | positive integer | — | for `:quorum` — exact successes required; **mutually exclusive with `quorum:`** |
