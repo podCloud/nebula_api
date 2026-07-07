@@ -167,6 +167,13 @@ defmodule NebulaAPI.CallOptionsTest do
       assert {:nebula_error, {:no_worker, _}} =
                APIServer.call_remote_method(NoSuchMod, {:work}, max_time_extensions: 0)
     end
+
+    test "the call-scoped :nebula_api_max_extensions dict entry does not outlive the call" do
+      # A long-lived caller (a GenServer calling defapi repeatedly) must not
+      # accumulate call-scoped context in its process dictionary.
+      APIServer.call_remote_method(NoSuchMod, {:work}, max_time_extensions: 3)
+      assert Process.get(:nebula_api_max_extensions) == nil
+    end
   end
 
   describe "strategy: validation (I2)" do

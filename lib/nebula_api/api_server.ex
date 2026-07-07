@@ -309,6 +309,11 @@ defmodule NebulaAPI.APIServer do
         """)
 
         {:nebula_error, {kind, reason}}
+    after
+      # Call-scoped context: don't let it linger in a long-lived caller's
+      # dictionary after the call returns. Every dispatch read it synchronously
+      # above, so it's safe to drop here whatever the outcome.
+      Process.delete(:nebula_api_max_extensions)
     end
   end
 
