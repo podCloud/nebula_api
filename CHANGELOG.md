@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-07-09
+
+Documentation-only patch — no code change (one `@moduledoc` string aside), no behavior change.
+
+### Fixed
+- **calling.md still described the pre-0.7.0 straggler behavior** ("a body already running on
+  a remote node isn't aborted") — the exact opposite of 0.7.0's orphan-kill guarantee, and a
+  contradiction with README/defining.md/gotchas.md. It now states that a straggler's remote
+  body is killed with its caller's interest, and links the defining.md section.
+- defining.md: `max_time_extensions` was missing from the `use NebulaAPI` per-module override
+  list (accepted since 0.7.0).
+- `NebulaAPI.APIServer`'s moduledoc opened with "Supervisor that manages API workers", stale
+  since 0.3.0 moved workers to the per-app `NebulaAPI.Server`.
+- README: the `bench/routing.exs` link is now absolute (`bench/` ships in neither the hexdocs
+  extras nor the package, so the relative link was dead on hexdocs); the resolved-local figure
+  is now the honest ~60–120 ns (machine-dependent) — same in bench/README.
+- demo/README: "worker3 always fails" scoped to `run_task_flaky/1`.
+- CHANGELOG: the 0.3.0 date now matches its tag (2026-06-09). LICENSE: copyright years cover
+  the project's real span (2024–2026).
+
 ## [0.7.0] - 2026-07-07
 
 ### Changed

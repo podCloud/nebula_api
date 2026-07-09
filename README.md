@@ -245,7 +245,7 @@ Or track the repo directly (e.g. for an unreleased fix):
 ```elixir
 def deps do
   [
-    {:nebula_api, git: "git@github.com:podCloud/nebula_api.git", tag: "v0.7.0"}
+    {:nebula_api, git: "git@github.com:podCloud/nebula_api.git", tag: "v0.7.1"}
   ]
 end
 ```
