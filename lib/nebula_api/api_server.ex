@@ -1,6 +1,8 @@
 defmodule NebulaAPI.APIServer do
   @moduledoc """
-  Supervisor that manages API workers and handles remote method calls.
+  Cluster-wide core: owns the `:pg` routing scope and the node-info ETS cache, and
+  implements remote method calls. (Per-module workers are not managed here — each
+  consumer app supervises its own through `NebulaAPI.Server`.)
 
   Supports:
   - Default unicast (first available worker)

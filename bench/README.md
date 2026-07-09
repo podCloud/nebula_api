@@ -9,7 +9,7 @@ elixir --name bench@127.0.0.1 --cookie nebula_bench -S mix run bench/routing.exs
 ```
 
 Plain local call vs NebulaAPI-resolved-local vs a cross-node round-trip (loopback peer).
-Typical on OTP 26: ~8 ns / ~60 ns / ~50 µs.
+Typical on OTP 26: ~8 ns / ~60–120 ns (machine-dependent) / ~50 µs.
 
 ## Smaller binaries — two ways
 

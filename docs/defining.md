@@ -21,8 +21,8 @@ Rule of thumb: a module with `defapi` → `use NebulaAPI`; the module that wires
 in `on_nebula_nodes` → `use NebulaAPI.AST`.
 
 `use NebulaAPI` accepts the per-module overrides `self_node`, `allow_unknown_self_node`,
-`max_concurrent_calls`, and `default_timeout` (the latter two default from `default_opts`,
-see [Configuration](configuration.md#default_opts)).
+`max_concurrent_calls`, `default_timeout`, and `max_time_extensions` (the latter three
+default from `default_opts`, see [Configuration](configuration.md#default_opts)).
 
 ## `defapi`
 

@@ -884,16 +884,17 @@ Being honest about the edges:
 
 ## Performance
 
-Measured by [`bench/routing.exs`](bench/routing.exs) on OTP 26 (run it yourself with
+Measured by [`bench/routing.exs`](https://github.com/podCloud/nebula_api/blob/main/bench/routing.exs)
+on OTP 26 (run it yourself with
 `elixir --name bench@127.0.0.1 --cookie nebula_bench -S mix run bench/routing.exs`):
 
 | Call | Per call |
 |---|---|
 | Plain local Elixir call (baseline) | ~8 ns |
-| NebulaAPI, resolved local | ~60 ns |
+| NebulaAPI, resolved local | ~60–120 ns (machine-dependent) |
 | Cross-node round-trip, same host (loopback) | ~50 µs |
 
-The point: a locally-resolved NebulaAPI call adds only a handful of nanoseconds over a
+The point: a locally-resolved NebulaAPI call adds mere tens of nanoseconds over a
 plain call — a couple of process-dictionary reads and a `cond` — so it's free in any
 practical sense. A cross-node call is a standard Erlang-distribution round-trip; the ~50 µs
 above is loopback (same host), and over a real network you pay link latency on top
