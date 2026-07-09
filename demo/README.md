@@ -31,7 +31,7 @@ Code.ensure_loaded?(Cachex) # false on a worker, true on db — same Db.Store wo
 ## What it demonstrates
 
 - **Transparent routing** — call `Db.Store.get` / `Worker.Job.run_task` from any node; it runs on the right one, and the target node's logs show it.
-- **Multicast strategies** — `:all`, `:first`, `:quorum`. `worker3` always fails (via `on_nebula_nodes @:"worker@worker3.test"`), so `at_least: 2` succeeds (fault-tolerant) while `at_least: 3` returns `{:nebula_error, :quorum_not_reached, ...}`.
+- **Multicast strategies** — `:all`, `:first`, `:quorum`. In `Worker.Job.run_task_flaky/1`, `worker3` always fails (via `on_nebula_nodes @:"worker@worker3.test"`; plain `run_task/1` succeeds everywhere), so `at_least: 2` succeeds (fault-tolerant) while `at_least: 3` returns `{:nebula_error, :quorum_not_reached, ...}`.
 - **Wrap a third-party lib cluster-wide** — `Db.Store` wraps [Cachex](https://hex.pm/packages/cachex); the cache lives only on `@db`.
 - **Conditional deps & compilation** — Cachex is pulled, compiled and started only on `@db`. `Code.ensure_loaded?(Cachex)` is `false` on every other node, yet `Db.Store` works everywhere (smaller binaries, no unnecessary deps).
 

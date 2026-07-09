@@ -173,8 +173,10 @@ In every case `value` is the unwrapped body value.
 
 Both `:first` and `:quorum` stop early: the moment the result is decided (a first success,
 or the quorum reached) NebulaAPI stops waiting on the rest — the pending local tasks are
-brutal-killed and their late replies discarded. A body already running on a remote node
-isn't aborted, though: the RPC was already sent.
+brutal-killed and their late replies discarded. A straggler's body already running on a
+remote node is aborted too: the worker monitors every call's caller and kills the running
+body when it dies (see
+[Defining → a remote body is tied to its caller's interest](defining.md#a-remote-body-is-tied-to-its-callers-interest)).
 
 ### Defining "success": `success:` / `failure:`
 

@@ -393,7 +393,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it). Also documented that a `defapi` inside `on_nebula_nodes` disappears entirely
   (router included) on non-matching nodes — no transparent RPC from there.
 
-## [0.3.0] - 2026-06-08
+## [0.3.0] - 2026-06-09
 
 ### Added
 - `use NebulaAPI.Server` + `nebula_api_server/0` macro: wire it into an OTP application's
