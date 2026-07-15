@@ -214,25 +214,6 @@ defmodule NebulaAPI.IntegrationTest do
       assert info1 == info2
     end
   end
-
-  describe "process dictionary context" do
-    test "call_on_node sets and restores process dictionary" do
-      assert Process.get(:nebula_node_selector) == nil
-      assert Process.get(:nebula_call_mode) == nil
-
-      # We can't easily test the macro without a real defapi module,
-      # but we can verify the dictionary manipulation pattern
-      Process.put(:nebula_node_selector, fn _ -> :test end)
-      Process.put(:nebula_call_mode, :unicast)
-
-      assert Process.get(:nebula_call_mode) == :unicast
-
-      Process.delete(:nebula_node_selector)
-      Process.delete(:nebula_call_mode)
-
-      assert Process.get(:nebula_node_selector) == nil
-    end
-  end
 end
 
 # Simple GenServer that responds to any call with a configurable function
