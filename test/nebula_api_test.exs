@@ -78,16 +78,15 @@ defmodule NebulaAPITest do
       :ok
     end
 
-    test "cache_node_info/2 stores data in ETS" do
-      node_name = :test_node@localhost
-      info = %{short_name: :test_node, host: "localhost", tags: [:test]}
+    test "cache_node_info/2 from a non-owner process is a silent no-op" do
+      # The table is :protected, owned by NodesInfoCache: the write path is
+      # effective only inside the owner (exercised by the refresh test in
+      # resilience_test). From anywhere else it must neither raise nor write.
+      node_name = :"protected_probe_#{:rand.uniform(10000)}@localhost"
+      info = %{short_name: :protected_probe, host: "localhost", tags: [:test]}
 
-      APIServer.cache_node_info(node_name, info)
-      cached = APIServer.get_cached_node_info(node_name)
-
-      assert cached.short_name == :test_node
-      assert cached.host == "localhost"
-      assert cached.tags == [:test]
+      assert APIServer.cache_node_info(node_name, info) == :ok
+      assert APIServer.get_cached_node_info(node_name) == %{}
     end
 
     test "get_cached_node_info/1 returns empty map for unknown node" do
@@ -95,18 +94,6 @@ defmodule NebulaAPITest do
       cached = APIServer.get_cached_node_info(unknown_node)
 
       assert cached == %{}
-    end
-
-    test "cache_node_info/2 overwrites existing data" do
-      node_name = :overwrite_test@localhost
-      info1 = %{version: 1}
-      info2 = %{version: 2}
-
-      APIServer.cache_node_info(node_name, info1)
-      APIServer.cache_node_info(node_name, info2)
-      cached = APIServer.get_cached_node_info(node_name)
-
-      assert cached.version == 2
     end
   end
 

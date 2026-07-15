@@ -25,14 +25,44 @@ defmodule NebulaAPI.APIServer.NodesInfoCache do
 
   require Logger
 
+  # Same names as NebulaAPI.APIServer's @nodes_cache_table / @nodes_info_cache_key.
+  @table :nebula_nodes_cache
+  @snapshot_key :__nodes_info_snapshot__
+
   def start_link(opts \\ []) do
     {name, opts} = Keyword.pop(opts, :name, __MODULE__)
     gen_opts = if name, do: [name: name], else: []
     GenServer.start_link(__MODULE__, opts, gen_opts)
   end
 
+  @doc false
+  # Test seam: write a snapshot through the table owner (the table is
+  # :protected — see init/1). `updated_at` is injectable so tests can prove
+  # age-independence; nil means "now".
+  def seed_snapshot(data, updated_at \\ nil) do
+    GenServer.call(__MODULE__, {:seed_snapshot, data, updated_at})
+  end
+
+  @doc false
+  # Test seam: drop the snapshot through the table owner.
+  def wipe_snapshot do
+    GenServer.call(__MODULE__, :wipe_snapshot)
+  end
+
   @impl true
   def init(opts) do
+    # The cache table lives here, :protected: this process is the only
+    # legitimate writer (a :public table would let ANY local process overwrite
+    # the snapshot — and thereby steer every function node-selector). Reads
+    # (`APIServer.get_nodes_info/0`, `get_cached_node_info/1`) are unaffected.
+    # The rescue covers extra instances (tests run throwaway ones with
+    # name: nil): the table already exists, owned by the singleton.
+    try do
+      :ets.new(@table, [:set, :protected, :named_table, read_concurrency: true])
+    rescue
+      ArgumentError -> :ok
+    end
+
     interval = Keyword.get(opts, :interval, NebulaAPI.Config.nodes_info_refresh_interval())
 
     # Refresh immediately (async, so we never block the supervisor's boot), then
@@ -61,6 +91,23 @@ defmodule NebulaAPI.APIServer.NodesInfoCache do
   def handle_info(other, state) do
     Logger.warning("NodesInfoCache ignored unexpected message: #{inspect(other)}")
     {:noreply, state}
+  end
+
+  @impl true
+  def handle_call({:seed_snapshot, data, updated_at}, _from, state) do
+    :ets.insert(
+      @table,
+      {@snapshot_key,
+       %{data: data, updated_at: updated_at || System.monotonic_time(:millisecond)}}
+    )
+
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call(:wipe_snapshot, _from, state) do
+    :ets.delete(@table, @snapshot_key)
+    {:reply, :ok, state}
   end
 
   @impl true

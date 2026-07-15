@@ -187,12 +187,13 @@ defmodule NebulaAPI.ResilienceTest do
   end
 
   describe "node-info cache refresh (M4)" do
-    test "NodesInfoCache repopulates the snapshot periodically" do
-      # Wipe the snapshot, start a fast-refreshing cache, expect it back.
-      :ets.delete(:nebula_nodes_cache, :__nodes_info_snapshot__)
+    test "NodesInfoCache repopulates a wiped snapshot on refresh" do
+      # Wipe the snapshot, trigger a refresh on the singleton (the table is
+      # :protected — only its owner writes), expect the snapshot back. The
+      # :refresh message is exactly what the periodic timer delivers.
+      :ok = NebulaAPI.APIServer.NodesInfoCache.wipe_snapshot()
 
-      {:ok, pid} = NebulaAPI.APIServer.NodesInfoCache.start_link(name: nil, interval: 50)
-      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+      send(Process.whereis(NebulaAPI.APIServer.NodesInfoCache), :refresh)
 
       wait_until(fn ->
         match?(
@@ -209,10 +210,7 @@ defmodule NebulaAPI.ResilienceTest do
       # have forced a rebuild; the new behavior serves it regardless of age.
       stale_at = System.monotonic_time(:millisecond) - 60_000
 
-      :ets.insert(
-        :nebula_nodes_cache,
-        {:__nodes_info_snapshot__, %{data: marker, updated_at: stale_at}}
-      )
+      :ok = NebulaAPI.APIServer.NodesInfoCache.seed_snapshot(marker, stale_at)
 
       # A stale snapshot is served as-is (the cache keeps it fresh in the
       # background); get_nodes_info no longer rebuilds on read.
@@ -220,7 +218,7 @@ defmodule NebulaAPI.ResilienceTest do
     end
 
     test "get_nodes_info on a cold cache returns %{} — no build, no RPC" do
-      :ets.delete(:nebula_nodes_cache, :__nodes_info_snapshot__)
+      :ok = NebulaAPI.APIServer.NodesInfoCache.wipe_snapshot()
 
       assert APIServer.get_nodes_info() == %{}
 
@@ -230,7 +228,7 @@ defmodule NebulaAPI.ResilienceTest do
     end
 
     test "a selector-routed call works on a cold cache (synthesized entries)" do
-      :ets.delete(:nebula_nodes_cache, :__nodes_info_snapshot__)
+      :ok = NebulaAPI.APIServer.NodesInfoCache.wipe_snapshot()
 
       pid = start_fake(ColdCacheMod, :work, 0, 0, :reached)
 
@@ -785,12 +783,9 @@ defmodule NebulaAPI.ResilienceTest do
     test "a worker node missing from the snapshot is offered to the selector, runtime: nil" do
       # Snapshot deliberately EMPTY: simulates the window between a node joining
       # (pg knows its worker) and the next NodesInfoCache refresh.
-      :ets.insert(
-        :nebula_nodes_cache,
-        {:__nodes_info_snapshot__, %{data: %{}, updated_at: 0}}
-      )
+      :ok = NebulaAPI.APIServer.NodesInfoCache.seed_snapshot(%{}, 0)
 
-      on_exit(fn -> :ets.delete(:nebula_nodes_cache, :__nodes_info_snapshot__) end)
+      on_exit(fn -> NebulaAPI.APIServer.NodesInfoCache.wipe_snapshot() end)
 
       pid = start_fake(PgFirstMod, :work, 0, 0, :reached)
       parent = self()
