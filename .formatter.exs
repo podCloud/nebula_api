@@ -35,13 +35,11 @@ config_file =
     &File.exists?/1
   )
 
-# Union across envs: a tag used only in test.exs (an isolated test node) must
-# stay paren-less in test code too. Each read is fully contained — a config
-# that raises for one env (unset env vars, etc.) contributes nothing.
-read_tags = fn env ->
+# Every read is fully contained — a config that raises for one env (unset env
+# vars, etc.) contributes nothing.
+read_config = fn env ->
   try do
-    (get_in(Config.Reader.read!(config_file, env: env), [:nebula_api, :nodes]) || [])
-    |> Enum.flat_map(fn {_node, tags} -> List.wrap(tags) end)
+    Config.Reader.read!(config_file, env: env)
   rescue
     _ -> []
   catch
@@ -49,10 +47,49 @@ read_tags = fn env ->
   end
 end
 
+# Which envs to read the topology under. Default: the standard three plus one
+# per config/<env>.exs file found (a config/staging.exs is picked up by
+# itself). Escape hatch for exotic setups, in the BASE config.exs (before any
+# import_config, so it is readable under any env):
+#
+#     config :nebula_api, formatter_envs: [:dev, :test, :prod, :edge]
+#
+scanned_envs =
+  case config_file && File.ls(Path.dirname(config_file)) do
+    {:ok, files} ->
+      for f <- files,
+          Path.extname(f) == ".exs",
+          f not in ["config.exs", "runtime.exs"],
+          do: f |> Path.rootname() |> String.to_atom()
+
+    _ ->
+      []
+  end
+
+default_envs = Enum.uniq([:dev, :test, :prod] ++ scanned_envs)
+
+configured_envs =
+  Enum.find_value(default_envs, fn env ->
+    get_in(read_config.(env), [:nebula_api, :formatter_envs])
+  end)
+
+envs = configured_envs || default_envs
+
+# Union across envs: a tag used only in test.exs (an isolated test node) must
+# stay paren-less in test code too.
 tags =
   case config_file do
-    nil -> []
-    _ -> [:dev, :test, :prod] |> Enum.flat_map(read_tags) |> Enum.uniq() |> Enum.sort()
+    nil ->
+      []
+
+    _ ->
+      envs
+      |> Enum.flat_map(fn env ->
+        (get_in(read_config.(env), [:nebula_api, :nodes]) || [])
+        |> Enum.flat_map(fn {_node, tags} -> List.wrap(tags) end)
+      end)
+      |> Enum.uniq()
+      |> Enum.sort()
   end
 
 locals_without_parens = macros ++ Enum.map(tags, &{&1, :*})

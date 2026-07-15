@@ -339,39 +339,44 @@ Process.whereis(MyApp.Users)   # the worker for that module, if local here
 
 ## `mix format` and the selector syntax
 
-Left alone, a consumer's `mix format` rewrites the canonical syntax into
-`defapi(&db(!@backup, get(id), do: ...)))`. One line keeps it intact:
+Without setup, `mix format` mangles the selector syntax:
 
 ```elixir
-# .formatter.exs
+# what you wrote
+defapi &db !@backup, get(id), do: Repo.get(User, id)
+# what mix format makes of it
+defapi(&db(!@backup, get(id), do: Repo.get(User, id)))
+```
+
+The fix is the standard one line in your `.formatter.exs`:
+
+```elixir
 [
   import_deps: [:nebula_api],
   inputs: [...]
 ]
 ```
 
-This imports the library's formatter export, which covers **both** halves:
+That's the whole setup. It protects the macro names (`defapi`, `on_nebula_nodes`,
+`call_on_*`) — and **your tags too**: when `mix format` runs, the import reads your
+`config :nebula_api, :nodes` and learns your tag names from it. Add a tag to your
+topology, and the formatter knows it at the next run. You never list tags by hand.
 
-- the macro calls themselves (`defapi ...`, `on_nebula_nodes ...`, `call_on_* ...` stay
-  paren-less), and
-- **your own topology tags**. Tag names are user-defined, so no static export could list
-  them — instead, the export is evaluated in *your* project root at format time and
-  derives them from your `config/config.exs` (standalone or umbrella root; every env is
-  read, so a tag used only in `config/test.exs` — an isolated test node — stays
-  paren-less in test code too).
+Details, if you need them:
 
-Nothing to maintain: add a tag to the topology, the formatter follows.
-
-Two things worth knowing:
-
-- **It can never break your `mix format`.** If the config can't be read (a `prod.exs`
-  demanding an unset env var, no `config/` at all), the export falls back to the macros
-  alone. Your tag chains then format as `&db(!@backup)` — **the same AST** (space
-  juxtaposition *is* call syntax without parentheses), it compiles and routes
-  identically; only the canonical look is lost.
-- A tag entry also applies to any local *function* of the same name in your code — if a
-  tag collides with a function you'd rather keep parenthesized, exclude the
-  selector-heavy files from `inputs:` and format them by hand instead.
+- **Which config is read:** `config/config.exs` (from the project or umbrella root, and
+  from inside an umbrella app). It is read once per env — `:dev`, `:test`, `:prod`, plus
+  one per extra `config/<env>.exs` file (a `config/staging.exs` is picked up by itself).
+  So a tag that only exists in your test topology still formats correctly in test code.
+  If your envs are more exotic than that, list them explicitly in the base `config.exs`:
+  `config :nebula_api, formatter_envs: [:dev, :test, :prod, :edge]`.
+- **It cannot break `mix format`.** If your config can't be read (a `prod.exs` that
+  demands an unset env var, no `config/` at all), the import just protects the macros and
+  skips the tags. Your selectors then format as `&db(!@backup)` — less pretty, but it's
+  the exact same code: with or without those parentheses, Elixir parses the same AST.
+- **Name collisions:** protecting the tag `db` also means any *function* named `db` in
+  your code is formatted without parens. If that bothers you, remove the selector-heavy
+  files from `inputs:` and format them by hand.
 
 ## Next
 
