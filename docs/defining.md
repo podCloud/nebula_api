@@ -348,38 +348,36 @@ defapi &db !@backup, get(id), do: Repo.get(User, id)
 defapi(&db(!@backup, get(id), do: Repo.get(User, id)))
 ```
 
-The fix is the standard one line in your `.formatter.exs`:
+The fix ships with the library, in `.formatter.exs`:
 
 ```elixir
+Code.require_file("formatter.exs", to_string(Mix.Project.deps_paths()[:nebula_api]))
+
 [
-  import_deps: [:nebula_api],
   inputs: [...]
 ]
+|> NebulaAPI.Formatter.add_formatter_config()
 ```
 
-That's the whole setup. It protects the macro names (`defapi`, `on_nebula_nodes`,
-`call_on_*`) — and **your tags too**: when `mix format` runs, the import reads your
-`config :nebula_api, :nodes` and learns your tag names from it. Add a tag to your
-topology, and the formatter knows it at the next run. You never list tags by hand.
+This keeps the macro names (`defapi`, `on_nebula_nodes`, `call_on_*`) and your own
+topology tags paren-less, derived from your `config :nebula_api, :nodes`.
 
 Details, if you need them:
 
-- **Which config is read:** `config/config.exs` — the local one, the umbrella root's
-  (only when the cwd really is an umbrella app: a sibling under `apps/` with a `mix.exs`
-  at the root — never some unrelated directory two levels up), or **both merged** when an
-  umbrella app has its own local config too. Each is read once per env — `:dev`, `:test`,
-  `:prod`, plus one per extra `config/<env>.exs` file (a `config/staging.exs` is picked
-  up by itself). So a tag that only exists in your test topology still formats correctly
-  in test code. If your envs are more exotic than that, list them explicitly in the base
-  `config.exs`: `config :nebula_api, formatter_envs: [:dev, :test, :prod, :edge]`.
-- **Error behavior.** An env whose config can't be *read* (a `prod.exs` that demands an
-  unset env var, no `config/` at all) is simply skipped: the import protects the macros
-  and whatever tags the readable envs yield — those selectors then format as
-  `&db(!@backup)`, less pretty but the exact same AST. A config that reads fine but
-  carries a **malformed `:nebula_api` value** (a `nodes:` entry that isn't
-  `{node, tags}`, a non-list `formatter_envs:`) raises a clear error instead — on
-  purpose: that same shape would fail your compile anyway, and the error says exactly
-  what to fix.
+- **Where the tags come from.** Your `config/config.exs`. It is read once per
+  `config/<env>.exs` file you have — `dev.exs`, `test.exs`, `staging.exs`, whatever is
+  actually there — so a tag that only exists in one env's topology still formats
+  correctly everywhere. No env files at all? One read. To pick the envs yourself, say so
+  in the base `config.exs`: `config :nebula_api, formatter_envs: [:dev, :test]`.
+  In an umbrella app, the root's config is read the same way (and if the app also has a
+  local one, both are — tags merged). Nothing outside your project is ever read.
+- **Config errors crash `mix format`, loudly and on purpose.** A malformed
+  `:nebula_api` value (a `nodes:` entry that isn't `{node, tags}`, a non-list
+  `formatter_envs:`) or an env whose config raises at read time (a `prod.exs` demanding
+  an env var only set in deployment) stops the formatter with an error that says exactly
+  what to fix — including, for the latter, the way out: exclude that env via
+  `formatter_envs`. No silent fallback; a config problem should never surface as
+  mysteriously-moving parentheses.
 - **Name collisions:** protecting the tag `db` also means any *function* named `db` in
   your code is formatted without parens. If that bothers you, remove the selector-heavy
   files from `inputs:` and format them by hand.

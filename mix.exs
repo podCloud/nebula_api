@@ -42,7 +42,7 @@ defmodule NebulaAPI.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib mix.exs README.md LICENSE CHANGELOG.md .formatter.exs)
+      files: ~w(lib mix.exs README.md LICENSE CHANGELOG.md .formatter.exs formatter.exs)
     ]
   end
 
