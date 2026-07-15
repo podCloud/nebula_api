@@ -29,17 +29,19 @@ macros = [
 
 # "config/config.exs" = standalone project or umbrella root;
 # "../../config/config.exs" = `mix format` run from inside an umbrella app.
-config_file =
-  Enum.find(
+# When BOTH exist (an app with its own local config inside an umbrella), both
+# are read and their tags merged.
+config_files =
+  Enum.filter(
     ["config/config.exs", "../../config/config.exs"],
     &File.exists?/1
   )
 
 # Every read is fully contained — a config that raises for one env (unset env
 # vars, etc.) contributes nothing.
-read_config = fn env ->
+read_config = fn file, env ->
   try do
-    Config.Reader.read!(config_file, env: env)
+    Config.Reader.read!(file, env: env)
   rescue
     _ -> []
   catch
@@ -54,8 +56,8 @@ end
 #
 #     config :nebula_api, formatter_envs: [:dev, :test, :prod, :edge]
 #
-scanned_envs =
-  case config_file && File.ls(Path.dirname(config_file)) do
+scanned_envs = fn file ->
+  case File.ls(Path.dirname(file)) do
     {:ok, files} ->
       for f <- files,
           Path.extname(f) == ".exs",
@@ -65,32 +67,31 @@ scanned_envs =
     _ ->
       []
   end
+end
 
-default_envs = Enum.uniq([:dev, :test, :prod] ++ scanned_envs)
+envs_for = fn file ->
+  default_envs = Enum.uniq([:dev, :test, :prod] ++ scanned_envs.(file))
 
-configured_envs =
-  Enum.find_value(default_envs, fn env ->
-    get_in(read_config.(env), [:nebula_api, :formatter_envs])
-  end)
+  configured_envs =
+    Enum.find_value(default_envs, fn env ->
+      get_in(read_config.(file, env), [:nebula_api, :formatter_envs])
+    end)
 
-envs = configured_envs || default_envs
+  configured_envs || default_envs
+end
 
-# Union across envs: a tag used only in test.exs (an isolated test node) must
-# stay paren-less in test code too.
+# Union across files AND envs: a tag used only in the umbrella root config, or
+# only in test.exs (an isolated test node), must stay paren-less everywhere.
 tags =
-  case config_file do
-    nil ->
-      []
-
-    _ ->
-      envs
-      |> Enum.flat_map(fn env ->
-        (get_in(read_config.(env), [:nebula_api, :nodes]) || [])
-        |> Enum.flat_map(fn {_node, tags} -> List.wrap(tags) end)
-      end)
-      |> Enum.uniq()
-      |> Enum.sort()
-  end
+  config_files
+  |> Enum.flat_map(fn file ->
+    Enum.flat_map(envs_for.(file), fn env ->
+      (get_in(read_config.(file, env), [:nebula_api, :nodes]) || [])
+      |> Enum.flat_map(fn {_node, tags} -> List.wrap(tags) end)
+    end)
+  end)
+  |> Enum.uniq()
+  |> Enum.sort()
 
 locals_without_parens = macros ++ Enum.map(tags, &{&1, :*})
 

@@ -364,9 +364,10 @@ topology, and the formatter knows it at the next run. You never list tags by han
 
 Details, if you need them:
 
-- **Which config is read:** `config/config.exs` (from the project or umbrella root, and
-  from inside an umbrella app). It is read once per env — `:dev`, `:test`, `:prod`, plus
-  one per extra `config/<env>.exs` file (a `config/staging.exs` is picked up by itself).
+- **Which config is read:** `config/config.exs` — the local one, the umbrella root's, or
+  **both merged** when an umbrella app has its own local config too. Each is read once
+  per env — `:dev`, `:test`, `:prod`, plus one per extra `config/<env>.exs` file (a
+  `config/staging.exs` is picked up by itself).
   So a tag that only exists in your test topology still formats correctly in test code.
   If your envs are more exotic than that, list them explicitly in the base `config.exs`:
   `config :nebula_api, formatter_envs: [:dev, :test, :prod, :edge]`.
