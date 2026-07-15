@@ -174,6 +174,21 @@ defmodule NebulaAPI.CallOptionsTest do
       APIServer.call_remote_method(NoSuchMod, {:work}, max_time_extensions: 3)
       assert Process.get(:nebula_api_max_extensions) == nil
     end
+
+    test "a nested call restores the outer call's :nebula_api_max_extensions context" do
+      # User code on the routing path (a node_selector, a success:/failure:
+      # predicate) may itself perform a nebula call. The nested call's cleanup
+      # must RESTORE the outer call's context, not blindly delete it — or the
+      # outer call's later dispatches fall back to the global default.
+      Process.put(:nebula_api_max_extensions, 42)
+
+      try do
+        APIServer.call_remote_method(NoSuchMod, {:work}, max_time_extensions: 3)
+        assert Process.get(:nebula_api_max_extensions) == 42
+      after
+        Process.delete(:nebula_api_max_extensions)
+      end
+    end
   end
 
   describe "strategy: validation (I2)" do

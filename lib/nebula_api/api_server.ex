@@ -255,7 +255,10 @@ defmodule NebulaAPI.APIServer do
     # Call-scoped context (same convention as :nebula_call / :nebula_node_selector):
     # the deep unicast/multicast dispatch reads it back here, in this process, to
     # thread into the transport — it never has to cross a spawn boundary.
-    Process.put(:nebula_api_max_extensions, max_extensions)
+    # Process.put/2 returns the PREVIOUS value: user code on the routing path (a
+    # node_selector, a success:/failure: predicate) may itself perform a nebula
+    # call, and its cleanup must restore the outer call's context, not delete it.
+    prev_max_extensions = Process.put(:nebula_api_max_extensions, max_extensions)
     multicast = Keyword.get(opts, :multicast, false)
     strategy = Keyword.get(opts, :strategy) || :all
     node_selector = Keyword.get(opts, :node_selector)
@@ -314,8 +317,12 @@ defmodule NebulaAPI.APIServer do
     after
       # Call-scoped context: don't let it linger in a long-lived caller's
       # dictionary after the call returns. Every dispatch read it synchronously
-      # above, so it's safe to drop here whatever the outcome.
-      Process.delete(:nebula_api_max_extensions)
+      # above, so it's safe to drop here whatever the outcome. A stored value is
+      # always an integer (validated), so nil unambiguously means "was unset".
+      case prev_max_extensions do
+        nil -> Process.delete(:nebula_api_max_extensions)
+        prev -> Process.put(:nebula_api_max_extensions, prev)
+      end
     end
   end
 
@@ -767,12 +774,16 @@ defmodule NebulaAPI.APIServer do
     end
   end
 
+  # Modules without `use NebulaAPI` (bare atoms used as module names in tests,
+  # plain GenServer doubles) have no __nebula_api__/1 — treat them as carrying
+  # no module-level default. function_exported?/3 first: this runs on every
+  # call, and a raise+rescue builds an exception + stacktrace each time. The
+  # rescue stays as a backstop (a module whose __nebula_api__/1 itself raises).
   defp module_default_timeout(module) do
-    module.__nebula_api__(:default_timeout)
+    if function_exported?(module, :__nebula_api__, 1) do
+      module.__nebula_api__(:default_timeout)
+    end
   rescue
-    # Modules without `use NebulaAPI` (bare atoms used as module names in
-    # tests, plain GenServer doubles) have no __nebula_api__/1 — treat them
-    # as carrying no module-level default.
     _ -> nil
   end
 
@@ -787,8 +798,11 @@ defmodule NebulaAPI.APIServer do
     end
   end
 
+  # Same shape and rationale as module_default_timeout/1.
   defp module_max_time_extensions(module) do
-    module.__nebula_api__(:max_time_extensions)
+    if function_exported?(module, :__nebula_api__, 1) do
+      module.__nebula_api__(:max_time_extensions)
+    end
   rescue
     _ -> nil
   end
