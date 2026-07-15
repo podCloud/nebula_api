@@ -130,21 +130,40 @@ defmodule NebulaAPI.APIServer.Worker do
   defp start_call(state, {{caller, ref} = from, fn_call}) do
     %{module: module, methods: methods} = state
 
-    {:ok, pid} =
-      Task.Supervisor.start_child(NebulaAPI.TaskSupervisor, fn ->
-        # Stash the reply address so the body can heartbeat via
-        # NebulaAPI.request_more_time/0. The task is throwaway, so the process
-        # dictionary is the lightest request-scoped carrier.
-        Process.put(:nebula_api_call, from)
-        result = execute_local_call(module, methods, fn_call)
-        send(caller, {ref, {:reply, result}})
-      end)
+    case start_body_task(from, fn_call, module, methods) do
+      {:ok, pid} ->
+        task_ref = Process.monitor(pid)
+        caller_ref = Process.monitor(caller)
 
-    task_ref = Process.monitor(pid)
-    caller_ref = Process.monitor(caller)
+        running = Map.put(state.running, task_ref, %{task_pid: pid, caller_ref: caller_ref})
+        {:noreply, %{state | running: running, in_flight: state.in_flight + 1}}
 
-    running = Map.put(state.running, task_ref, %{task_pid: pid, caller_ref: caller_ref})
-    {:noreply, %{state | running: running, in_flight: state.in_flight + 1}}
+      {:error, reason} ->
+        # The TaskSupervisor is unavailable (app shutdown in progress, or a
+        # max_children cap someday). Failing to start ONE body must not crash
+        # the worker — its death would take the whole pending queue with it,
+        # exactly the blast radius the catch-alls above exist to prevent. The
+        # caller gets a fast, tagged failure instead of waiting out its
+        # timeout; no slot was consumed, the state is untouched.
+        send(caller, {ref, {:reply, {:nebula_error, {:worker_start_failed, reason}}}})
+        {:noreply, state}
+    end
+  end
+
+  # A dead/unregistered supervisor EXITs the GenServer call inside
+  # Task.Supervisor.start_child (:noproc) rather than returning an error
+  # tuple — catch it so both failure modes land on the same {:error, reason}.
+  defp start_body_task({caller, ref} = from, fn_call, module, methods) do
+    Task.Supervisor.start_child(NebulaAPI.TaskSupervisor, fn ->
+      # Stash the reply address so the body can heartbeat via
+      # NebulaAPI.request_more_time/0. The task is throwaway, so the process
+      # dictionary is the lightest request-scoped carrier.
+      Process.put(:nebula_api_call, from)
+      result = execute_local_call(module, methods, fn_call)
+      send(caller, {ref, {:reply, result}})
+    end)
+  catch
+    :exit, reason -> {:error, reason}
   end
 
   defp caller_ref_owner(running, cref) do
