@@ -21,6 +21,30 @@ defmodule NebulaAPI.WorkerStartFailureTest do
     end
   end
 
+  # Serialized variant (max_concurrent_calls: 1) with a latch body, to build a
+  # real queue behind one running call.
+  defmodule SerialMod do
+    Module.register_attribute(__MODULE__, :nebula_configured_nodes,
+      accumulate: true,
+      persist: true
+    )
+
+    Module.register_attribute(__MODULE__, :nebula_api, persist: true)
+
+    @nebula_api [self_node: node()]
+    @nebula_configured_nodes {{:gated, 1}, [node()]}
+
+    def __nebula_api__(:max_concurrent_calls), do: 1
+
+    def gated(notify) do
+      send(notify, {:started, self()})
+
+      receive do
+        :go -> :gated_done
+      end
+    end
+  end
+
   setup_all do
     case :pg.start(:pg_nebula_api) do
       {:ok, _} -> :ok
@@ -54,5 +78,31 @@ defmodule NebulaAPI.WorkerStartFailureTest do
     ref2 = make_ref()
     send(worker, {:nebula_call, {self(), ref2}, {:ping, self()}})
     assert_receive {^ref2, {:reply, :pong}}, 1_000
+  end
+
+  test "a start failure drains the whole pending queue with fast failures" do
+    # max_concurrent_calls: 1 — A runs (latched), B and C wait in line. When the
+    # TaskSupervisor dies, A's body dies with it (DOWN frees the slot) and the
+    # dequeued B fails to start. The failure branch must keep draining: C must
+    # get the same fast tagged failure, not sit stranded in the queue while its
+    # caller waits out its full timeout (and later arrivals jump ahead of it).
+    Process.flag(:trap_exit, true)
+    {:ok, worker} = Worker.start_link(SerialMod)
+
+    ref_a = make_ref()
+    send(worker, {:nebula_call, {self(), ref_a}, {:gated, self()}})
+    assert_receive {:started, _body}, 1_000
+
+    ref_b = make_ref()
+    ref_c = make_ref()
+    send(worker, {:nebula_call, {self(), ref_b}, {:gated, self()}})
+    send(worker, {:nebula_call, {self(), ref_c}, {:gated, self()}})
+
+    on_exit(fn -> Supervisor.restart_child(NebulaAPI.Supervisor, NebulaAPI.TaskSupervisor) end)
+    :ok = Supervisor.terminate_child(NebulaAPI.Supervisor, NebulaAPI.TaskSupervisor)
+
+    assert_receive {^ref_b, {:reply, {:nebula_error, {:worker_start_failed, _}}}}, 1_000
+    assert_receive {^ref_c, {:reply, {:nebula_error, {:worker_start_failed, _}}}}, 1_000
+    assert Process.alive?(worker)
   end
 end

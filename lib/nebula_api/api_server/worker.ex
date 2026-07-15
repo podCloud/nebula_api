@@ -144,9 +144,12 @@ defmodule NebulaAPI.APIServer.Worker do
         # the worker — its death would take the whole pending queue with it,
         # exactly the blast radius the catch-alls above exist to prevent. The
         # caller gets a fast, tagged failure instead of waiting out its
-        # timeout; no slot was consumed, the state is untouched.
+        # timeout; no slot was consumed. Then KEEP DRAINING: with nothing
+        # running, no future DOWN will ever dequeue the rest — without this,
+        # the queued callers behind a failed start sit stranded until their
+        # own timeouts, and new arrivals jump ahead of them.
         send(caller, {ref, {:reply, {:nebula_error, {:worker_start_failed, reason}}}})
-        {:noreply, state}
+        dequeue_next(state)
     end
   end
 

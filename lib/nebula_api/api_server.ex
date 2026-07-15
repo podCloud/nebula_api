@@ -777,15 +777,33 @@ defmodule NebulaAPI.APIServer do
 
   # Modules without `use NebulaAPI` (bare atoms used as module names in tests,
   # plain GenServer doubles) have no __nebula_api__/1 — treat them as carrying
-  # no module-level default. function_exported?/3 first: this runs on every
-  # call, and a raise+rescue builds an exception + stacktrace each time. The
-  # rescue stays as a backstop (a module whose __nebula_api__/1 itself raises).
+  # no module-level default. Two-tier check: function_exported?/3 first (free,
+  # and the only path taken in releases, where all code is loaded at boot);
+  # when it says no, ensure_loaded before concluding — function_exported? never
+  # loads code, and in dev/iex a not-yet-loaded module would silently lose its
+  # module-level default (the pre-optimization direct call auto-loaded through
+  # the error handler). The slow path runs at most once per module. The rescue
+  # stays as a backstop (a module whose __nebula_api__/1 itself raises).
   defp module_default_timeout(module) do
-    if function_exported?(module, :__nebula_api__, 1) do
+    if nebula_api_module?(module) do
       module.__nebula_api__(:default_timeout)
     end
   rescue
     _ -> nil
+  end
+
+  # Same shape and rationale as module_default_timeout/1.
+  defp module_max_time_extensions(module) do
+    if nebula_api_module?(module) do
+      module.__nebula_api__(:max_time_extensions)
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp nebula_api_module?(module) do
+    function_exported?(module, :__nebula_api__, 1) or
+      (Code.ensure_loaded?(module) and function_exported?(module, :__nebula_api__, 1))
   end
 
   # Same precedence as resolve_timeout/2: per-call opt > per-module accessor >
@@ -797,15 +815,6 @@ defmodule NebulaAPI.APIServer do
       nil -> module_max_time_extensions(module) || NebulaAPI.Config.max_time_extensions()
       n -> n
     end
-  end
-
-  # Same shape and rationale as module_default_timeout/1.
-  defp module_max_time_extensions(module) do
-    if function_exported?(module, :__nebula_api__, 1) do
-      module.__nebula_api__(:max_time_extensions)
-    end
-  rescue
-    _ -> nil
   end
 
   # Private functions
