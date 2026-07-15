@@ -364,17 +364,22 @@ topology, and the formatter knows it at the next run. You never list tags by han
 
 Details, if you need them:
 
-- **Which config is read:** `config/config.exs` — the local one, the umbrella root's, or
-  **both merged** when an umbrella app has its own local config too. Each is read once
-  per env — `:dev`, `:test`, `:prod`, plus one per extra `config/<env>.exs` file (a
-  `config/staging.exs` is picked up by itself).
-  So a tag that only exists in your test topology still formats correctly in test code.
-  If your envs are more exotic than that, list them explicitly in the base `config.exs`:
-  `config :nebula_api, formatter_envs: [:dev, :test, :prod, :edge]`.
-- **It cannot break `mix format`.** If your config can't be read (a `prod.exs` that
-  demands an unset env var, no `config/` at all), the import just protects the macros and
-  skips the tags. Your selectors then format as `&db(!@backup)` — less pretty, but it's
-  the exact same code: with or without those parentheses, Elixir parses the same AST.
+- **Which config is read:** `config/config.exs` — the local one, the umbrella root's
+  (only when the cwd really is an umbrella app: a sibling under `apps/` with a `mix.exs`
+  at the root — never some unrelated directory two levels up), or **both merged** when an
+  umbrella app has its own local config too. Each is read once per env — `:dev`, `:test`,
+  `:prod`, plus one per extra `config/<env>.exs` file (a `config/staging.exs` is picked
+  up by itself). So a tag that only exists in your test topology still formats correctly
+  in test code. If your envs are more exotic than that, list them explicitly in the base
+  `config.exs`: `config :nebula_api, formatter_envs: [:dev, :test, :prod, :edge]`.
+- **Error behavior.** An env whose config can't be *read* (a `prod.exs` that demands an
+  unset env var, no `config/` at all) is simply skipped: the import protects the macros
+  and whatever tags the readable envs yield — those selectors then format as
+  `&db(!@backup)`, less pretty but the exact same AST. A config that reads fine but
+  carries a **malformed `:nebula_api` value** (a `nodes:` entry that isn't
+  `{node, tags}`, a non-list `formatter_envs:`) raises a clear error instead — on
+  purpose: that same shape would fail your compile anyway, and the error says exactly
+  what to fix.
 - **Name collisions:** protecting the tag `db` also means any *function* named `db` in
   your code is formatted without parens. If that bothers you, remove the selector-heavy
   files from `inputs:` and format them by hand.
