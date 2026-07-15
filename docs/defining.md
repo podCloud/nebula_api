@@ -340,10 +340,7 @@ Process.whereis(MyApp.Users)   # the worker for that module, if local here
 ## `mix format` and the selector syntax
 
 Left alone, a consumer's `mix format` rewrites the canonical syntax into
-`defapi(&db(!@backup, get(id), do: ...)))`. Two steps keep it intact.
-
-**1. Import the library's formatter export** — this preserves the macro calls themselves
-(`defapi ...`, `on_nebula_nodes ...`, `call_on_* ...` stay paren-less):
+`defapi(&db(!@backup, get(id), do: ...)))`. One line keeps it intact:
 
 ```elixir
 # .formatter.exs
@@ -353,35 +350,28 @@ Left alone, a consumer's `mix format` rewrites the canonical syntax into
 ]
 ```
 
-**2. Declare your tags** — tag names are yours, so the library can't export them. Without
-this, the formatter parenthesizes the selector chain: `&db !@backup` becomes
-`&db(!@backup)`. That form is **the same AST** — space juxtaposition *is* call syntax
-without parentheses — so it compiles and routes identically; it just doesn't read
-canonically. To keep the canonical look, list your tags in `locals_without_parens`.
-`.formatter.exs` is evaluated Elixir, so you can derive them from the topology config
-itself and never maintain the list by hand:
+This imports the library's formatter export, which covers **both** halves:
 
-```elixir
-# .formatter.exs
-nebula_tags =
-  "config/config.exs"
-  |> Config.Reader.read!()
-  |> get_in([:nebula_api, :nodes])
-  |> Kernel.||([])
-  |> Enum.flat_map(fn {_node, tags} -> List.wrap(tags) end)
-  |> Enum.uniq()
+- the macro calls themselves (`defapi ...`, `on_nebula_nodes ...`, `call_on_* ...` stay
+  paren-less), and
+- **your own topology tags**. Tag names are user-defined, so no static export could list
+  them — instead, the export is evaluated in *your* project root at format time and
+  derives them from your `config/config.exs` (standalone or umbrella root; every env is
+  read, so a tag used only in `config/test.exs` — an isolated test node — stays
+  paren-less in test code too).
 
-[
-  import_deps: [:nebula_api],
-  inputs: [...],
-  locals_without_parens: Enum.map(nebula_tags, &{&1, :*})
-]
-```
+Nothing to maintain: add a tag to the topology, the formatter follows.
 
-(Adjust the config path in an umbrella.) One caveat: a tag entry (say `db: :*`) also
-applies to any local *function* of that name in your code — if a tag collides with a
-function you call paren-less-ly against your will, prefer excluding the selector-heavy
-files from `inputs:` instead.
+Two things worth knowing:
+
+- **It can never break your `mix format`.** If the config can't be read (a `prod.exs`
+  demanding an unset env var, no `config/` at all), the export falls back to the macros
+  alone. Your tag chains then format as `&db(!@backup)` — **the same AST** (space
+  juxtaposition *is* call syntax without parentheses), it compiles and routes
+  identically; only the canonical look is lost.
+- A tag entry also applies to any local *function* of the same name in your code — if a
+  tag collides with a function you'd rather keep parenthesized, exclude the
+  selector-heavy files from `inputs:` and format them by hand instead.
 
 ## Next
 
