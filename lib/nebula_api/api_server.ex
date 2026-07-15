@@ -79,14 +79,19 @@ defmodule NebulaAPI.APIServer do
 
   @impl true
   def init(_init_arg) do
-    # Only the cluster-wide bits live here: the :pg scope used for routing and the
-    # per-node NodesInfoCache that refreshes the node-info snapshot in the background
-    # (and owns the :protected ETS cache table — it is the only legitimate writer).
-    # Per-module workers are NOT started here — each consumer app owns a
-    # NebulaAPI.Server in its own tree (see the nebula_api_server/0 macro), which
-    # discovers and supervises its modules' workers.
+    # Only the cluster-wide bits live here: the :pg scope used for routing, the
+    # NodesCacheOwner that owns the :protected ETS cache table (started FIRST, so
+    # the table exists before anyone refreshes), and the per-node NodesInfoCache
+    # that refreshes the node-info snapshot in the background. Per-module workers
+    # are NOT started here — each consumer app owns a NebulaAPI.Server in its own
+    # tree (see the nebula_api_server/0 macro), which discovers and supervises its
+    # modules' workers.
     Supervisor.init(
-      [pg_spec(), NebulaAPI.APIServer.NodesInfoCache],
+      [
+        pg_spec(),
+        NebulaAPI.APIServer.NodesCacheOwner,
+        NebulaAPI.APIServer.NodesInfoCache
+      ],
       strategy: :one_for_one
     )
   end
@@ -358,10 +363,8 @@ defmodule NebulaAPI.APIServer do
   If a node becomes unreachable, `last_seen_at` keeps its last value, allowing
   detection of stale nodes.
 
-  The "update the cache" side effect is effective only when this runs inside
-  `NebulaAPI.APIServer.NodesInfoCache` (the `:protected` table's owner) — its
-  background refresh is the normal caller. Called from any other process, the
-  fresh info is still returned but nothing is cached.
+  The per-node cache updates are routed through the `:protected` table's owner
+  (`NebulaAPI.APIServer.NodesCacheOwner`), so they work from any process.
   """
   def build_nodes_info do
     now = DateTime.utc_now()
@@ -458,17 +461,13 @@ defmodule NebulaAPI.APIServer do
   @doc """
   Caches node info in ETS.
 
-  The cache table is `:protected`, owned by `NebulaAPI.APIServer.NodesInfoCache`
-  (the background refresher — the only legitimate writer): the write is
-  effective only inside that process. Called from anywhere else, it is a
-  silent no-op — same as when the table doesn't exist yet.
+  The cache table is `:protected`: the write is routed through its owner
+  (`NebulaAPI.APIServer.NodesCacheOwner`), so it works from any process.
+  Without a running owner (bare test contexts, app not booted) it is a silent
+  no-op — same as when the table doesn't exist yet.
   """
   def cache_node_info(node_name, info) do
-    :ets.insert(@nodes_cache_table, {node_name, info})
-    :ok
-  rescue
-    # Table doesn't exist yet, or this process isn't the table owner.
-    ArgumentError -> :ok
+    NebulaAPI.APIServer.NodesCacheOwner.insert({node_name, info})
   end
 
   @doc """
@@ -493,18 +492,19 @@ defmodule NebulaAPI.APIServer do
 
   @doc """
   Refreshes the nodes cache by fetching fresh runtime info from all nodes.
+
+  Works from any process — the snapshot write is routed through the table's
+  owner. `NodesInfoCache` calls this on its background interval; calling it
+  yourself forces an immediate refresh (e.g. right after connecting a new
+  node, so function selectors see it without waiting out the interval).
   """
   def refresh_nodes_cache do
     data = build_nodes_info()
 
-    try do
-      :ets.insert(@nodes_cache_table, {
-        @nodes_info_cache_key,
-        %{data: data, updated_at: System.monotonic_time(:millisecond)}
-      })
-    rescue
-      ArgumentError -> :ok
-    end
+    NebulaAPI.APIServer.NodesCacheOwner.insert({
+      @nodes_info_cache_key,
+      %{data: data, updated_at: System.monotonic_time(:millisecond)}
+    })
 
     data
   end

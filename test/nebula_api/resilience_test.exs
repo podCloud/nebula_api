@@ -187,20 +187,15 @@ defmodule NebulaAPI.ResilienceTest do
   end
 
   describe "node-info cache refresh (M4)" do
-    test "NodesInfoCache repopulates a wiped snapshot on refresh" do
-      # Wipe the snapshot, trigger a refresh on the singleton (the table is
-      # :protected — only its owner writes), expect the snapshot back. The
-      # :refresh message is exactly what the periodic timer delivers.
+    test "a refresh repopulates a wiped snapshot" do
+      # Wipe the snapshot and force a refresh — the exact work the periodic
+      # timer triggers, run synchronously (no message injected into the
+      # singleton: that would fork its timer chain for the rest of the suite).
       :ok = NebulaAPI.APIServer.NodesInfoCache.wipe_snapshot()
 
-      send(Process.whereis(NebulaAPI.APIServer.NodesInfoCache), :refresh)
+      NebulaAPI.APIServer.refresh_nodes_cache()
 
-      wait_until(fn ->
-        match?(
-          [{_, %{data: _}}],
-          :ets.lookup(:nebula_nodes_cache, :__nodes_info_snapshot__)
-        )
-      end)
+      assert [{_, %{data: _}}] = :ets.lookup(:nebula_nodes_cache, :__nodes_info_snapshot__)
     end
 
     test "get_nodes_info serves an existing snapshot without rebuilding it" do

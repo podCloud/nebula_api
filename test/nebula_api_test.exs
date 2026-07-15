@@ -78,15 +78,19 @@ defmodule NebulaAPITest do
       :ok
     end
 
-    test "cache_node_info/2 from a non-owner process is a silent no-op" do
-      # The table is :protected, owned by NodesInfoCache: the write path is
-      # effective only inside the owner (exercised by the refresh test in
-      # resilience_test). From anywhere else it must neither raise nor write.
+    test "cache_node_info/2 roundtrips through the :protected table's owner" do
+      # The table is :protected, owned by NodesCacheOwner — writes are routed
+      # through it, so the write/read/overwrite roundtrip works from any
+      # process (this per-node entry is the fallback source for nodes that
+      # later stop responding).
       node_name = :"protected_probe_#{:rand.uniform(10000)}@localhost"
       info = %{short_name: :protected_probe, host: "localhost", tags: [:test]}
 
       assert APIServer.cache_node_info(node_name, info) == :ok
-      assert APIServer.get_cached_node_info(node_name) == %{}
+      assert APIServer.get_cached_node_info(node_name) == info
+
+      assert APIServer.cache_node_info(node_name, %{info | tags: [:updated]}) == :ok
+      assert APIServer.get_cached_node_info(node_name).tags == [:updated]
     end
 
     test "get_cached_node_info/1 returns empty map for unknown node" do
