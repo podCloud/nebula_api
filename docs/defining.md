@@ -337,6 +337,52 @@ NebulaAPI.APIServer.available_nodes(MyModule, {:get, 1})   # nodes with a live w
 Process.whereis(MyApp.Users)   # the worker for that module, if local here
 ```
 
+## `mix format` and the selector syntax
+
+Left alone, a consumer's `mix format` rewrites the canonical syntax into
+`defapi(&db(!@backup, get(id), do: ...)))`. Two steps keep it intact.
+
+**1. Import the library's formatter export** — this preserves the macro calls themselves
+(`defapi ...`, `on_nebula_nodes ...`, `call_on_* ...` stay paren-less):
+
+```elixir
+# .formatter.exs
+[
+  import_deps: [:nebula_api],
+  inputs: [...]
+]
+```
+
+**2. Declare your tags** — tag names are yours, so the library can't export them. Without
+this, the formatter parenthesizes the selector chain: `&db !@backup` becomes
+`&db(!@backup)`. That form is **the same AST** — space juxtaposition *is* call syntax
+without parentheses — so it compiles and routes identically; it just doesn't read
+canonically. To keep the canonical look, list your tags in `locals_without_parens`.
+`.formatter.exs` is evaluated Elixir, so you can derive them from the topology config
+itself and never maintain the list by hand:
+
+```elixir
+# .formatter.exs
+nebula_tags =
+  "config/config.exs"
+  |> Config.Reader.read!()
+  |> get_in([:nebula_api, :nodes])
+  |> Kernel.||([])
+  |> Enum.flat_map(fn {_node, tags} -> List.wrap(tags) end)
+  |> Enum.uniq()
+
+[
+  import_deps: [:nebula_api],
+  inputs: [...],
+  locals_without_parens: Enum.map(nebula_tags, &{&1, :*})
+]
+```
+
+(Adjust the config path in an umbrella.) One caveat: a tag entry (say `db: :*`) also
+applies to any local *function* of that name in your code — if a tag collides with a
+function you call paren-less-ly against your will, prefer excluding the selector-heavy
+files from `inputs:` instead.
+
 ## Next
 
 - [Calling across nodes](calling.md) — call your endpoints and override routing at runtime.
