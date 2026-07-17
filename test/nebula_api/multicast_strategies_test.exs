@@ -70,17 +70,26 @@ defmodule NebulaAPI.MulticastStrategiesTest do
       :ok
     end
 
-    test "returns a map of nodes" do
-      result = APIServer.build_nodes_info()
-      assert is_map(result)
-    end
-
-    test "includes current node info" do
+    test "returns one entry per configured node, each with the documented shape" do
       result = APIServer.build_nodes_info()
 
-      # At minimum, we should have some nodes from config
-      # The actual nodes depend on the test configuration
-      assert is_map(result)
+      configured = NebulaAPI.Config.nodes() |> Keyword.keys() |> Enum.sort()
+      assert result |> Map.keys() |> Enum.sort() == configured
+
+      for {name, info} <- result do
+        assert %{
+                 short_name: _,
+                 long_name: ^name,
+                 host: _,
+                 tags: tags,
+                 connected: connected,
+                 last_seen_at: _,
+                 runtime: _
+               } = info
+
+        assert is_list(tags)
+        assert is_boolean(connected)
+      end
     end
   end
 

@@ -79,24 +79,19 @@ defmodule NebulaAPI.APIServer do
 
   @impl true
   def init(_init_arg) do
-    # Create ETS table for nodes cache
-    # Use try/rescue to handle race condition where multiple processes
-    # might try to create the table simultaneously
-    try do
-      :ets.new(@nodes_cache_table, [:set, :public, :named_table, read_concurrency: true])
-    rescue
-      ArgumentError ->
-        # Table already exists (created by another process or previous run)
-        :ok
-    end
-
-    # Only the cluster-wide bits live here: the :pg scope used for routing, the ETS
-    # nodes cache created above, and the per-node NodesInfoCache that refreshes the
-    # node-info snapshot in the background. Per-module workers are NOT started here —
-    # each consumer app owns a NebulaAPI.Server in its own tree (see the
-    # nebula_api_server/0 macro), which discovers and supervises its modules' workers.
+    # Only the cluster-wide bits live here: the :pg scope used for routing, the
+    # NodesCacheOwner that owns the :protected ETS cache table (started FIRST, so
+    # the table exists before anyone refreshes), and the per-node NodesInfoCache
+    # that refreshes the node-info snapshot in the background. Per-module workers
+    # are NOT started here — each consumer app owns a NebulaAPI.Server in its own
+    # tree (see the nebula_api_server/0 macro), which discovers and supervises its
+    # modules' workers.
     Supervisor.init(
-      [pg_spec(), NebulaAPI.APIServer.NodesInfoCache],
+      [
+        pg_spec(),
+        NebulaAPI.APIServer.NodesCacheOwner,
+        NebulaAPI.APIServer.NodesInfoCache
+      ],
       strategy: :one_for_one
     )
   end
@@ -255,7 +250,10 @@ defmodule NebulaAPI.APIServer do
     # Call-scoped context (same convention as :nebula_call / :nebula_node_selector):
     # the deep unicast/multicast dispatch reads it back here, in this process, to
     # thread into the transport — it never has to cross a spawn boundary.
-    Process.put(:nebula_api_max_extensions, max_extensions)
+    # Process.put/2 returns the PREVIOUS value: user code on the routing path (a
+    # node_selector, a success:/failure: predicate) may itself perform a nebula
+    # call, and its cleanup must restore the outer call's context, not delete it.
+    prev_max_extensions = Process.put(:nebula_api_max_extensions, max_extensions)
     multicast = Keyword.get(opts, :multicast, false)
     strategy = Keyword.get(opts, :strategy) || :all
     node_selector = Keyword.get(opts, :node_selector)
@@ -314,8 +312,12 @@ defmodule NebulaAPI.APIServer do
     after
       # Call-scoped context: don't let it linger in a long-lived caller's
       # dictionary after the call returns. Every dispatch read it synchronously
-      # above, so it's safe to drop here whatever the outcome.
-      Process.delete(:nebula_api_max_extensions)
+      # above, so it's safe to drop here whatever the outcome. A stored value is
+      # always an integer (validated), so nil unambiguously means "was unset".
+      case prev_max_extensions do
+        nil -> Process.delete(:nebula_api_max_extensions)
+        prev -> Process.put(:nebula_api_max_extensions, prev)
+      end
     end
   end
 
@@ -360,6 +362,9 @@ defmodule NebulaAPI.APIServer do
   Runtime info and `last_seen_at` are only updated for connected/reachable nodes.
   If a node becomes unreachable, `last_seen_at` keeps its last value, allowing
   detection of stale nodes.
+
+  The per-node cache updates are routed through the `:protected` table's owner
+  (`NebulaAPI.APIServer.NodesCacheOwner`), so they work from any process.
   """
   def build_nodes_info do
     now = DateTime.utc_now()
@@ -455,12 +460,14 @@ defmodule NebulaAPI.APIServer do
 
   @doc """
   Caches node info in ETS.
+
+  The cache table is `:protected`: the write is routed through its owner
+  (`NebulaAPI.APIServer.NodesCacheOwner`), so it works from any process.
+  Without a running owner (bare test contexts, app not booted) it is a silent
+  no-op — same as when the table doesn't exist yet.
   """
   def cache_node_info(node_name, info) do
-    :ets.insert(@nodes_cache_table, {node_name, info})
-  rescue
-    # Table doesn't exist yet
-    ArgumentError -> :ok
+    NebulaAPI.APIServer.NodesCacheOwner.insert({node_name, info})
   end
 
   @doc """
@@ -485,18 +492,19 @@ defmodule NebulaAPI.APIServer do
 
   @doc """
   Refreshes the nodes cache by fetching fresh runtime info from all nodes.
+
+  Works from any process — the snapshot write is routed through the table's
+  owner. `NodesInfoCache` calls this on its background interval; calling it
+  yourself forces an immediate refresh (e.g. right after connecting a new
+  node, so function selectors see it without waiting out the interval).
   """
   def refresh_nodes_cache do
     data = build_nodes_info()
 
-    try do
-      :ets.insert(@nodes_cache_table, {
-        @nodes_info_cache_key,
-        %{data: data, updated_at: System.monotonic_time(:millisecond)}
-      })
-    rescue
-      ArgumentError -> :ok
-    end
+    NebulaAPI.APIServer.NodesCacheOwner.insert({
+      @nodes_info_cache_key,
+      %{data: data, updated_at: System.monotonic_time(:millisecond)}
+    })
 
     data
   end
@@ -767,13 +775,35 @@ defmodule NebulaAPI.APIServer do
     end
   end
 
+  # Modules without `use NebulaAPI` (bare atoms used as module names in tests,
+  # plain GenServer doubles) have no __nebula_api__/1 — treat them as carrying
+  # no module-level default. Two-tier check: function_exported?/3 first (free,
+  # and the only path taken in releases, where all code is loaded at boot);
+  # when it says no, ensure_loaded before concluding — function_exported? never
+  # loads code, and in dev/iex a not-yet-loaded module would silently lose its
+  # module-level default (the pre-optimization direct call auto-loaded through
+  # the error handler). The slow path runs at most once per module. The rescue
+  # stays as a backstop (a module whose __nebula_api__/1 itself raises).
   defp module_default_timeout(module) do
-    module.__nebula_api__(:default_timeout)
+    if nebula_api_module?(module) do
+      module.__nebula_api__(:default_timeout)
+    end
   rescue
-    # Modules without `use NebulaAPI` (bare atoms used as module names in
-    # tests, plain GenServer doubles) have no __nebula_api__/1 — treat them
-    # as carrying no module-level default.
     _ -> nil
+  end
+
+  # Same shape and rationale as module_default_timeout/1.
+  defp module_max_time_extensions(module) do
+    if nebula_api_module?(module) do
+      module.__nebula_api__(:max_time_extensions)
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp nebula_api_module?(module) do
+    function_exported?(module, :__nebula_api__, 1) or
+      (Code.ensure_loaded?(module) and function_exported?(module, :__nebula_api__, 1))
   end
 
   # Same precedence as resolve_timeout/2: per-call opt > per-module accessor >
@@ -785,12 +815,6 @@ defmodule NebulaAPI.APIServer do
       nil -> module_max_time_extensions(module) || NebulaAPI.Config.max_time_extensions()
       n -> n
     end
-  end
-
-  defp module_max_time_extensions(module) do
-    module.__nebula_api__(:max_time_extensions)
-  rescue
-    _ -> nil
   end
 
   # Private functions
