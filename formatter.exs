@@ -99,12 +99,21 @@ defmodule NebulaAPI.Formatter do
     |> Enum.sort()
   end
 
-  # Which envs to read the topology under: one per config/<env>.exs file found
-  # next to the base file (dev.exs, test.exs, staging.exs, ... — whatever the
-  # project actually has), or a single :dev read when there are no env files
-  # at all (Config.Reader needs SOME env to evaluate config_env() against).
-  # Escape hatch, in the BASE config.exs (before any import_config, so it is
-  # discoverable under any env):
+  # Which envs to read the topology under: one per *.exs file found next to the
+  # base file, MINUS config.exs and runtime.exs — dev.exs, test.exs, staging.exs,
+  # ... whatever the project actually has. Auto-discovery is a directory
+  # listing, not a Config.Reader-aware scan: ANY other .exs file sitting in
+  # config/ (a secrets.exs conditionally imported by hand, a docker.exs, a
+  # one-off override that isn't a real "env") is picked up and probed the same
+  # way. Usually harmless — read_quietly/2 swallows a bad read — but a candidate
+  # whose read has a SIDE EFFECT (rare, but Config.Reader runs arbitrary code)
+  # still runs it. A single read when there are no *.exs files at all
+  # (Config.Reader needs SOME env to evaluate config_env() against; :dev).
+  #
+  # To bypass auto-discovery entirely, define the exact env list yourself in
+  # the BASE config.exs (before any import_config, so it is discoverable under
+  # any env) — this REPLACES the directory scan, so leave out anything you
+  # don't want read (weird one-off files included):
   #
   #     config :nebula_api, formatter_envs: [:dev, :test, :edge]
   #
@@ -210,10 +219,11 @@ defmodule NebulaAPI.Formatter do
 
         #{Exception.format(:error, e)}
 
-        Your .formatter.exs calls NebulaAPI.Formatter.config/1, which reads your
-        config to derive your topology tags. If this env's config genuinely cannot
-        be evaluated at format time (e.g. it demands env vars only set in
-        deployment), exclude it in the BASE config.exs:
+        Your .formatter.exs calls NebulaAPI.Formatter.add_formatter_config/1, which
+        reads your config to derive your topology tags. If this env's config genuinely
+        cannot be evaluated at format time (e.g. it demands env vars only set in
+        deployment), you can disable auto-discovery of env files and set a custom
+        list instead, excluding the weird/touchy one, in the BASE config.exs:
 
             config :nebula_api, formatter_envs: [:dev, :test]
         """),
@@ -229,10 +239,13 @@ defmodule NebulaAPI.Formatter do
 
     Expected #{expected}.
 
-    Your .formatter.exs calls NebulaAPI.Formatter.config/1, which derives your
-    topology tags from this config so `mix format` keeps your selector chains
-    paren-less. This same shape would also fail when compiling your defapi
-    modules — fix it there once.
+    Your .formatter.exs calls NebulaAPI.Formatter.add_formatter_config/1, which
+    reads your config to derive your topology tags. If this env's config genuinely
+    cannot be evaluated at format time (e.g. it demands env vars only set in
+    deployment), you can disable auto-discovery of env files and set a custom
+    list instead, excluding the weird/touchy one, in the BASE config.exs:
+
+        config :nebula_api, formatter_envs: [:dev, :test]
     """
   end
 end
