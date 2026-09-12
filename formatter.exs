@@ -70,6 +70,13 @@ defmodule NebulaAPI.Formatter do
     @macros ++ Enum.map(tags(), &{&1, :*})
   end
 
+  @doc """
+  The static macro entries alone, with no tag derivation -- what
+  `locals_without_parens/0` returns when a project has no topology config at
+  all. Exposed for tests to compare against without duplicating `@macros`.
+  """
+  def macros, do: @macros
+
   # ---------------------------------------------------------------------------
 
   # "config/config.exs" = standalone project or umbrella root. The ../../ form
