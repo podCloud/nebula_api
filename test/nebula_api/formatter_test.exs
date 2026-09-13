@@ -22,6 +22,11 @@ defmodule NebulaAPI.FormatterTest do
         "nebula_formatter_test_#{System.unique_integer([:positive, :monotonic])}"
       )
 
+    # System.unique_integer/1 restarts from 1 on every fresh BEAM boot, so a
+    # prior run force-killed mid-test (a stale directory its own `after`
+    # never got to remove) could otherwise leave files behind for a later
+    # run's colliding counter value to silently pick up.
+    File.rm_rf!(tmp)
     File.mkdir_p!(tmp)
 
     Enum.each(files, fn {rel_path, content} ->
@@ -115,11 +120,17 @@ defmodule NebulaAPI.FormatterTest do
           {"config/staging.exs",
            """
            import Config
-           config :nebula_api, nodes: []
+           config :nebula_api, nodes: ["staging@host": [:only_in_staging]]
            """}
         ],
         fn ->
-          assert :only_in_dev in tags_of(Formatter.locals_without_parens())
+          # Both env files carry a tag found in NEITHER of the others -- a
+          # regression that only reads the first discovered *.exs (whichever
+          # that is; File.ls order isn't guaranteed) drops exactly one of
+          # these two, so the exact-set assertion catches it regardless of
+          # discovery order. A membership check on a single tag would not:
+          # it stayed green under that exact mutation during review.
+          assert tags_of(Formatter.locals_without_parens()) == [:only_in_dev, :only_in_staging]
         end
       )
     end
@@ -153,6 +164,68 @@ defmodule NebulaAPI.FormatterTest do
     end
   end
 
+  describe "umbrella detection honors a custom apps_path" do
+    test "merges the root config even when the umbrella's apps directory isn't named \"apps\"" do
+      in_project(
+        [
+          {"mix.exs", "  apps_path: \"packages\",\n"},
+          {"config/config.exs",
+           """
+           import Config
+           config :nebula_api, nodes: ["root@host": [:root_wide_tag]]
+           """},
+          {"packages/myapp/mix.exs", "# app marker\n"},
+          {"packages/myapp/config/config.exs",
+           """
+           import Config
+           config :nebula_api, nodes: ["local@host": [:local_only_tag]]
+           """}
+        ],
+        fn ->
+          File.cd!("packages/myapp", fn ->
+            tags = tags_of(Formatter.locals_without_parens())
+            assert :root_wide_tag in tags
+            assert :local_only_tag in tags
+          end)
+        end
+      )
+    end
+  end
+
+  describe "formatter_envs conflict resolution is deterministic" do
+    test "the alphabetically-first candidate env's override wins, not whichever the filesystem lists first" do
+      in_project(
+        [
+          {"config/config.exs",
+           """
+           import Config
+           import_config("\#{config_env()}.exs")
+           """},
+          # Written zzz before aaa on purpose: File.ls/1 is not guaranteed to
+          # return sorted entries (commonly creation/inode order), so writing
+          # in reverse-alphabetical order is what would have exposed the
+          # pre-fix nondeterminism on a filesystem that preserves creation
+          # order.
+          {"config/zzz.exs",
+           """
+           import Config
+           config :nebula_api, formatter_envs: [:zzz]
+           config :nebula_api, nodes: ["z@host": [:tag_z]]
+           """},
+          {"config/aaa.exs",
+           """
+           import Config
+           config :nebula_api, formatter_envs: [:aaa]
+           config :nebula_api, nodes: ["a@host": [:tag_a]]
+           """}
+        ],
+        fn ->
+          assert tags_of(Formatter.locals_without_parens()) == [:tag_a]
+        end
+      )
+    end
+  end
+
   describe "malformed config raises a loud, actionable error" do
     test "a non-list :nodes value" do
       in_project(
@@ -178,6 +251,23 @@ defmodule NebulaAPI.FormatterTest do
            """
            import Config
            config :nebula_api, nodes: ["bad@host": 123]
+           """}
+        ],
+        fn ->
+          assert_raise ArgumentError, ~r/invalid `config :nebula_api, :nodes`/, fn ->
+            Formatter.locals_without_parens()
+          end
+        end
+      )
+    end
+
+    test "a node's tag list containing a non-atom element" do
+      in_project(
+        [
+          {"config/config.exs",
+           """
+           import Config
+           config :nebula_api, nodes: ["bad@host": ["not_an_atom", :real_tag]]
            """}
         ],
         fn ->

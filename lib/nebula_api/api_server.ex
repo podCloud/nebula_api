@@ -428,8 +428,11 @@ defmodule NebulaAPI.APIServer do
             Map.put(health_data, :last_seen_at, now)
         end
 
-      # Update cache
-      cache_node_info(node_name, info)
+      # Best-effort cache update: fire-and-forget so one slow/unresponsive
+      # owner can't turn a per-node write into a stall on the whole refresh
+      # (a synchronous write here previously could block up to (node count) *
+      # the call's timeout).
+      NebulaAPI.APIServer.NodesCacheOwner.insert_async({node_name, info})
 
       {node_name, info}
     end)

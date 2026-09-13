@@ -76,6 +76,72 @@ defmodule NebulaAPI.NodesCacheOwnershipTest do
     assert cached.long_name == node()
   end
 
+  test "insert/1 with a malformed (non-tuple) entry does not crash the owner or destroy the table" do
+    marker = %{:guard_survivor@host => %{long_name: :guard_survivor@host, tags: [:x]}}
+    :ok = NodesInfoCache.seed_snapshot(marker)
+
+    owner_before = Process.whereis(NodesCacheOwner)
+
+    assert {:error, _reason} = NodesCacheOwner.insert(:oops)
+
+    # Same process, still alive: :ets.insert/2 raising ArgumentError for a
+    # non-tuple value must be caught inside the owner's own handle_call, not
+    # let the GenServer crash (an owner-less :protected table with no :heir
+    # is destroyed the instant its process dies).
+    assert Process.whereis(NodesCacheOwner) == owner_before
+    assert Process.alive?(owner_before)
+    assert APIServer.get_nodes_info() == marker
+  end
+
+  test "build_nodes_info/0 does not block on a slow or unresponsive cache owner" do
+    # build_nodes_info/0 writes one cache entry per configured node via a
+    # plain Enum.map. If that write is a synchronous GenServer.call, a single
+    # slow/stuck owner turns what should be an instant, best-effort update
+    # into a call that can stall the whole refresh by up to
+    # (configured node count) * (the call's timeout) -- one hung node was
+    # enough to demonstrate it here since the write, not the count, is what
+    # must not block.
+    Application.put_env(:nebula_api, :nodes, [{node(), [:slowtest]}])
+
+    owner_pid = Process.whereis(NodesCacheOwner)
+    :ok = Supervisor.terminate_child(APIServer, NodesCacheOwner)
+
+    {:ok, fake_owner} =
+      GenServer.start_link(
+        NebulaAPI.NodesCacheOwnershipTest.NeverReplies,
+        [],
+        name: NodesCacheOwner
+      )
+
+    on_exit(fn ->
+      Application.delete_env(:nebula_api, :nodes)
+      if Process.alive?(fake_owner), do: GenServer.stop(fake_owner)
+      {:ok, _} = Supervisor.restart_child(APIServer, NodesCacheOwner)
+    end)
+
+    {elapsed_us, _result} = :timer.tc(fn -> APIServer.build_nodes_info() end)
+
+    refute is_nil(owner_pid)
+    # The default GenServer.call timeout is 5_000ms; a write that actually
+    # waited on the fake owner's (never-sent) reply would take at least that
+    # long. Comfortably below it proves the write isn't blocking the caller.
+    assert elapsed_us < 1_000_000
+  end
+
+  defmodule NeverReplies do
+    @moduledoc false
+    use GenServer
+
+    @impl true
+    def init(_), do: {:ok, %{}}
+
+    @impl true
+    def handle_call(_msg, _from, state), do: {:noreply, state}
+
+    @impl true
+    def handle_cast(_msg, state), do: {:noreply, state}
+  end
+
   defp wait_until(fun, tries \\ 50) do
     if fun.() do
       :ok

@@ -88,12 +88,28 @@ defmodule NebulaAPI.Formatter do
   # read and their tags merged.
   defp config_files do
     in_umbrella_app? =
-      Path.basename(Path.dirname(File.cwd!())) == "apps" and File.exists?("../../mix.exs")
+      File.exists?("../../mix.exs") and
+        Path.basename(Path.dirname(File.cwd!())) == umbrella_apps_dirname()
 
     Enum.filter(
       ["config/config.exs"] ++ if(in_umbrella_app?, do: ["../../config/config.exs"], else: []),
       &File.exists?/1
     )
+  end
+
+  # Mix's umbrella apps directory is configurable via `apps_path:` in the root
+  # mix.exs (default "apps") -- read it as plain text instead of assuming the
+  # default, so a project configured with e.g. `apps_path: "packages"` is
+  # still detected. A best-effort text scan, not a full mix.exs evaluation
+  # (consistent with the rest of this heuristic): a project that computes
+  # apps_path dynamically falls back to the Mix default.
+  defp umbrella_apps_dirname do
+    with {:ok, content} <- File.read("../../mix.exs"),
+         [_, path] <- Regex.run(~r/apps_path:\s*"([^"]+)"/, content) do
+      path
+    else
+      _ -> "apps"
+    end
   end
 
   # Union across files AND envs: a tag used only in the umbrella root config,
@@ -137,7 +153,13 @@ defmodule NebulaAPI.Formatter do
           []
       end
 
-    candidate_envs = if scanned_envs == [], do: [:dev], else: scanned_envs
+    # Sorted so the formatter_envs probe below (Enum.find_value) resolves a
+    # conflicting override the same way on every machine: File.ls/1 does not
+    # guarantee any particular order (commonly creation/inode order), so two
+    # env files that each set a different override would otherwise pick
+    # whichever the filesystem happens to list first.
+    candidate_envs =
+      if scanned_envs == [], do: [:dev], else: Enum.sort(scanned_envs)
 
     # Quiet probe: find the override without letting one broken env hide it
     # (otherwise the escape hatch could never take effect). These probe reads
@@ -188,8 +210,20 @@ defmodule NebulaAPI.Formatter do
 
       nodes when is_list(nodes) ->
         Enum.flat_map(nodes, fn
-          {_node, tags} when is_list(tags) or is_atom(tags) ->
-            List.wrap(tags)
+          {_node, tags} = entry when is_list(tags) ->
+            if Enum.all?(tags, &is_atom/1) do
+              tags
+            else
+              bad_config!(
+                file,
+                :nodes,
+                entry,
+                "each entry to be `{node_name, tag | [tags]}`, e.g. `\"db@host\": [:db]`"
+              )
+            end
+
+          {_node, tags} when is_atom(tags) ->
+            [tags]
 
           bad ->
             bad_config!(
