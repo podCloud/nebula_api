@@ -25,10 +25,30 @@ defmodule NebulaAPI.APIServer.NodesInfoCache do
 
   require Logger
 
+  # Same name as NebulaAPI.APIServer's @nodes_info_cache_key.
+  @snapshot_key :__nodes_info_snapshot__
+
   def start_link(opts \\ []) do
     {name, opts} = Keyword.pop(opts, :name, __MODULE__)
     gen_opts = if name, do: [name: name], else: []
     GenServer.start_link(__MODULE__, opts, gen_opts)
+  end
+
+  @doc false
+  # Test seam: write a snapshot through the table owner (the table is
+  # :protected, owned by NodesCacheOwner). `updated_at` is injectable so tests
+  # can prove age-independence; nil means "now".
+  def seed_snapshot(data, updated_at \\ nil) do
+    NebulaAPI.APIServer.NodesCacheOwner.insert(
+      {@snapshot_key,
+       %{data: data, updated_at: updated_at || System.monotonic_time(:millisecond)}}
+    )
+  end
+
+  @doc false
+  # Test seam: drop the snapshot through the table owner.
+  def wipe_snapshot do
+    NebulaAPI.APIServer.NodesCacheOwner.delete(@snapshot_key)
   end
 
   @impl true
@@ -36,7 +56,9 @@ defmodule NebulaAPI.APIServer.NodesInfoCache do
     interval = Keyword.get(opts, :interval, NebulaAPI.Config.nodes_info_refresh_interval())
 
     # Refresh immediately (async, so we never block the supervisor's boot), then
-    # reschedule from handle_info/2.
+    # reschedule from handle_info/2. The cache TABLE is not ours: it belongs to
+    # NodesCacheOwner, so a crash/restart of this refresher never destroys the
+    # cached data. All writes go through the owner.
     send(self(), :refresh)
 
     {:ok, %{interval: interval}}

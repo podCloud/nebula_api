@@ -337,6 +337,61 @@ NebulaAPI.APIServer.available_nodes(MyModule, {:get, 1})   # nodes with a live w
 Process.whereis(MyApp.Users)   # the worker for that module, if local here
 ```
 
+## `mix format` and the selector syntax
+
+Without setup, `mix format` mangles the selector syntax:
+
+```elixir
+# what you wrote
+defapi &db !@backup, get(id), do: Repo.get(User, id)
+# what mix format makes of it
+defapi(&db(!@backup, get(id), do: Repo.get(User, id)))
+```
+
+The fix ships with the library, in `.formatter.exs`:
+
+```elixir
+Code.require_file("formatter.exs", to_string(Mix.Project.deps_paths()[:nebula_api]))
+
+[
+  inputs: [...]
+]
+|> NebulaAPI.Formatter.add_formatter_config()
+```
+
+This keeps the macro names (`defapi`, `on_nebula_nodes`, `call_on_*`) and your own
+topology tags paren-less, derived from your `config :nebula_api, :nodes`.
+
+Details, if you need them:
+
+- **Where the tags come from.** Your `config/config.exs`. It is read once per
+  `config/<env>.exs` file you have — `dev.exs`, `test.exs`, `staging.exs`, whatever is
+  actually there — so a tag that only exists in one env's topology still formats
+  correctly everywhere. No env files at all? One read. In an umbrella app, the root's
+  config is read the same way (and if the app also has a local one, both are — tags
+  merged). Nothing outside your project is ever read.
+- **Env auto-discovery is a directory listing, not a "real envs" scan.** Every `.exs`
+  file next to `config.exs` (other than `config.exs`/`runtime.exs` themselves) is
+  treated as a candidate env and probed — `dev.exs` and `test.exs`, but also anything
+  else that happens to live in `config/`: a `secrets.exs` you `import_config` by hand,
+  a `docker.exs`, a one-off file that isn't really an "env" in the `MIX_ENV` sense. A
+  broken probe is normally silent (see below), but if such a file's evaluation has a
+  side effect, that side effect still runs.
+- **Overriding which envs get read.** To bypass auto-discovery, define the exact list
+  yourself in the base `config.exs`: `config :nebula_api, formatter_envs: [:dev, :test]`.
+  This *replaces* the directory scan — it isn't additive and it isn't an exclude list —
+  so leave off anything you don't want read, weird one-off files included.
+- **Config errors crash `mix format`, loudly and on purpose.** A malformed
+  `:nebula_api` value (a `nodes:` entry that isn't `{node, tags}`, a non-list
+  `formatter_envs:`) or an env whose config raises at read time (a `prod.exs` demanding
+  an env var only set in deployment) stops the formatter with an error that says exactly
+  what to fix — including, for the latter, the way out: set `formatter_envs` to a list
+  that leaves that env off. No silent fallback; a config problem should never surface as
+  mysteriously-moving parentheses.
+- **Name collisions:** protecting the tag `db` also means any *function* named `db` in
+  your code is formatted without parens. If that bothers you, remove the selector-heavy
+  files from `inputs:` and format them by hand.
+
 ## Next
 
 - [Calling across nodes](calling.md) — call your endpoints and override routing at runtime.

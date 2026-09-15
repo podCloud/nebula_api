@@ -46,6 +46,40 @@ defmodule NebulaAPI.CallOptionsTest do
       assert APIServer.resolve_timeout(NotARealModule, []) == 5_000
     end
 
+    test "a compiled-but-not-yet-loaded module's default_timeout is honored" do
+      # In dev/iex (interactive code loading) a module may not be loaded when
+      # the first call resolves its timeout. function_exported?/3 never loads
+      # code — the resolution must ensure_loaded first, like the pre-#28
+      # direct call did implicitly through the error handler's auto-load.
+      dir = Path.join(System.tmp_dir!(), "nebula_lazy_mod_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+
+      [{mod, bin}] =
+        Code.compile_string("""
+        defmodule NebulaLazyTimeoutMod do
+          def __nebula_api__(:default_timeout), do: 4321
+          def __nebula_api__(_), do: nil
+        end
+        """)
+
+      File.write!(Path.join(dir, "#{mod}.beam"), bin)
+      true = :code.add_patha(String.to_charlist(dir))
+
+      on_exit(fn ->
+        :code.del_path(String.to_charlist(dir))
+        :code.purge(mod)
+        :code.delete(mod)
+        File.rm_rf!(dir)
+      end)
+
+      # Unload it: the module now exists only as a .beam on the code path.
+      :code.purge(mod)
+      true = :code.delete(mod)
+      refute :erlang.module_loaded(mod)
+
+      assert APIServer.resolve_timeout(mod, []) == 4321
+    end
+
     test "timeout: nil means 'not set' — the default resolution applies" do
       # nil is the one non-integer that does NOT raise: a computed
       # `timeout: maybe_timeout` holding nil falls back to the module/global
@@ -173,6 +207,21 @@ defmodule NebulaAPI.CallOptionsTest do
       # accumulate call-scoped context in its process dictionary.
       APIServer.call_remote_method(NoSuchMod, {:work}, max_time_extensions: 3)
       assert Process.get(:nebula_api_max_extensions) == nil
+    end
+
+    test "a nested call restores the outer call's :nebula_api_max_extensions context" do
+      # User code on the routing path (a node_selector, a success:/failure:
+      # predicate) may itself perform a nebula call. The nested call's cleanup
+      # must RESTORE the outer call's context, not blindly delete it — or the
+      # outer call's later dispatches fall back to the global default.
+      Process.put(:nebula_api_max_extensions, 42)
+
+      try do
+        APIServer.call_remote_method(NoSuchMod, {:work}, max_time_extensions: 3)
+        assert Process.get(:nebula_api_max_extensions) == 42
+      after
+        Process.delete(:nebula_api_max_extensions)
+      end
     end
   end
 
