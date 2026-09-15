@@ -52,6 +52,20 @@ defmodule NebulaAPI.FormatterTest do
     |> Enum.map(&elem(&1, 0))
   end
 
+  describe ".formatter.exs stays in sync with formatter.exs" do
+    test "the static macro export matches Formatter.macros/0 exactly" do
+      # .formatter.exs's locals_without_parens is hand-duplicated (it must be
+      # static -- mix format caches a dep's resolved export, so anything
+      # dynamic there would go stale; see its own header comment). Nothing
+      # else keeps the two lists in sync if a macro is ever added to one and
+      # not the other.
+      repo_root = Path.expand("../..", __DIR__)
+      {config, _bindings} = Code.eval_file(".formatter.exs", repo_root)
+
+      assert Keyword.fetch!(config, :locals_without_parens) == Formatter.macros()
+    end
+  end
+
   describe "no config/ directory at all" do
     test "degrades gracefully to the macro list, no tags" do
       in_project([], fn ->
@@ -72,6 +86,24 @@ defmodule NebulaAPI.FormatterTest do
         ],
         fn ->
           assert tags_of(Formatter.locals_without_parens()) == [:db, :postgres, :web]
+        end
+      )
+    end
+
+    test "a nil tags value means no tags, not a bogus nil tag entry" do
+      in_project(
+        [
+          {"config/config.exs",
+           """
+           import Config
+           config :nebula_api, nodes: ["untagged@host": nil, "tagged@host": [:real_tag]]
+           """}
+        ],
+        fn ->
+          # nil is an atom, so a clause that only checks is_atom(tags) treats
+          # it as a bare tag to wrap -- exactly like List.wrap(nil) == [] used
+          # to before the atom/list validation was split into two clauses.
+          assert tags_of(Formatter.locals_without_parens()) == [:real_tag]
         end
       )
     end
@@ -169,6 +201,36 @@ defmodule NebulaAPI.FormatterTest do
       in_project(
         [
           {"mix.exs", "  apps_path: \"packages\",\n"},
+          {"config/config.exs",
+           """
+           import Config
+           config :nebula_api, nodes: ["root@host": [:root_wide_tag]]
+           """},
+          {"packages/myapp/mix.exs", "# app marker\n"},
+          {"packages/myapp/config/config.exs",
+           """
+           import Config
+           config :nebula_api, nodes: ["local@host": [:local_only_tag]]
+           """}
+        ],
+        fn ->
+          File.cd!("packages/myapp", fn ->
+            tags = tags_of(Formatter.locals_without_parens())
+            assert :root_wide_tag in tags
+            assert :local_only_tag in tags
+          end)
+        end
+      )
+    end
+
+    test "ignores an apps_path mention inside a comment, using the real configured value" do
+      in_project(
+        [
+          {"mix.exs",
+           """
+           # apps_path: "decoy"
+           apps_path: "packages",
+           """},
           {"config/config.exs",
            """
            import Config

@@ -365,6 +365,13 @@ defmodule NebulaAPI.APIServer do
 
   The per-node cache updates are routed through the `:protected` table's owner
   (`NebulaAPI.APIServer.NodesCacheOwner`), so they work from any process.
+  Each write is fire-and-forget (`insert_async/1`, a cast) so one slow or
+  unresponsive owner can't stall this function -- the returned map is always
+  current, but the cache write it triggers is not guaranteed to have landed
+  by the time this function returns. `refresh_nodes_cache/0` gets read-after-
+  write for free (it issues one more, synchronous, write right after), but a
+  caller reading `get_cached_node_info/1` immediately after calling this
+  function directly has no such guarantee.
   """
   def build_nodes_info do
     now = DateTime.utc_now()

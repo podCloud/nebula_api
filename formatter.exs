@@ -105,11 +105,24 @@ defmodule NebulaAPI.Formatter do
   # apps_path dynamically falls back to the Mix default.
   defp umbrella_apps_dirname do
     with {:ok, content} <- File.read("../../mix.exs"),
-         [_, path] <- Regex.run(~r/apps_path:\s*"([^"]+)"/, content) do
+         [_, path] <- Regex.run(~r/apps_path:\s*"([^"]+)"/, strip_line_comments(content)) do
       path
     else
       _ -> "apps"
     end
+  end
+
+  # Best-effort: drop everything from the first `#` on each line before
+  # scanning for apps_path: -- otherwise a comment merely mentioning the
+  # option (a stale value, a worked example) can out-match the real
+  # configuration below it. Doesn't account for a `#` inside a string
+  # literal; consistent with the rest of this heuristic being a text scan,
+  # not a full mix.exs evaluation.
+  defp strip_line_comments(content) do
+    content
+    |> String.split("\n")
+    |> Enum.map(fn line -> line |> String.split("#", parts: 2) |> List.first() end)
+    |> Enum.join("\n")
   end
 
   # Union across files AND envs: a tag used only in the umbrella root config,
@@ -221,6 +234,9 @@ defmodule NebulaAPI.Formatter do
                 "each entry to be `{node_name, tag | [tags]}`, e.g. `\"db@host\": [:db]`"
               )
             end
+
+          {_node, nil} ->
+            []
 
           {_node, tags} when is_atom(tags) ->
             [tags]

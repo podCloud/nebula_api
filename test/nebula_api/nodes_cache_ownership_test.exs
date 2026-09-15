@@ -3,6 +3,8 @@ defmodule NebulaAPI.NodesCacheOwnershipTest do
   # of the APIServer supervisor.
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias NebulaAPI.APIServer
   alias NebulaAPI.APIServer.NodesCacheOwner
   alias NebulaAPI.APIServer.NodesInfoCache
@@ -88,6 +90,40 @@ defmodule NebulaAPI.NodesCacheOwnershipTest do
     # non-tuple value must be caught inside the owner's own handle_call, not
     # let the GenServer crash (an owner-less :protected table with no :heir
     # is destroyed the instant its process dies).
+    assert Process.whereis(NodesCacheOwner) == owner_before
+    assert Process.alive?(owner_before)
+    assert APIServer.get_nodes_info() == marker
+  end
+
+  test "a rejected malformed write is logged, not silently swallowed" do
+    # Before the crash-hardening fix, a malformed write crashed the owner
+    # loudly (a supervisor restart log). After it, {:error, _} on its own is
+    # invisible unless something logs it -- every caller (refresh_nodes_cache,
+    # the insert_async cast) discards the return value.
+    log =
+      capture_log(fn ->
+        NodesCacheOwner.insert(:oops)
+      end)
+
+    assert log =~ "NodesCacheOwner"
+    assert log =~ "insert"
+  end
+
+  test "insert_async/1 (the cast path build_nodes_info/0 actually uses in production) with a malformed entry does not crash the owner" do
+    marker = %{:cast_guard_survivor@host => %{long_name: :cast_guard_survivor@host, tags: [:x]}}
+    :ok = NodesInfoCache.seed_snapshot(marker)
+
+    owner_before = Process.whereis(NodesCacheOwner)
+
+    :ok = NodesCacheOwner.insert_async(:oops)
+
+    # insert_async/1 is a cast -- it doesn't wait for a reply, so a
+    # synchronous follow-up call to the SAME process is the synchronization
+    # point: GenServer mailboxes are FIFO, so this only returns once the bad
+    # cast has actually been handled (or fails outright if it took the
+    # owner down with it).
+    assert :ok = NodesCacheOwner.insert({:cast_guard_sync, :ok})
+
     assert Process.whereis(NodesCacheOwner) == owner_before
     assert Process.alive?(owner_before)
     assert APIServer.get_nodes_info() == marker

@@ -3,14 +3,15 @@ defmodule NebulaAPI.APIServer.NodesCacheOwner do
   Owns the `:nebula_nodes_cache` ETS table — and does nothing else.
 
   The table is `:protected`, so only its owner process can write; every write
-  in the library funnels through this process (`insert/1`, `delete/1`). Keeping
-  the OWNER separate from the REFRESHER (`NebulaAPI.APIServer.NodesInfoCache`)
-  decouples the cached data's lifetime from the refresh logic: the refresher
-  can crash and be restarted without destroying the cache — `last_seen_at`
-  history for currently-unreachable nodes is not reconstructible, so the table
-  must not die with the process most likely to have bugs. This process is
-  deliberately too dumb to crash: create the table, serve two write calls,
-  ignore everything else.
+  in the library funnels through this process (`insert/1`, `delete/1`,
+  `insert_async/1`). Keeping the OWNER separate from the REFRESHER
+  (`NebulaAPI.APIServer.NodesInfoCache`) decouples the cached data's lifetime
+  from the refresh logic: the refresher can crash and be restarted without
+  destroying the cache — `last_seen_at` history for currently-unreachable
+  nodes is not reconstructible, so the table must not die with the process
+  most likely to have bugs. This process is deliberately too dumb to crash:
+  create the table, serve write calls (sync and async), ignore everything
+  else.
   """
 
   use GenServer
@@ -114,16 +115,27 @@ defmodule NebulaAPI.APIServer.NodesCacheOwner do
     :ets.insert(@table, entry)
     :ok
   rescue
-    e -> {:error, e}
+    e ->
+      Logger.warning("NodesCacheOwner rejected an insert: #{Exception.message(e)}")
+      {:error, e}
   end
 
   # :ets.delete/2 doesn't actually reject malformed keys the way insert
   # rejects malformed values (any term is a valid key) -- guarded anyway, for
-  # the same reason the module exists: this process must not crash.
+  # the same reason the module exists: this process must not crash. The only
+  # way to make :ets.delete/2 raise is against a table this process doesn't
+  # own, and confirmed empirically that a non-owner process can't even
+  # engineer that from outside (a foreign :ets.delete/1 on a :protected table
+  # itself raises :badarg before ever reaching here) -- so there is no
+  # realistic way to drive this rescue branch from a test without asserting
+  # on an internal implementation detail. Kept for the same defense-in-depth
+  # reason as do_insert/1's guard, not because a live path to it is known.
   defp do_delete(key) do
     :ets.delete(@table, key)
     :ok
   rescue
-    e -> {:error, e}
+    e ->
+      Logger.warning("NodesCacheOwner rejected a delete: #{Exception.message(e)}")
+      {:error, e}
   end
 end
