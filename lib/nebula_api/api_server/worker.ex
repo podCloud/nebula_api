@@ -200,6 +200,20 @@ defmodule NebulaAPI.APIServer.Worker do
   # tuple — catch it so both failure modes land on the same {:error, reason}.
   defp start_body_task({caller, ref} = from, fn_call, module, methods) do
     Task.Supervisor.start_child(NebulaAPI.TaskSupervisor, fn ->
+      # The orphan-kill guarantee (#10) lived entirely in the Worker's own
+      # monitors -- if the Worker itself dies (a pathological message despite
+      # the catch-alls, an external kill, supervisor churn), those monitors
+      # vanish with it and nobody kills this body if its caller dies mid-run
+      # (#14). A watchdog spawned HERE, independent of the Worker, keeps the
+      # guarantee alive regardless: it double-monitors the caller and this
+      # task, kills the task if the caller goes first, and exits quietly once
+      # the task goes first (any reason -- a plain :normal finish included,
+      # which a link alone would NOT have propagated). The Worker keeps its
+      # own caller monitor too, for slot accounting and queue purging; a
+      # harmless redundant kill attempt on an already-dead pid is a no-op.
+      task_pid = self()
+      spawn(fn -> watch_for_orphan(caller, task_pid) end)
+
       # Stash the reply address so the body can heartbeat via
       # NebulaAPI.request_more_time/0. The task is throwaway, so the process
       # dictionary is the lightest request-scoped carrier.
@@ -209,6 +223,19 @@ defmodule NebulaAPI.APIServer.Worker do
     end)
   catch
     :exit, reason -> {:error, reason}
+  end
+
+  defp watch_for_orphan(caller, task_pid) do
+    caller_ref = Process.monitor(caller)
+    task_ref = Process.monitor(task_pid)
+
+    receive do
+      {:DOWN, ^caller_ref, :process, ^caller, _reason} ->
+        Process.exit(task_pid, :kill)
+
+      {:DOWN, ^task_ref, :process, ^task_pid, _reason} ->
+        :ok
+    end
   end
 
   defp caller_ref_owner(running, cref) do
