@@ -250,6 +250,26 @@ def deps do
 end
 ```
 
+To keep `mix format` from parenthesizing the selector syntax, add this to your
+`.formatter.exs`:
+
+```elixir
+Code.require_file("formatter.exs", to_string(Mix.Project.deps_paths()[:nebula_api]))
+
+[
+  inputs: [...]
+]
+|> NebulaAPI.Formatter.add_formatter_config()
+```
+
+This covers the macros **and** your own topology tags (derived from your config at
+format time — see
+[Defining → mix format and the selector syntax](docs/defining.md#mix-format-and-the-selector-syntax)
+for the details). Plain `import_deps: [:nebula_api]` alone only covers the macros:
+`mix format` caches a dep's `import_deps` export, so a dynamic tag list served that
+way would go stale the moment your topology changes — the snippet above reads your
+config fresh on every run instead.
+
 ## Quick start
 
 ### 1. Define your cluster topology
