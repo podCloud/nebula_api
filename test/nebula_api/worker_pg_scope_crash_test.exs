@@ -73,6 +73,50 @@ defmodule NebulaAPI.WorkerPgScopeCrashTest do
     GenServer.stop(worker)
   end
 
+  test "a scope crash landing mid-rejoin does not crash the Worker itself" do
+    {:ok, worker} = Worker.start_link(Mod)
+    Process.unlink(worker)
+
+    assert wait_until(fn -> :pg.get_members(:pg_nebula_api, {Mod, {:ping, 1}}) == [worker] end)
+
+    # Steal the :pg_nebula_api name for a fake scope that dies the instant it
+    # receives a join call, WITHOUT replying -- deterministically reproducing
+    # a second crash landing exactly inside handle_info(:rejoin_scope, ...)'s
+    # join loop (the TOCTOU window between this handler's own
+    # Process.whereis/1 and :pg.join/3's internal, independent resolution of
+    # the same name), without needing to win a real microsecond-scale race.
+    # gen_server:call/3 (what :pg.join/3 uses internally) monitors its
+    # target for the duration of the call specifically so a mid-call death
+    # doesn't hang the caller forever -- it raises an uncaught exit instead,
+    # which is exactly the crash this test proves the fix survives.
+    real_scope = Process.whereis(:pg_nebula_api)
+    true = Process.unregister(:pg_nebula_api)
+
+    fake_scope =
+      spawn(fn ->
+        receive do
+          {:"$gen_call", _from, _request} -> Process.exit(self(), :kill)
+        end
+      end)
+
+    Process.register(fake_scope, :pg_nebula_api)
+
+    worker_ref = Process.monitor(worker)
+    send(worker, :rejoin_scope)
+
+    # Before the fix: handle_info(:rejoin_scope, ...) has no rescue/catch
+    # around the join loop, so the uncaught exit from the dead fake scope
+    # crashes the Worker GenServer itself.
+    refute_receive {:DOWN, ^worker_ref, :process, ^worker, _reason}, 300
+    assert Process.alive?(worker)
+
+    # Restore the real scope's registration so later tests aren't affected.
+    Process.exit(fake_scope, :kill)
+    true = Process.register(real_scope, :pg_nebula_api)
+
+    GenServer.stop(worker)
+  end
+
   defp nebula_call(worker, fn_call, timeout) do
     ref = make_ref()
     send(worker, {:nebula_call, {self(), ref}, fn_call})
