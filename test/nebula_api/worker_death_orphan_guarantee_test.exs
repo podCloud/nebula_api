@@ -106,13 +106,31 @@ defmodule NebulaAPI.WorkerDeathOrphanGuaranteeTest do
     # (task_ref = Process.monitor(pid) in start_call/2) and the watchdog
     # (Process.monitor(task_pid) in watch_for_orphan/2). Subtracting the
     # known worker pid leaves the watchdog.
-    {:monitored_by, monitors} = Process.info(body, :monitored_by)
-    assert [watchdog] = monitors -- [worker]
+    #
+    # start_body_task/4 spawns the watchdog with a plain spawn/1 (fire and
+    # forget, no ordering guarantee) and then immediately proceeds -- for
+    # `gated/1` that means {:started, body} above can already have been sent
+    # before watch_for_orphan/2 has run its own Process.monitor/1. Poll
+    # instead of a single snapshot, or this flakes under scheduler pressure
+    # (empirically ~1 run in 6-13 with a single Process.info/2 call).
+    watchdog =
+      wait_until_present(fn ->
+        {:monitored_by, monitors} = Process.info(body, :monitored_by)
+
+        case monitors -- [worker] do
+          [pid] -> pid
+          [] -> nil
+        end
+      end)
+
     watchdog_ref = Process.monitor(watchdog)
 
-    # Let the body finish normally (release the latch).
-    send(body, :go)
+    # Monitor the body BEFORE releasing its latch: send(body, :go) can let it
+    # exit before a monitor placed afterward, in which case Erlang delivers a
+    # synthetic :noproc DOWN instead of the real :normal one, and the
+    # assert_receive below times out on a run that actually succeeded.
     body_ref = Process.monitor(body)
+    send(body, :go)
     assert_receive {:DOWN, ^body_ref, :process, ^body, :normal}, 1_000
 
     # Before the fix, this observes the actual leak directly: a coarse
@@ -124,5 +142,16 @@ defmodule NebulaAPI.WorkerDeathOrphanGuaranteeTest do
 
     Process.exit(caller, :kill)
     GenServer.stop(worker)
+  end
+
+  defp wait_until_present(fun, tries \\ 50) do
+    case fun.() do
+      nil when tries > 0 ->
+        Process.sleep(20)
+        wait_until_present(fun, tries - 1)
+
+      result ->
+        result
+    end
   end
 end
