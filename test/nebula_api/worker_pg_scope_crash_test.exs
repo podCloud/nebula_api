@@ -95,6 +95,18 @@ defmodule NebulaAPI.WorkerPgScopeCrashTest do
     {:ok, worker} = Worker.start_link(Mod)
     Process.unlink(worker)
 
+    # Safety net, same pattern as worker_death_orphan_guarantee_test.exs
+    # (round 2): unlinking removes the only cleanup path for the worker
+    # itself. If any assertion below fails before the explicit
+    # GenServer.stop(worker) at the end of this test, the worker stays alive
+    # and registered under `Mod` -- and the OTHER test in this file that
+    # does Worker.start_link(Mod) then fails with a confusing
+    # {:error, {:already_started, _}}, masking whatever this test actually
+    # caught.
+    on_exit(fn ->
+      if Process.alive?(worker), do: Process.exit(worker, :kill)
+    end)
+
     assert wait_until(fn -> :pg.get_members(:pg_nebula_api, {Mod, {:ping, 1}}) == [worker] end)
 
     # Steal the :pg_nebula_api name for a fake scope that dies the instant it
@@ -203,6 +215,11 @@ defmodule NebulaAPI.WorkerPgScopeCrashTest do
 
     {:ok, worker} = Worker.start_link(Mod2)
     Process.unlink(worker)
+
+    # Same safety net as the mid-rejoin test above.
+    on_exit(fn ->
+      if Process.alive?(worker), do: Process.exit(worker, :kill)
+    end)
 
     worker_ref = Process.monitor(worker)
     refute_receive {:DOWN, ^worker_ref, :process, ^worker, _reason}, 300
