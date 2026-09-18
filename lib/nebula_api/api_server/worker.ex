@@ -8,21 +8,33 @@ defmodule NebulaAPI.APIServer.Worker do
 
   def init(module) do
     methods = NebulaAPI.APIServer.registered_local_methods(module)
+    method_set = MapSet.new(methods)
 
-    Enum.each(methods, fn method ->
-      NebulaAPI.APIServer.register_local_method_worker(
-        module,
-        method,
-        self()
-      )
-    end)
+    # Join synchronously here (matching the pre-#13 behavior other code and
+    # tests rely on: a worker is fully joined to :pg by the time start_link/1
+    # returns), but through the SAME attempt_join/2 used by
+    # handle_info(:rejoin_scope, ...) to recover from a later scope crash --
+    # instead of its own separate, unguarded join sequence. A scope crash
+    # landing during a worker's own startup is exactly as real as one landing
+    # during a later rejoin (attempt_join/2's own doc explains the two ways it
+    # can silently go wrong); only the FAILURE case falls back to the async
+    # retry, so the common case (no crash) keeps its synchronous guarantee.
+    scope_ref =
+      case attempt_join(module, method_set) do
+        {:ok, ref} ->
+          ref
+
+        :retry ->
+          send(self(), :rejoin_scope)
+          nil
+      end
 
     {:ok,
      %{
        module: module,
        # The module's local methods are fixed at its compilation: snapshot them
        # once here instead of rescanning __info__(:attributes) on every call.
-       methods: MapSet.new(methods),
+       methods: method_set,
        max: max_concurrent_calls(module),
        in_flight: 0,
        queue: :queue.new(),
@@ -33,15 +45,36 @@ defmodule NebulaAPI.APIServer.Worker do
        # supervisor restarts it with EMPTY membership, and this worker lives
        # in the CONSUMER app's tree, not the scope's -- nothing else would
        # ever tell it to rejoin, silently and permanently unregistering
-       # every method it serves (#13).
-       scope_ref: monitor_scope()
+       # every method it serves (#13). nil here means attempt_join/2 above
+       # already scheduled a :rejoin_scope retry.
+       scope_ref: scope_ref
      }}
   end
 
-  defp monitor_scope do
+  # Resolves :pg_nebula_api and joins every method to it, returning
+  # {:ok, monitor_ref} on success or :retry if the caller should fall back to
+  # an async retry. Shared by init/1 (synchronous happy path) and
+  # handle_info(:rejoin_scope, ...) (recovering from a later crash) so the
+  # same TOCTOU guard protects both: Process.whereis/1 here can resolve a
+  # scope that then dies before :pg.join/3's OWN internal name resolution
+  # runs (it re-resolves :pg_nebula_api independently, not from the `pid`
+  # already captured) -- that lands as an uncaught exit from gen_server:call,
+  # not a rescuable error, hence the catch instead of rescue.
+  defp attempt_join(module, methods) do
     case Process.whereis(:pg_nebula_api) do
-      nil -> nil
-      pid -> Process.monitor(pid)
+      nil ->
+        :retry
+
+      pid ->
+        try do
+          Enum.each(methods, fn method ->
+            NebulaAPI.APIServer.register_local_method_worker(module, method, self())
+          end)
+
+          {:ok, Process.monitor(pid)}
+        catch
+          :exit, _reason -> :retry
+        end
     end
   end
 
@@ -95,34 +128,18 @@ defmodule NebulaAPI.APIServer.Worker do
   end
 
   def handle_info(:rejoin_scope, state) do
-    case Process.whereis(:pg_nebula_api) do
-      nil ->
+    case attempt_join(state.module, state.methods) do
+      {:ok, ref} ->
+        Logger.info("#{inspect(state.module)} worker: joined the pg scope")
+        {:noreply, %{state | scope_ref: ref}}
+
+      # Covers both: the scope hasn't restarted yet (Process.whereis/1 found
+      # nothing), and a second crash landing mid-join (caught inside
+      # attempt_join/2) -- either way, retry with a short backoff until the
+      # scope is both present AND survives the join.
+      :retry ->
         Process.send_after(self(), :rejoin_scope, 50)
         {:noreply, state}
-
-      pid ->
-        try do
-          Enum.each(state.methods, fn method ->
-            NebulaAPI.APIServer.register_local_method_worker(state.module, method, self())
-          end)
-
-          Logger.info("#{inspect(state.module)} worker: rejoined the pg scope")
-          {:noreply, %{state | scope_ref: Process.monitor(pid)}}
-        catch
-          # The scope we just resolved via Process.whereis/1 can still die before
-          # :pg.join/3's OWN internal name resolution runs (it re-resolves
-          # :pg_nebula_api independently, not from the `pid` we already have) --
-          # that lands as an uncaught exit from gen_server:call, not a rescuable
-          # error. Retry instead of crashing the worker and losing every
-          # method it serves a second time (#13's whole point).
-          :exit, reason ->
-            Logger.warning(
-              "#{inspect(state.module)} worker: pg scope died again mid-rejoin (#{inspect(reason)}), retrying"
-            )
-
-            Process.send_after(self(), :rejoin_scope, 50)
-            {:noreply, state}
-        end
     end
   end
 

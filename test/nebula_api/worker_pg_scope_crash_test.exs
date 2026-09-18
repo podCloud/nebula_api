@@ -21,6 +21,23 @@ defmodule NebulaAPI.WorkerPgScopeCrashTest do
     end
   end
 
+  defmodule Mod2 do
+    Module.register_attribute(__MODULE__, :nebula_configured_nodes,
+      accumulate: true,
+      persist: true
+    )
+
+    Module.register_attribute(__MODULE__, :nebula_api, persist: true)
+
+    @nebula_api [self_node: node()]
+    @nebula_configured_nodes {{:ping, 1}, [node()]}
+
+    def ping(pid) do
+      send(pid, :executed)
+      :pong
+    end
+  end
+
   setup_all do
     case :pg.start(:pg_nebula_api) do
       {:ok, _} -> :ok
@@ -92,6 +109,19 @@ defmodule NebulaAPI.WorkerPgScopeCrashTest do
     real_scope = Process.whereis(:pg_nebula_api)
     true = Process.unregister(:pg_nebula_api)
 
+    # Guard the name restoration with on_exit, not just a line at the bottom
+    # of the test: if any assertion below fails, the test process dies before
+    # reaching that line, and :pg_nebula_api stays bound to a dead pid for the
+    # rest of the run -- every OTHER test that touches the scope then fails
+    # with a confusing, unrelated gen_server.call/:noproc error, masking
+    # whatever this test actually caught.
+    on_exit(fn ->
+      case Process.whereis(:pg_nebula_api) do
+        nil -> Process.register(real_scope, :pg_nebula_api)
+        _already_registered -> :ok
+      end
+    end)
+
     fake_scope =
       spawn(fn ->
         receive do
@@ -110,9 +140,79 @@ defmodule NebulaAPI.WorkerPgScopeCrashTest do
     refute_receive {:DOWN, ^worker_ref, :process, ^worker, _reason}, 300
     assert Process.alive?(worker)
 
-    # Restore the real scope's registration so later tests aren't affected.
+    # Restore the real scope's registration now (the happy path) -- on_exit
+    # above is the safety net for when an assertion above fails first.
+    # fake_scope already dropped its own :pg_nebula_api registration the
+    # moment it exited (Erlang auto-unregisters a dead process's name), so no
+    # explicit unregister is needed here.
     Process.exit(fake_scope, :kill)
     true = Process.register(real_scope, :pg_nebula_api)
+
+    # Prove the retry actually converges, not just that the worker survived:
+    # before the fix suggested here existed, this test only checked
+    # Process.alive?/1 -- breaking the Process.send_after retry in the fix's
+    # catch clause would still pass it. A real re-registration, reachable via
+    # a real call, is the only proof the worker is actually serving again.
+    assert wait_until(fn -> :pg.get_members(:pg_nebula_api, {Mod, {:ping, 1}}) == [worker] end,
+             tries: 100
+           )
+
+    assert nebula_call(worker, {:ping, self()}, 1_000) == :pong
+    assert_receive :executed, 1_000
+
+    GenServer.stop(worker)
+  end
+
+  test "a scope crash landing during the worker's own startup does not permanently orphan it" do
+    real_scope = Process.whereis(:pg_nebula_api)
+    true = Process.unregister(:pg_nebula_api)
+
+    on_exit(fn ->
+      case Process.whereis(:pg_nebula_api) do
+        nil -> Process.register(real_scope, :pg_nebula_api)
+        _already_registered -> :ok
+      end
+    end)
+
+    # Same technique as the mid-rejoin test above, but this time the fake
+    # scope is already in place BEFORE the worker even starts -- reproducing
+    # a scope crash landing inside Worker.init/1's own join, before
+    # monitor_scope() ever runs. Before the fix, init/1 has no catch around
+    # its join loop at all (unlike handle_info(:rejoin_scope, ...)), so this
+    # would crash the worker during its own start_link.
+    fake_scope =
+      spawn(fn ->
+        receive do
+          {:"$gen_call", _from, _request} -> Process.exit(self(), :kill)
+        end
+      end)
+
+    Process.register(fake_scope, :pg_nebula_api)
+
+    {:ok, worker} = Worker.start_link(Mod2)
+    Process.unlink(worker)
+
+    worker_ref = Process.monitor(worker)
+    refute_receive {:DOWN, ^worker_ref, :process, ^worker, _reason}, 300
+    assert Process.alive?(worker)
+
+    # Restore the real scope so the worker's retry has something to succeed
+    # against. fake_scope already dropped its own :pg_nebula_api registration
+    # the moment it exited, so no explicit unregister is needed here.
+    Process.exit(fake_scope, :kill)
+    true = Process.register(real_scope, :pg_nebula_api)
+
+    # Before the fix's second half (retrying monitor_scope/0 itself, not just
+    # the join loop): if Process.whereis/1 caught the scope mid-restart during
+    # init/1, scope_ref stayed nil forever with no retry path -- the worker
+    # would never learn the scope is back and never re-join. This proves it
+    # actually does, eventually.
+    assert wait_until(fn -> :pg.get_members(:pg_nebula_api, {Mod2, {:ping, 1}}) == [worker] end,
+             tries: 100
+           )
+
+    assert nebula_call(worker, {:ping, self()}, 1_000) == :pong
+    assert_receive :executed, 1_000
 
     GenServer.stop(worker)
   end
