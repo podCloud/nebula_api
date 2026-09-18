@@ -40,6 +40,19 @@ defmodule NebulaAPI.WorkerDeathOrphanGuaranteeTest do
     # killing it below, or the :kill exit signal takes this test process
     # down with it too.
     Process.unlink(worker)
+
+    # Safety net: if any assertion below fails before the explicit
+    # Process.exit(worker, :kill) a few lines down, the unlink just removed
+    # the only thing that would otherwise have taken the worker down with a
+    # crashing test process. Left alive and still registered under `Mod`,
+    # it leaks into the next test in this file, whose own
+    # Worker.start_link(Mod) then fails with {:error, {:already_started,
+    # _}} -- a confusing failure with no relation to whatever this test
+    # actually caught.
+    on_exit(fn ->
+      if Process.alive?(worker), do: Process.exit(worker, :kill)
+    end)
+
     parent = self()
 
     caller =
@@ -88,22 +101,28 @@ defmodule NebulaAPI.WorkerDeathOrphanGuaranteeTest do
 
     assert_receive {:started, body}, 1_000
 
-    before = process_count()
+    # Identify the watchdog directly instead of a VM-wide process count: the
+    # body is monitored by exactly two processes -- the Worker itself
+    # (task_ref = Process.monitor(pid) in start_call/2) and the watchdog
+    # (Process.monitor(task_pid) in watch_for_orphan/2). Subtracting the
+    # known worker pid leaves the watchdog.
+    {:monitored_by, monitors} = Process.info(body, :monitored_by)
+    assert [watchdog] = monitors -- [worker]
+    watchdog_ref = Process.monitor(watchdog)
 
     # Let the body finish normally (release the latch).
     send(body, :go)
     body_ref = Process.monitor(body)
     assert_receive {:DOWN, ^body_ref, :process, ^body, :normal}, 1_000
 
-    # Give the watchdog a moment to notice the task's own DOWN and exit too.
-    Process.sleep(50)
-
-    assert process_count() <= before,
-           "a process was left behind after the body finished normally (watchdog leak)"
+    # Before the fix, this observes the actual leak directly: a coarse
+    # :erlang.system_info(:process_count) comparison still passes even with a
+    # real watchdog leak, because the body's own (much larger) exit already
+    # drops the net count -- this instead monitors the specific watchdog pid
+    # and proves IT dies too.
+    assert_receive {:DOWN, ^watchdog_ref, :process, ^watchdog, _reason}, 1_000
 
     Process.exit(caller, :kill)
     GenServer.stop(worker)
   end
-
-  defp process_count, do: :erlang.system_info(:process_count)
 end
