@@ -1,6 +1,7 @@
 defmodule NebulaAPI.WorkerPgScopeCrashTest do
   # async: false — kills and restarts the shared, named :pg_nebula_api scope.
   use ExUnit.Case, async: false
+  import ExUnit.CaptureLog
 
   alias NebulaAPI.APIServer.Worker
 
@@ -132,12 +133,23 @@ defmodule NebulaAPI.WorkerPgScopeCrashTest do
     Process.register(fake_scope, :pg_nebula_api)
 
     worker_ref = Process.monitor(worker)
-    send(worker, :rejoin_scope)
 
-    # Before the fix: handle_info(:rejoin_scope, ...) has no rescue/catch
-    # around the join loop, so the uncaught exit from the dead fake scope
-    # crashes the Worker GenServer itself.
-    refute_receive {:DOWN, ^worker_ref, :process, ^worker, _reason}, 300
+    # attempt_join/2 originally (bd5e375) logged the scope's exit reason on
+    # this exact path -- a refactor (bcd91e2) that unified this with the
+    # "scope not restarted yet" case collapsed both into a bare :retry and
+    # silently dropped the log. Capture it to prove the diagnostic is back:
+    # before that fix, this log is empty.
+    log =
+      capture_log(fn ->
+        send(worker, :rejoin_scope)
+
+        # Before the #13 rejoin fix: handle_info(:rejoin_scope, ...) has no
+        # rescue/catch around the join loop, so the uncaught exit from the
+        # dead fake scope crashes the Worker GenServer itself.
+        refute_receive {:DOWN, ^worker_ref, :process, ^worker, _reason}, 300
+      end)
+
+    assert log =~ "died again mid-join"
     assert Process.alive?(worker)
 
     # Restore the real scope's registration now (the happy path) -- on_exit
