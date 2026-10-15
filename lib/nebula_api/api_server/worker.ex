@@ -124,13 +124,6 @@ defmodule NebulaAPI.APIServer.Worker do
     end
   end
 
-  # Three monitor families, matched in order:
-  #   (a) a ref in state.running is a running body — its DOWN frees the slot
-  #       (reply already sent, or crash) and we stop watching its caller;
-  #   (b) a ref that OWNS a running entry as its caller_ref means the caller of a
-  #       running call died — kill the body; its own DOWN then falls into (a);
-  #   (c) anything else is a queued caller that died — purge its entry, nobody
-  #       awaits it anymore.
   # The pg scope crashed. Its supervisor restarts it empty -- rejoin once it's
   # back, retrying with a short backoff until it actually is (the restart
   # isn't necessarily instantaneous, and this worker has no other signal for
@@ -162,6 +155,13 @@ defmodule NebulaAPI.APIServer.Worker do
     end
   end
 
+  # Any other DOWN: three monitor families, matched in order:
+  #   (a) a ref in state.running is a running body — its DOWN frees the slot
+  #       (reply already sent, or crash) and we stop watching its caller;
+  #   (b) a ref that OWNS a running entry as its caller_ref means the caller of a
+  #       running call died — kill the body; its own DOWN then falls into (a);
+  #   (c) anything else is a queued caller that died — purge its entry, nobody
+  #       awaits it anymore.
   def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
     cond do
       Map.has_key?(state.running, ref) ->
