@@ -10,15 +10,9 @@ defmodule NebulaAPI.APIServer.Worker do
     methods = NebulaAPI.APIServer.registered_local_methods(module)
     method_set = MapSet.new(methods)
 
-    # Join synchronously here (matching the pre-#13 behavior other code and
-    # tests rely on: a worker is fully joined to :pg by the time start_link/1
-    # returns), but through the SAME attempt_join/2 used by
-    # handle_info(:rejoin_scope, ...) to recover from a later scope crash --
-    # instead of its own separate, unguarded join sequence. A scope crash
-    # landing during a worker's own startup is exactly as real as one landing
-    # during a later rejoin (attempt_join/2's own doc explains the two ways it
-    # can silently go wrong); only the FAILURE case falls back to the async
-    # retry, so the common case (no crash) keeps its synchronous guarantee.
+    # Join synchronously, so the worker is registered once start_link/1 returns.
+    # Same guarded path as a later rejoin (attempt_join/2): if the scope is down
+    # or dies mid-join, retry asynchronously instead.
     scope_ref =
       case attempt_join(module, method_set) do
         {:ok, ref} ->
@@ -42,28 +36,16 @@ defmodule NebulaAPI.APIServer.Worker do
        # task_ref => %{task_pid, caller_ref}. We monitor BOTH the running body
        # (to free the slot) and its caller (to kill the body if the caller dies).
        running: %{},
-       # Monitored so a :pg_nebula_api crash is noticed at all: its own
-       # supervisor restarts it with EMPTY membership, and this worker lives
-       # in the CONSUMER app's tree, not the scope's -- nothing else would
-       # ever tell it to rejoin, silently and permanently unregistering
-       # every method it serves (#13). nil here means attempt_join/2 above
-       # already scheduled a :rejoin_scope retry.
+       # Monitors the scope: its supervisor restarts it empty, and nothing else
+       # would tell this worker to rejoin (#13). nil while a rejoin is scheduled.
        scope_ref: scope_ref
      }}
   end
 
-  # Resolves :pg_nebula_api and joins every method to it, returning
-  # {:ok, monitor_ref} on success, or {:retry, reason} if the caller should
-  # fall back to an async retry -- reason is :not_found (scope hasn't
-  # restarted yet) or the exit reason from a scope that died mid-join, kept
-  # around so callers can log which one happened instead of just "retrying".
-  # Shared by init/1 (synchronous happy path) and handle_info(:rejoin_scope,
-  # ...) (recovering from a later crash) so the same TOCTOU guard protects
-  # both: Process.whereis/1 here can resolve a scope that then dies before
-  # :pg.join/3's OWN internal name resolution runs (it re-resolves
-  # :pg_nebula_api independently, not from the `pid` already captured) --
-  # that lands as an uncaught exit from gen_server:call, not a rescuable
-  # error, hence the catch instead of rescue.
+  # Joins every method to the scope: {:ok, monitor_ref}, or {:retry, reason}
+  # with reason :not_found (scope not restarted yet) or the exit of a scope
+  # that died mid-join. :pg.join/3 resolves the scope by name again, so that
+  # death arrives as an exit, hence catch rather than rescue.
   defp attempt_join(module, methods) do
     case Process.whereis(:pg_nebula_api) do
       nil ->
@@ -82,11 +64,8 @@ defmodule NebulaAPI.APIServer.Worker do
     end
   end
 
-  # :not_found means the scope hasn't restarted yet -- expected and
-  # unremarkable while a crash-restart is in flight, so it stays quiet. Any
-  # other reason means the scope was there and then died again mid-join --
-  # worth a warning with the reason, the same diagnostic bd5e375 originally
-  # added before attempt_join/2 unified both failure modes.
+  # :not_found is expected while the scope restarts: stay quiet. Anything else
+  # means it died again mid-join: warn.
   defp log_join_retry(_module, :not_found), do: :ok
 
   defp log_join_retry(module, reason) do
@@ -124,10 +103,7 @@ defmodule NebulaAPI.APIServer.Worker do
     end
   end
 
-  # The pg scope crashed. Its supervisor restarts it empty -- rejoin once it's
-  # back, retrying with a short backoff until it actually is (the restart
-  # isn't necessarily instantaneous, and this worker has no other signal for
-  # "still gone" vs "back now").
+  # The scope crashed and restarts empty: rejoin once it is back.
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{scope_ref: ref} = state) do
     Logger.warning(
       "#{inspect(state.module)} worker: pg scope crashed, will rejoin once it restarts"
@@ -143,11 +119,7 @@ defmodule NebulaAPI.APIServer.Worker do
         Logger.info("#{inspect(state.module)} worker: joined the pg scope")
         {:noreply, %{state | scope_ref: ref}}
 
-      # Covers both: the scope hasn't restarted yet (Process.whereis/1 found
-      # nothing), and a second crash landing mid-join (caught inside
-      # attempt_join/2) -- either way, retry with a short backoff until the
-      # scope is both present AND survives the join. log_join_retry/2
-      # distinguishes the two in the log.
+      # Scope not back yet, or died again mid-join: retry shortly.
       {:retry, reason} ->
         log_join_retry(state.module, reason)
         Process.send_after(self(), :rejoin_scope, 50)
@@ -252,17 +224,9 @@ defmodule NebulaAPI.APIServer.Worker do
   # tuple — catch it so both failure modes land on the same {:error, reason}.
   defp start_body_task({caller, ref} = from, fn_call, module, methods) do
     Task.Supervisor.start_child(NebulaAPI.TaskSupervisor, fn ->
-      # The orphan-kill guarantee (#10) lived entirely in the Worker's own
-      # monitors -- if the Worker itself dies (a pathological message despite
-      # the catch-alls, an external kill, supervisor churn), those monitors
-      # vanish with it and nobody kills this body if its caller dies mid-run
-      # (#14). A watchdog spawned HERE, independent of the Worker, keeps the
-      # guarantee alive regardless: it double-monitors the caller and this
-      # task, kills the task if the caller goes first, and exits quietly once
-      # the task goes first (any reason -- a plain :normal finish included,
-      # which a link alone would NOT have propagated). The Worker keeps its
-      # own caller monitor too, for slot accounting and queue purging; a
-      # harmless redundant kill attempt on an already-dead pid is a no-op.
+      # Orphan-kill guarantee (#10) that survives the Worker's own death (#14):
+      # a watchdog independent of the Worker kills this task if the caller dies
+      # first, and exits once the task ends (a link would miss a :normal exit).
       task_pid = self()
       spawn(fn -> watch_for_orphan(caller, task_pid) end)
 

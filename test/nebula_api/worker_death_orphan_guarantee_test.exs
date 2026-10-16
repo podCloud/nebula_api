@@ -36,19 +36,11 @@ defmodule NebulaAPI.WorkerDeathOrphanGuaranteeTest do
 
   test "the running body is still killed when its caller dies, even if the Worker itself already died" do
     {:ok, worker} = Worker.start_link(Mod)
-    # start_link links the test process to the worker -- unlink before
-    # killing it below, or the :kill exit signal takes this test process
-    # down with it too.
+    # Unlink, or killing the worker below kills this test too.
     Process.unlink(worker)
 
-    # Safety net: if any assertion below fails before the explicit
-    # Process.exit(worker, :kill) a few lines down, the unlink just removed
-    # the only thing that would otherwise have taken the worker down with a
-    # crashing test process. Left alive and still registered under `Mod`,
-    # it leaks into the next test in this file, whose own
-    # Worker.start_link(Mod) then fails with {:error, {:already_started,
-    # _}} -- a confusing failure with no relation to whatever this test
-    # actually caught.
+    # If an assertion fails before the kill below, stop the worker anyway:
+    # left registered, it would break the next test's start_link.
     on_exit(fn ->
       if Process.alive?(worker), do: Process.exit(worker, :kill)
     end)
@@ -69,9 +61,7 @@ defmodule NebulaAPI.WorkerDeathOrphanGuaranteeTest do
     assert_receive {:started, body}, 1_000
     body_ref = Process.monitor(body)
 
-    # The Worker itself dies -- a pathological message despite the
-    # catch-alls, an external kill, supervisor churn (#14's scenario). Its
-    # own monitors on the body and the caller vanish with it.
+    # The Worker dies (#14): its own monitors on the body and caller go with it.
     worker_ref = Process.monitor(worker)
     Process.exit(worker, :kill)
     assert_receive {:DOWN, ^worker_ref, :process, ^worker, :killed}, 1_000
@@ -79,8 +69,7 @@ defmodule NebulaAPI.WorkerDeathOrphanGuaranteeTest do
     # The body is still running, unmanaged by anything but its own watchdog.
     assert Process.alive?(body)
 
-    # Now the caller dies too. Before the fix, nothing left in the system
-    # would ever kill this body -- it would run forever, its slot leaked.
+    # Now the caller dies: before the fix, nothing would ever kill the body.
     Process.exit(caller, :kill)
     assert_receive {:DOWN, ^body_ref, :process, ^body, :killed}, 1_000
   end
@@ -101,18 +90,9 @@ defmodule NebulaAPI.WorkerDeathOrphanGuaranteeTest do
 
     assert_receive {:started, body}, 1_000
 
-    # Identify the watchdog directly instead of a VM-wide process count: the
-    # body is monitored by exactly two processes -- the Worker itself
-    # (task_ref = Process.monitor(pid) in start_call/2) and the watchdog
-    # (Process.monitor(task_pid) in watch_for_orphan/2). Subtracting the
-    # known worker pid leaves the watchdog.
-    #
-    # start_body_task/4 spawns the watchdog with a plain spawn/1 (fire and
-    # forget, no ordering guarantee) and then immediately proceeds -- for
-    # `gated/1` that means {:started, body} above can already have been sent
-    # before watch_for_orphan/2 has run its own Process.monitor/1. Poll
-    # instead of a single snapshot, or this flakes under scheduler pressure
-    # (empirically ~1 run in 6-13 with a single Process.info/2 call).
+    # The body is monitored by the Worker and the watchdog: drop the worker's
+    # pid to find the watchdog. It is spawned without ordering, so poll for it
+    # (a single snapshot flaked about 1 run in 10).
     watchdog =
       wait_until_present(fn ->
         {:monitored_by, monitors} = Process.info(body, :monitored_by)
@@ -125,19 +105,12 @@ defmodule NebulaAPI.WorkerDeathOrphanGuaranteeTest do
 
     watchdog_ref = Process.monitor(watchdog)
 
-    # Monitor the body BEFORE releasing its latch: send(body, :go) can let it
-    # exit before a monitor placed afterward, in which case Erlang delivers a
-    # synthetic :noproc DOWN instead of the real :normal one, and the
-    # assert_receive below times out on a run that actually succeeded.
+    # Monitor before releasing the latch, or a quick exit yields :noproc.
     body_ref = Process.monitor(body)
     send(body, :go)
     assert_receive {:DOWN, ^body_ref, :process, ^body, :normal}, 1_000
 
-    # Before the fix, this observes the actual leak directly: a coarse
-    # :erlang.system_info(:process_count) comparison still passes even with a
-    # real watchdog leak, because the body's own (much larger) exit already
-    # drops the net count -- this instead monitors the specific watchdog pid
-    # and proves IT dies too.
+    # Watch the watchdog pid itself: a process count would hide its leak.
     assert_receive {:DOWN, ^watchdog_ref, :process, ^watchdog, _reason}, 1_000
 
     Process.exit(caller, :kill)
